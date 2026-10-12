@@ -47,10 +47,10 @@ powershell -File tools/deploy.ps1 -Config Debug
 powershell -File tools/deploy.ps1 -Uninstall
 ```
 
-Pack the Lua mod into the profile's Mods folder and add it to the load order (game closed):
+Pack the Lua mod into the profile's Mods folder, then enable **BG3 VR** in the in-game Mod Manager (the game owns the load order and rewrites manual edits):
 
 ```bash
-powershell -File tools/pack-lua.ps1 -Activate
+powershell -File tools/pack-lua.ps1
 ```
 
 The core writes `<game>\bin\bg3vr\bg3vr.log`. To disable the mod without uninstalling, create an empty file `<game>\bin\bg3vr\disabled`.

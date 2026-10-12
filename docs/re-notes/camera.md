@@ -2,6 +2,13 @@
 
 Goal for Phase 0: find the structure that holds the gameplay camera's transform and projection, and the function that updates it each frame.
 
+## World conventions (from `!vr_probe`, 2026-10-12)
+
+- Y is up: Tav on the Nautiloid at `(50.759, 17.318, -427.084)`.
+- Rotations are quaternions, printed `(x, y, z, w)`: `(0, 0.608, 0, 0.794)` is a pure yaw of about 75°.
+- Scale `(1, 1, 1)` for a human. Units are probably metres; confirm by walking a known distance.
+- OpenXR is also Y-up and right-handed. Check BG3's handedness (sign of Z when walking "forward") before mapping poses.
+
 ## Method
 
 1. Load a save, stand still, and pan the camera. Search memory for a float triplet that tracks the camera position.
