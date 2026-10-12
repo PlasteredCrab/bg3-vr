@@ -24,7 +24,9 @@ Goal for Phase 0: find the structure that holds the gameplay camera's transform 
 - Writing pose fields from Lua's `Tick` has no visible effect: the camera update recomputes them before rendering.
 - Vtable slot 5 (`Update` per the Script Extender) is never called for the gameplay camera. In 3 s, slot 9 (`GetWorldTranslate`) ran 43,953 times, slots 11 and 13 (shared function) 7,417 times; slots 3, 16, 19 and 23 also ran.
 - A hardware write watch on the view and inverse-view translation caught exactly one writer per frame: the matrix setter 0x408BD60, called from the controller view update 0x4085150 at 0x40851CA. See [../offsets.md](../offsets.md).
-- **Hook:** a mid-hook on that call replaces the view matrix in `rdx` before the setter runs, so the inverse, the frustum and culling are rebuilt from our pose by the game itself.
+- First hook (exit gate): a mid-hook on that call replaced the view matrix in `rdx`. It moved the image, but the orbit camera kept running underneath: mouse drag and scroll still had effects and world lighting followed the orbit camera.
+- **The real source:** the view update gets right, up and forward by rotating the unit axes by the quaternion from vtable slot 13 (`GetWorldTransform`), and the position from slot 9 (`GetWorldTranslate`). For the gameplay camera both return the camera entity's **ECS Transform component** (entity handle at `controller+0x318`), not the controller's own `WorldTransform` field, which is the orbit pivot. Slot 9 runs around 15,000 times a second, so many systems read the camera position this way.
+- **Hook (approach B):** at the entry of the view update, write the pose (quaternion + translate) into that Transform. The view, inverse, frustum, culling and every caller of the getters then follow our pose. The setter hook now only checks the built matrix against the expected one; `[camera] force_view = true` makes it overwrite as before.
 
 ## What the Script Extender already maps (source at commit af85fd2, read 2026-10-12)
 

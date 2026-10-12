@@ -1,9 +1,11 @@
-// Phase 0 camera experiment. The controller's view update (exe 4.1.1.7631656: function 0x4085150)
-// builds a view matrix on the stack and passes it to the matrix setter (0x408BD60), which stores it
-// at controller+0x90, computes the inverse, and is followed by the frustum rebuild. A mid-hook on
-// that call (signature camera_set_view_call) swaps in our view matrix, so the inverse, frustum and
-// culling all follow the requested pose. Lua reports which controller to drive (and the pose)
-// through a bridge file; other cameras pass through untouched.
+// Camera override at the source. The controller's view update (exe 4.1.1.7631656: 0x4085150)
+// builds the view from GetWorldTransform / GetWorldTranslate (vtable slots 13 / 9), which return the
+// camera entity's ECS Transform component; every other system that asks the camera where it is
+// reads the same component. At the start of the view update (signature camera_view_update) we
+// write the requested pose into that Transform, so the view, its inverse, the frustum, culling and
+// all other readers agree. The hook on the matrix setter call (camera_set_view_call) only checks
+// that the matrix the game built matches the one we expect (or, with [camera] force_view, also
+// overwrites it). Lua reports which controller to drive, and the pose, through a bridge file.
 
 #include "bg3vr/camera.hpp"
 
@@ -51,8 +53,12 @@ std::mutex g_mutex;
 std::uintptr_t g_controller = 0;
 std::optional<Pose> g_pose;
 std::atomic<std::uint64_t> g_view_calls{0};
-std::atomic<std::uint64_t> g_view_overrides{0};
+std::atomic<std::uint64_t> g_transform_writes{0};
+std::atomic<std::uint64_t> g_view_checks{0};
+std::atomic<float> g_view_max_error{0.0f};
+bool g_force_view = false;
 
+safetyhook::MidHook g_view_update_hook;
 safetyhook::MidHook g_set_view_hook;
 
 ModuleInfo g_module;
@@ -104,38 +110,78 @@ void track_controller(std::uintptr_t controller) {
     }
 }
 
-// At the call to the matrix setter: rbx = controller, rdx = the freshly built view matrix.
+std::optional<Pose> pose_for(std::uintptr_t controller) {
+    std::scoped_lock lock(g_mutex);
+    if (!g_pose || controller != g_controller) {
+        return std::nullopt;
+    }
+    return g_pose;
+}
+
+// Entry of the view update: rcx = controller. Write the pose into the camera's Transform.
+void on_view_update(safetyhook::Context& ctx) {
+    const auto pose = pose_for(ctx.rcx);
+    if (!pose) {
+        return;
+    }
+    using GetTransformFn = float* (*)(std::uintptr_t);
+    const auto vtable = read<std::uintptr_t>(ctx.rcx);
+    const auto get_transform = read<GetTransformFn>(vtable + layout::kGetWorldTransformSlot * sizeof(void*));
+    float* transform = get_transform(ctx.rcx);
+    if (!transform) {
+        return;
+    }
+    const auto q = pose_quaternion(*pose);
+    std::memcpy(transform, q.data(), sizeof(q));
+    const float translate[3] = {pose->x, pose->y, pose->z};
+    std::memcpy(reinterpret_cast<std::uint8_t*>(transform) + layout::kTransformTranslate, translate, sizeof(translate));
+    g_transform_writes.fetch_add(1, std::memory_order_relaxed);
+}
+
+// At the call to the matrix setter: rbx = controller, rdx = the view matrix the game just built.
 void on_set_view(safetyhook::Context& ctx) {
     g_view_calls.fetch_add(1, std::memory_order_relaxed);
     track_controller(ctx.rbx);
-    Pose pose;
-    {
-        std::scoped_lock lock(g_mutex);
-        if (!g_pose || ctx.rbx != g_controller) {
-            return;
-        }
-        pose = *g_pose;
+    const auto pose = pose_for(ctx.rbx);
+    if (!pose) {
+        return;
     }
-    Mat4 world, view;
-    pose_matrices(pose, world, view);
-    std::memcpy(reinterpret_cast<void*>(ctx.rdx), view.data(), sizeof(view));
-    g_view_overrides.fetch_add(1, std::memory_order_relaxed);
+    Mat4 world, expected;
+    pose_matrices(*pose, world, expected);
+    float* built = reinterpret_cast<float*>(ctx.rdx);
+    float error = 0.0f;
+    for (std::size_t i = 0; i < 16; ++i) {
+        error = std::max(error, std::abs(built[i] - expected[i]));
+    }
+    g_view_checks.fetch_add(1, std::memory_order_relaxed);
+    if (error > g_view_max_error.load(std::memory_order_relaxed)) {
+        g_view_max_error.store(error, std::memory_order_relaxed);
+    }
+    if (g_force_view) {
+        std::memcpy(built, expected.data(), sizeof(expected));
+    }
 }
 
-void install_view_hook() {
-    const auto site = sig::lookup("camera_set_view_call");
+bool install_mid_hook(const char* signature, safetyhook::MidHookFn callback, safetyhook::MidHook& out) {
+    const auto site = sig::lookup(signature);
     if (!site) {
-        log::error("camera: signature camera_set_view_call not resolved; pose override unavailable");
-        return;
+        log::error("camera: signature {} not resolved", signature);
+        return false;
     }
-    auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), &on_set_view);
+    auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), callback);
     if (!hook) {
-        log::error("camera: mid-hook at exe+0x{:X} failed (error type {})", *site - g_module.base,
+        log::error("camera: mid-hook {} at exe+0x{:X} failed (error type {})", signature, *site - g_module.base,
                    static_cast<int>(hook.error().type));
-        return;
+        return false;
     }
-    g_set_view_hook = std::move(*hook);
-    log::info("camera: view hook installed at exe+0x{:X}", *site - g_module.base);
+    out = std::move(*hook);
+    log::info("camera: hook {} installed at exe+0x{:X}", signature, *site - g_module.base);
+    return true;
+}
+
+void install_view_hooks() {
+    install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
+    install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
 }
 
 // Checks that `controller` looks like an rf::CameraController before we act on it.
@@ -296,8 +342,12 @@ DWORD WINAPI watch_bridge(void* param) {
         }
 
         const std::uint64_t calls = g_view_calls.load(std::memory_order_relaxed);
-        log::info("camera: view set {} times since the last bridge change ({} overridden in total)",
-                  calls - last_reported_calls, g_view_overrides.load(std::memory_order_relaxed));
+        log::info("camera: view set {} times since the last bridge change; transform written {} times; "
+                  "built view checked {} times, max error {:.6f}{}",
+                  calls - last_reported_calls, g_transform_writes.load(std::memory_order_relaxed),
+                  g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
+                  g_force_view ? " (force_view on)" : "");
+        g_view_max_error.store(0.0f, std::memory_order_relaxed);
         last_reported_calls = calls;
         for (std::size_t i = 0; i < kTrackedControllers; ++i) {
             const std::uintptr_t seen = g_seen_controllers[i].load(std::memory_order_acquire);
@@ -329,6 +379,43 @@ void pose_matrices(const Pose& pose, Mat4& world, Mat4& view) {
              forward.x, forward.y, forward.z, 0.0f, p.x, p.y, p.z, 1.0f};
     view = {right.x, up.x, forward.x, 0.0f, right.y, up.y, forward.y, 0.0f,
             right.z, up.z, forward.z, 0.0f, -dot(right, p), -dot(up, p), -dot(forward, p), 1.0f};
+}
+
+std::array<float, 4> pose_quaternion(const Pose& pose) {
+    Mat4 world, view;
+    pose_matrices(pose, world, view);
+    // Rotation matrix m[row][col] with columns right, up, forward.
+    const float m00 = world[0], m10 = world[1], m20 = world[2];
+    const float m01 = world[4], m11 = world[5], m21 = world[6];
+    const float m02 = world[8], m12 = world[9], m22 = world[10];
+    const float trace = m00 + m11 + m22;
+    float x, y, z, w;
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        w = 0.25f * s;
+        x = (m21 - m12) / s;
+        y = (m02 - m20) / s;
+        z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        w = (m21 - m12) / s;
+        x = 0.25f * s;
+        y = (m01 + m10) / s;
+        z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        w = (m02 - m20) / s;
+        x = (m01 + m10) / s;
+        y = 0.25f * s;
+        z = (m12 + m21) / s;
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        w = (m10 - m01) / s;
+        x = (m02 + m20) / s;
+        y = (m12 + m21) / s;
+        z = 0.25f * s;
+    }
+    return {x, y, z, w};
 }
 
 BridgeRequest parse_bridge(std::string_view content) {
@@ -387,7 +474,8 @@ void start(const Config& config, const ModuleInfo& module) {
         return;
     }
     g_module = module;
-    install_view_hook();
+    g_force_view = config.get_bool("camera", "force_view", false);
+    install_view_hooks();
     const std::string configured = config.get("camera", "bridge_file");
     auto* path = new std::filesystem::path(configured.empty() ? default_bridge_path()
                                                               : std::filesystem::path(configured));

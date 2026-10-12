@@ -23,6 +23,11 @@ inline constexpr std::size_t kInvViewMatrix = 0xD0;  // glm::mat4, camera-to-wor
 inline constexpr std::size_t kSize = 0x290;          // through FrustumPoints
 inline constexpr std::size_t kUpdateSlot = 5;        // virtual void Update(GameTime const&)
 inline constexpr std::size_t kVtableSlots = 24;
+// virtual Transform const& GetWorldTransform(): for the gameplay camera this returns the camera
+// entity's ECS Transform component (looked up via the handle at controller+0x318). Layout:
+// quat (x, y, z, w) at +0x00, translate at +0x10, scale at +0x1C. The view is built from it.
+inline constexpr std::size_t kGetWorldTransformSlot = 13;
+inline constexpr std::size_t kTransformTranslate = 0x10;
 } // namespace layout
 
 using Mat4 = std::array<float, 16>; // column-major, like glm
@@ -36,6 +41,10 @@ struct Pose {
 // Camera-to-world and world-to-camera matrices for a camera that looks along +Z with +Y up,
 // matching the game's gameplay camera.
 void pose_matrices(const Pose& pose, Mat4& world, Mat4& view);
+
+// The rotation of `pose` as a quaternion (x, y, z, w) that maps +X, +Y, +Z to the camera's right,
+// up and forward axes, as the game's view builder expects.
+std::array<float, 4> pose_quaternion(const Pose& pose);
 
 struct BridgeRequest {
     std::optional<std::uintptr_t> controller;

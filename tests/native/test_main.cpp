@@ -222,6 +222,34 @@ void test_pose_matrices() {
     }
 }
 
+// v' = q v q* for a unit quaternion (x, y, z, w).
+std::array<float, 3> rotate(const std::array<float, 4>& q, std::array<float, 3> v) {
+    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const float tx = 2.0f * (qy * v[2] - qz * v[1]);
+    const float ty = 2.0f * (qz * v[0] - qx * v[2]);
+    const float tz = 2.0f * (qx * v[1] - qy * v[0]);
+    return {v[0] + qw * tx + (qy * tz - qz * ty), v[1] + qw * ty + (qz * tx - qx * tz),
+            v[2] + qw * tz + (qx * ty - qy * tx)};
+}
+
+void test_pose_quaternion() {
+    const camera::Pose poses[] = {{0, 0, 0, 0, 0}, {0, 0, 0, 90, 0}, {0, 0, 0, 180, 0}, {0, 0, 0, -135, 0},
+                                  {0, 0, 0, 37, -25}, {0, 0, 0, 200, 60}, {0, 0, 0, 0, 89}};
+    for (const auto& pose : poses) {
+        camera::Mat4 world, view;
+        camera::pose_matrices(pose, world, view);
+        const auto q = camera::pose_quaternion(pose);
+        CHECK(near_eq(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3], 1.0f));
+        for (int axis = 0; axis < 3; ++axis) {
+            std::array<float, 3> unit{0, 0, 0};
+            unit[axis] = 1.0f;
+            const auto r = rotate(q, unit);
+            CHECK(near_eq(r[0], world[axis * 4]) && near_eq(r[1], world[axis * 4 + 1]) &&
+                  near_eq(r[2], world[axis * 4 + 2]));
+        }
+    }
+}
+
 void test_parse_bridge() {
     const auto request = camera::parse_bridge("controller=000001F2AB34CD50\r\npose=1.5 -2 3 90 -10\n");
     CHECK(request.controller == 0x000001F2AB34CD50ull);
@@ -258,6 +286,7 @@ int main() {
     test_scan();
     test_inline_hook();
     test_pose_matrices();
+    test_pose_quaternion();
     test_parse_bridge();
     test_watch_probes();
     test_config();
