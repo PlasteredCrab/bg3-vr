@@ -22,7 +22,14 @@ Ship `version.dll`: it forwards all 17 exports to `System32\version.dll` through
 - An empty `bin\bg3vr\disabled` file turns the mod off without uninstalling.
 - The proxy carries ProductName "BG3 VR" so the deploy script won't overwrite another mod's `version.dll`.
 
-## To verify
+## Verification (game 4.1.1.7631656, checked 2026-10-12)
 
-- The game, or one of its early dependencies, loads `version.dll`. Fallbacks if not: `winmm.dll`, `dinput8.dll`, `dbghelp.dll`.
-- No other popular BG3 mod already ships a `version.dll`.
+- [x] `bg3_dx11.exe` and `bg3.exe` both import `VERSION.dll` directly (`GetFileVersionInfoW`, `GetFileVersionInfoSizeW`, `VerQueryValueA`).
+- [x] `version` is not in this machine's KnownDLLs, and both exes have Dependent Load Flag 0, so the loader searches the exe folder first and finds the proxy.
+- [x] Both exes also import `DWrite.dll` directly, which is why the Script Extender uses that name. Ours does not collide.
+- [x] `dxgi.dll` is delay-loaded; `d3d11.dll` is a direct import of the DX11 build only. The Vulkan build imports no Vulkan DLL, so it loads `vulkan-1.dll` at runtime.
+- [x] Both exes use Control Flow Guard (guard flags 0x100). It doesn't affect the proxy's jump stubs; keep it in mind for hooks that redirect indirect calls.
+- [ ] Runtime: `bg3vr.log` appears after launching with the proxy deployed.
+- [ ] No other popular BG3 mod already ships a `version.dll`.
+
+Fallbacks if the runtime check fails: `dbghelp.dll` (also a direct import), then `winmm.dll` or `dinput8.dll`.

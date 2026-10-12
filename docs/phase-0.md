@@ -33,8 +33,8 @@ Phase 0 answers the design doc's first spike: can we control the render camera's
 ## Next steps
 
 1. [ ] Finish the game install. Launch once without mods and reach the main menu.
-2. [ ] Confirm the game loads `version.dll` from `bin`: `dumpbin /imports bin\bg3_dx11.exe` and check its dependencies. If it doesn't, switch the proxy (ADR 0001 lists fallbacks).
-3. [ ] Record the game build in [offsets.md](offsets.md).
+2. [x] Confirm the game loads `version.dll` from `bin`. Both exes import it directly (see ADR 0001); runtime confirmation comes with step 5.
+3. [x] Record the game build in [offsets.md](offsets.md): 4.1.1.7631656, Steam build 25605617.
 4. [ ] Launch once with only the Script Extender (`tools/deploy.ps1 -Config Debug -InstallScriptExtender`, or copy `DWrite.dll` by hand) so it downloads its payload. Enable its console.
 5. [ ] Deploy (`tools/deploy.ps1 -Config Debug`), launch `bg3_dx11.exe --skip-launcher`, and check `bin\bg3vr\bg3vr.log` for exe, version, sections and module-load order.
 6. [ ] Get the Lua mod loading: confirm loose files under `Data\Mods\BG3VR` work, or pack a `.pak`; then run `!vr_probe`.

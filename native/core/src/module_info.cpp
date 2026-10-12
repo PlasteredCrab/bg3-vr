@@ -22,8 +22,27 @@ std::wstring query_file_version(const std::wstring& path) {
     if (!GetFileVersionInfoW(path.c_str(), 0, size, data.data())) {
         return L"unknown";
     }
-    VS_FIXEDFILEINFO* info = nullptr;
+
+    // BG3 leaves FileVersion at 1.0.0.0; the real game version is the ProductVersion string.
+    struct Translation {
+        WORD language;
+        WORD codepage;
+    };
+    Translation* translations = nullptr;
     UINT length = 0;
+    if (VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", reinterpret_cast<void**>(&translations), &length) &&
+        length >= sizeof(Translation)) {
+        const std::wstring key = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\ProductVersion", translations->language,
+                                             translations->codepage);
+        wchar_t* product = nullptr;
+        UINT chars = 0;
+        // Stop at the NUL: BG3's resource reports a length that runs past the string.
+        if (VerQueryValueW(data.data(), key.c_str(), reinterpret_cast<void**>(&product), &chars) && chars > 1) {
+            return std::wstring(product, wcsnlen(product, chars));
+        }
+    }
+
+    VS_FIXEDFILEINFO* info = nullptr;
     if (!VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &length) || !info) {
         return L"unknown";
     }
