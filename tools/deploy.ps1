@@ -6,7 +6,8 @@
     Native:  build\vs2026\bin\<Config>\version.dll       -> <game>\bin\version.dll
              build\vs2026\bin\<Config>\bg3vr_core.dll    -> <game>\bin\bg3vr\bg3vr_core.dll (+ .pdb)
              config\bg3vr.ini, config\signatures.txt     -> <game>\bin\bg3vr\  (first deploy only)
-    Lua:     lua\Mods\BG3VR                              -> <game>\Data\Mods\BG3VR  (loose files)
+    Lua:     lua\Mods\BG3VR\ScriptExtender               -> <game>\Data\Mods\BG3VR\ScriptExtender  (loose override;
+             the module itself ships as BG3VR.pak via tools/pack-lua.ps1)
     SE:      with -InstallScriptExtender, the verified DWrite.dll from downloads\ -> <game>\bin\DWrite.dll
 
     Refuses to overwrite a version.dll that is not ours (another mod's proxy) unless -Force.
@@ -140,8 +141,10 @@ foreach ($name in "bg3vr.ini", "signatures.txt") {
 }
 
 if (-not $SkipLua) {
+    # Only the ScriptExtender folder goes loose, as an override for the packed copy; the module
+    # itself (meta.lsx) is defined once, in BG3VR.pak (tools/pack-lua.ps1).
     if (Test-Path $luaTarget) { Remove-Item $luaTarget -Recurse }
-    New-Item -ItemType Directory -Force (Split-Path $luaTarget) | Out-Null
-    Copy-Item $luaSource $luaTarget -Recurse
-    Write-Host "deployed Lua mod to $luaTarget"
+    New-Item -ItemType Directory -Force $luaTarget | Out-Null
+    Copy-Item (Join-Path $luaSource "ScriptExtender") $luaTarget -Recurse
+    Write-Host "deployed Lua scripts to $luaTarget\ScriptExtender"
 }
