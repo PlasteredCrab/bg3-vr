@@ -1,6 +1,7 @@
 // Dependency-free unit tests for the engine-agnostic core utilities.
 
 #include "bg3vr/config.hpp"
+#include "bg3vr/hooks.hpp"
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
@@ -113,6 +114,31 @@ void test_scan() {
     CHECK(!sig::lookup("missing"));
 }
 
+__declspec(noinline) int add_numbers(int a, int b) {
+    return a + b;
+}
+
+safetyhook::InlineHook g_add_hook;
+
+int add_detour(int a, int b) {
+    return g_add_hook.call<int>(a, b) * 10;
+}
+
+void test_inline_hook() {
+    int (*volatile fn)(int, int) = &add_numbers; // volatile: keep calls going through the hooked code
+    CHECK(fn(2, 3) == 5);
+
+    CHECK(!hooks::install("not_published", reinterpret_cast<void*>(&add_detour)));
+
+    sig::publish("test_add", reinterpret_cast<std::uintptr_t>(fn));
+    g_add_hook = hooks::install("test_add", reinterpret_cast<void*>(&add_detour));
+    CHECK(static_cast<bool>(g_add_hook));
+    CHECK(fn(2, 3) == 50);
+
+    g_add_hook = {};
+    CHECK(fn(2, 3) == 5);
+}
+
 void test_config() {
     Config config;
     config.load_string("# top\n[Dev]\nConsole = yes\r\nlog_level=debug\n\n[scan]\nlimit = 0x20\nbad\n");
@@ -132,6 +158,7 @@ int main() {
     test_resolve_rip();
     test_signature_lines();
     test_scan();
+    test_inline_hook();
     test_config();
     if (g_failures == 0) {
         std::printf("all tests passed\n");

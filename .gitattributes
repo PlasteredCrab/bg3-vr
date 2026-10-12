@@ -8,3 +8,6 @@
 *.pak binary
 *.rdc binary
 *.png binary
+
+# Vendored sources stay byte-identical to upstream
+third_party/** -text

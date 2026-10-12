@@ -7,8 +7,10 @@
              build\vs2026\bin\<Config>\bg3vr_core.dll    -> <game>\bin\bg3vr\bg3vr_core.dll (+ .pdb)
              config\bg3vr.ini, config\signatures.txt     -> <game>\bin\bg3vr\  (first deploy only)
     Lua:     lua\Mods\BG3VR                              -> <game>\Data\Mods\BG3VR  (loose files)
+    SE:      with -InstallScriptExtender, the verified DWrite.dll from downloads\ -> <game>\bin\DWrite.dll
 
     Refuses to overwrite a version.dll that is not ours (another mod's proxy) unless -Force.
+    -Uninstall never touches the Script Extender.
     To disable the mod without uninstalling, create an empty file <game>\bin\bg3vr\disabled.
 #>
 param(
@@ -17,6 +19,8 @@ param(
     [string]$Config = "RelWithDebInfo",
     [switch]$Uninstall,
     [switch]$SkipLua,
+    [switch]$InstallScriptExtender,
+    [string]$ScriptExtenderDll = (Join-Path (Split-Path -Parent $PSScriptRoot) "downloads\bg3se-v32\extracted\DWrite.dll"),
     [switch]$Force
 )
 
@@ -36,6 +40,19 @@ if (-not (Test-Path (Join-Path $gameBin "bg3_dx11.exe")) -and -not (Test-Path (J
 function Test-OurProxy([string]$path) {
     if (-not (Test-Path $path)) { return $true }
     return (Get-Item $path).VersionInfo.ProductName -eq "BG3 VR"
+}
+
+if ($InstallScriptExtender -and -not $Uninstall) {
+    if (-not (Test-Path $ScriptExtenderDll)) { throw "Script Extender DLL not found at '$ScriptExtenderDll'." }
+    if ((Get-Item $ScriptExtenderDll).VersionInfo.ProductName -ne "BG3 Script Extender") {
+        throw "'$ScriptExtenderDll' is not the BG3 Script Extender updater."
+    }
+    $seTarget = Join-Path $gameBin "DWrite.dll"
+    if ((Test-Path $seTarget) -and (Get-Item $seTarget).VersionInfo.ProductName -ne "BG3 Script Extender" -and -not $Force) {
+        throw "'$seTarget' exists and is not the Script Extender; pass -Force to replace it."
+    }
+    Copy-Item $ScriptExtenderDll $seTarget -Force
+    Write-Host "installed Script Extender updater to $seTarget (it downloads the extender itself on first launch)"
 }
 
 if ($Uninstall) {

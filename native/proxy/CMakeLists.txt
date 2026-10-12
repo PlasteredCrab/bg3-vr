@@ -12,3 +12,4 @@ set_target_properties(bg3vr_proxy PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/proxy-implib
 )
 target_compile_definitions(bg3vr_proxy PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(bg3vr_proxy PRIVATE bg3vr_warnings)

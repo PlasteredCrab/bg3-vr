@@ -15,6 +15,7 @@ native/
   proxy/       version.dll proxy: forwards to the system DLL, loads the core
   core/        bg3vr_core.dll: logging, config, module info, signature scanner
   xr/ render/ body/ interact/ bridge/   later phases (see each README)
+third_party/   vendored libraries (SafetyHook + Zydis), pinned and digest-checked
 data/          toolkit assets (statuses, spells, XAML UI), later phases
 tools/         deploy script, RE helpers
 tests/         native unit tests, scenario saves
@@ -22,7 +23,7 @@ tests/         native unit tests, scenario saves
 
 ## Build
 
-Requires Visual Studio 2026 (C++ desktop workload, MASM) and CMake 3.28+.
+Requires Visual Studio 2026 (C++ desktop workload, MASM; C++23) and CMake 3.28+.
 
 ```bash
 cmake --preset vs2026

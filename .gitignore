@@ -5,6 +5,9 @@
 *.user
 CMakeUserPresets.json
 
+# Downloaded third-party releases (verified, then vendored or installed from here)
+/downloads/
+
 # Local reverse-engineering databases and captures (large, and derived from game binaries)
 /re-local/
 *.i64
