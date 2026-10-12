@@ -20,6 +20,7 @@ param(
     [string]$Config = "RelWithDebInfo",
     [switch]$Uninstall,
     [switch]$SkipLua,
+    [switch]$LuaOnly,
     [switch]$InstallScriptExtender,
     [string]$ScriptExtenderDll = (Join-Path (Split-Path -Parent $PSScriptRoot) "downloads\bg3se-v32\extracted\DWrite.dll"),
     # Where the Script Extender keeps its downloaded payload and logs (its default is %LOCALAPPDATA% on C:).
@@ -112,6 +113,22 @@ if ($Uninstall) {
     return
 }
 
+function Publish-Lua {
+    # Only the ScriptExtender folder goes loose, as an override for the packed copy; the module
+    # itself (meta.lsx) is defined once, in BG3VR.pak (tools/pack-lua.ps1).
+    if (Test-Path $luaTarget) { Remove-Item $luaTarget -Recurse }
+    New-Item -ItemType Directory -Force $luaTarget | Out-Null
+    Copy-Item (Join-Path $luaSource "ScriptExtender") $luaTarget -Recurse
+    Write-Host "deployed Lua scripts to $luaTarget\ScriptExtender"
+}
+
+# Lua only: safe while the game runs (the native DLLs are locked then). Reload with "reset" in the
+# Script Extender console.
+if ($LuaOnly) {
+    Publish-Lua
+    return
+}
+
 $buildBin = Join-Path $repo "build\vs2026\bin\$Config"
 $proxySource = Join-Path $buildBin "version.dll"
 $coreSource = Join-Path $buildBin "bg3vr_core.dll"
@@ -141,10 +158,5 @@ foreach ($name in "bg3vr.ini", "signatures.txt") {
 }
 
 if (-not $SkipLua) {
-    # Only the ScriptExtender folder goes loose, as an override for the packed copy; the module
-    # itself (meta.lsx) is defined once, in BG3VR.pak (tools/pack-lua.ps1).
-    if (Test-Path $luaTarget) { Remove-Item $luaTarget -Recurse }
-    New-Item -ItemType Directory -Force $luaTarget | Out-Null
-    Copy-Item (Join-Path $luaSource "ScriptExtender") $luaTarget -Recurse
-    Write-Host "deployed Lua scripts to $luaTarget\ScriptExtender"
+    Publish-Lua
 }
