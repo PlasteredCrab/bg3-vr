@@ -1,5 +1,6 @@
 // Dependency-free unit tests for the engine-agnostic core utilities.
 
+#include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/hooks.hpp"
 #include "bg3vr/pattern.hpp"
@@ -139,6 +140,51 @@ void test_inline_hook() {
     CHECK(fn(2, 3) == 5);
 }
 
+bool near_eq(float a, float b) {
+    return a - b < 1e-4f && b - a < 1e-4f;
+}
+
+void test_pose_matrices() {
+    camera::Mat4 world, view;
+
+    camera::pose_matrices({1.0f, 2.0f, 3.0f, 0.0f, 0.0f}, world, view);
+    CHECK(near_eq(world[8], 0.0f) && near_eq(world[9], 0.0f) && near_eq(world[10], 1.0f)); // looks along +Z
+    CHECK(near_eq(world[0], 1.0f) && near_eq(world[5], 1.0f));                             // right +X, up +Y
+    CHECK(near_eq(world[12], 1.0f) && near_eq(world[13], 2.0f) && near_eq(world[14], 3.0f));
+
+    camera::pose_matrices({0.0f, 0.0f, 0.0f, 90.0f, 0.0f}, world, view);
+    CHECK(near_eq(world[8], 1.0f) && near_eq(world[10], 0.0f)); // yaw 90 looks along +X
+
+    camera::pose_matrices({0.0f, 0.0f, 0.0f, 0.0f, 30.0f}, world, view);
+    CHECK(world[9] > 0.49f); // positive pitch looks up
+
+    // view is the inverse of world
+    camera::pose_matrices({5.0f, -2.0f, 7.5f, 37.0f, -12.0f}, world, view);
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            float sum = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                sum += view[k * 4 + row] * world[col * 4 + k];
+            }
+            CHECK(near_eq(sum, row == col ? 1.0f : 0.0f));
+        }
+    }
+}
+
+void test_parse_bridge() {
+    const auto request = camera::parse_bridge("controller=000001F2AB34CD50\r\npose=1.5 -2 3 90 -10\n");
+    CHECK(request.controller == 0x000001F2AB34CD50ull);
+    CHECK(request.pose && near_eq(request.pose->x, 1.5f) && near_eq(request.pose->yaw_deg, 90.0f) &&
+          near_eq(request.pose->pitch_deg, -10.0f));
+    CHECK(!request.pose_off);
+
+    const auto off = camera::parse_bridge("controller=0x10\npose=off\n");
+    CHECK(off.controller == 0x10u && off.pose_off && !off.pose);
+
+    const auto bad = camera::parse_bridge("pose=1 2 three 4 5\ncontroller=zz\n");
+    CHECK(!bad.pose && !bad.controller);
+}
+
 void test_config() {
     Config config;
     config.load_string("# top\n[Dev]\nConsole = yes\r\nlog_level=debug\n\n[scan]\nlimit = 0x20\nbad\n");
@@ -159,6 +205,8 @@ int main() {
     test_signature_lines();
     test_scan();
     test_inline_hook();
+    test_pose_matrices();
+    test_parse_bridge();
     test_config();
     if (g_failures == 0) {
         std::printf("all tests passed\n");

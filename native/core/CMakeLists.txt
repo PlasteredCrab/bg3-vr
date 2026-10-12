@@ -1,5 +1,6 @@
 # bg3vr_base: utilities shared by the core DLL and the unit tests.
 add_library(bg3vr_base STATIC
+    src/camera.cpp
     src/config.cpp
     src/hooks.cpp
     src/log.cpp

@@ -1,6 +1,7 @@
 // Core entry point. Phase 0: identify the game build, report graphics modules as they load,
 // and scan signatures.txt so reverse-engineering finds can be checked without recompiling.
 
+#include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
@@ -112,6 +113,8 @@ int init(const wchar_t* root_dir) {
     if (g_config.get_bool("scan", "signatures", true)) {
         scan_signatures(module);
     }
+
+    camera::start(g_config, module);
 
     if (HANDLE thread = CreateThread(nullptr, 0, watch_modules, nullptr, 0, nullptr)) {
         CloseHandle(thread);

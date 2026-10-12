@@ -8,6 +8,14 @@
 --                             mode: "view" writes the view matrices, "transform" writes
 --                             WorldTransform, "lookat" writes LookAt; "off" stops
 --
+-- Native camera hook (bg3vr_core), through the bridge file Script Extender\BG3VR\camera_bridge.txt:
+--   !vr_cam_set here [height] [yaw] [pitch]
+--                             hold the camera at the character's position + height (default 1.7),
+--                             facing its direction + yaw degrees, pitched up by pitch degrees
+--   !vr_cam_set <x> <y> <z> <yaw> <pitch>
+--                             hold the camera at an explicit pose (yaw 0 looks along +Z)
+--   !vr_cam_set off           release the camera
+--
 -- Matrices are glm mat4: 16 numbers, column-major (translation in elements 13..15).
 
 local function Fmt(v, count)
@@ -182,6 +190,53 @@ Ext.RegisterConsoleCommand("vr_cam_fov", Safely(function(_, degrees)
     controller.FOV = math.rad(value)
     controller.ProjectionDirty = true
     BG3VR.Log("fov %.1f -> %.1f deg (read back %.1f)", math.deg(before), value, math.deg(controller.FOV))
+end))
+
+local BRIDGE_FILE = "BG3VR/camera_bridge.txt"
+
+-- Object proxies print as "rf::CameraController (<hex address>)".
+local function ProxyAddress(proxy)
+    return string.match(tostring(proxy), "%((%x+)")
+end
+
+local function YawOf(q)
+    return math.deg(2 * math.atan(q[2], q[4]))
+end
+
+Ext.RegisterConsoleCommand("vr_cam_set", Safely(function(_, a, b, c, d, e)
+    local _, controller = ActiveCamera()
+    if not controller then
+        BG3VR.Warn("no active camera controller")
+        return
+    end
+    local address = ProxyAddress(controller)
+    if not address then
+        BG3VR.Warn("couldn't read the controller address from '%s'", tostring(controller))
+        return
+    end
+
+    local pose
+    if a == "off" then
+        pose = "off"
+    elseif a == "here" then
+        local t = _C().Transform.Transform
+        local p = t.Translate
+        local yaw = YawOf(t.RotationQuat) + (tonumber(c) or 0)
+        pose = string.format("%.4f %.4f %.4f %.2f %.2f", p[1], p[2] + (tonumber(b) or 1.7), p[3], yaw, tonumber(d) or 0)
+    elseif tonumber(a) and tonumber(b) and tonumber(c) then
+        pose = string.format("%.4f %.4f %.4f %.2f %.2f", tonumber(a), tonumber(b), tonumber(c), tonumber(d) or 0,
+            tonumber(e) or 0)
+    else
+        BG3VR.Warn("usage: !vr_cam_set here [height] [yaw] [pitch] | <x> <y> <z> [yaw] [pitch] | off")
+        return
+    end
+
+    local content = string.format("controller=%s\npose=%s\n", address, pose)
+    if Ext.IO.SaveFile(BRIDGE_FILE, content) then
+        BG3VR.Log("bridge: controller %s, pose %s (see bg3vr.log for the native side)", address, pose)
+    else
+        BG3VR.Warn("couldn't write %s", BRIDGE_FILE)
+    end
 end))
 
 Ext.RegisterConsoleCommand("vr_cam_follow", Safely(function(_, mode, height, yaw)
