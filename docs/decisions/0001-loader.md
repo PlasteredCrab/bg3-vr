@@ -29,7 +29,7 @@ Ship `version.dll`: it forwards all 17 exports to `System32\version.dll` through
 - [x] Both exes also import `DWrite.dll` directly, which is why the Script Extender uses that name. Ours does not collide.
 - [x] `dxgi.dll` is delay-loaded; `d3d11.dll` is a direct import of the DX11 build only. The Vulkan build imports no Vulkan DLL, so it loads `vulkan-1.dll` at runtime.
 - [x] Both exes use Control Flow Guard (guard flags 0x100). It doesn't affect the proxy's jump stubs; keep it in mind for hooks that redirect indirect calls.
-- [ ] Runtime: `bg3vr.log` appears after launching with the proxy deployed.
+- [x] Runtime: `bg3vr.log` appears after launching `bg3_dx11.exe`. The core initialises about 15 ms after start-up, by which point `dxgi.dll`, `d3d11.dll` and the Script Extender's `DWrite.dll` are already loaded. The proxy and the Script Extender coexist.
 - [ ] No other popular BG3 mod already ships a `version.dll`.
 
 Fallbacks if the runtime check fails: `dbghelp.dll` (also a direct import), then `winmm.dll` or `dinput8.dll`.
