@@ -17,6 +17,7 @@ namespace layout {
 inline constexpr std::size_t kFov = 0x14;            // float, vertical, radians
 inline constexpr std::size_t kNearPlane = 0x18;      // float
 inline constexpr std::size_t kAspectRatio = 0x20;    // float
+inline constexpr std::size_t kWorldTranslate = 0x34; // Transform at 0x24: quat (16 bytes), then vec3
 inline constexpr std::size_t kViewMatrix = 0x90;     // glm::mat4, column-major
 inline constexpr std::size_t kInvViewMatrix = 0xD0;  // glm::mat4, camera-to-world
 inline constexpr std::size_t kSize = 0x290;          // through FrustumPoints
@@ -40,11 +41,13 @@ struct BridgeRequest {
     std::optional<std::uintptr_t> controller;
     std::optional<Pose> pose; // empty = no override
     bool pose_off = false;
+    bool probe = false;       // count vtable calls and find who writes the matrices
 };
 
 // Parses the bridge file written by Client/CameraProbe.lua:
 //   controller=<hex address>
 //   pose=<x> <y> <z> <yaw> <pitch>   |   pose=off
+//   probe=1
 BridgeRequest parse_bridge(std::string_view content);
 
 // Starts the bridge watcher thread (Phase 0 camera experiment).

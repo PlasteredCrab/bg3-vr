@@ -7,6 +7,7 @@
 
 #include "bg3vr/log.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/watch.hpp"
 #include "bg3vr/win_util.hpp"
 
 #include <safetyhook.hpp>
@@ -147,6 +148,66 @@ bool attach(std::uintptr_t controller) {
     return true;
 }
 
+// "bg3_dx11+0x1234" for the game exe, "module.dll+0x1234" for others.
+std::string describe(std::uintptr_t address) {
+    if (address >= g_module.base && address < g_module.base + g_module.image_size) {
+        return std::format("exe+0x{:X}", address - g_module.base);
+    }
+    HMODULE module = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(address), &module)) {
+        wchar_t name[MAX_PATH];
+        const DWORD length = GetModuleFileNameW(module, name, MAX_PATH);
+        const std::wstring file = std::filesystem::path(std::wstring(name, length)).filename().wstring();
+        return std::format("{}+0x{:X}", to_utf8(file), address - reinterpret_cast<std::uintptr_t>(module));
+    }
+    return std::format("0x{:X}", address);
+}
+
+// Which vtable slots run, and which instructions write the camera's pose and matrices.
+void run_probe(std::uintptr_t controller) {
+    const auto vtable = read<std::uintptr_t>(controller);
+    std::vector<std::uintptr_t> slots(layout::kVtableSlots);
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        slots[i] = read<std::uintptr_t>(vtable + i * sizeof(void*));
+    }
+
+    log::info("probe: counting calls to {} vtable slots for 3 s", slots.size());
+    const auto counts = watch::count_calls(slots, std::chrono::milliseconds(3000));
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        if (counts[i] == UINT64_MAX) {
+            log::info("probe:   slot {:2} {} not hookable (too short or shared)", i, describe(slots[i]));
+        } else if (counts[i] > 0) {
+            log::info("probe:   slot {:2} {} called {} times", i, describe(slots[i]), counts[i]);
+        }
+    }
+
+    const std::array<std::uintptr_t, 3> watched = {
+        controller + layout::kWorldTranslate,
+        controller + layout::kViewMatrix + 12 * sizeof(float),
+        controller + layout::kInvViewMatrix + 12 * sizeof(float),
+    };
+    constexpr std::array<const char*, 3> kNames = {"WorldTransform.Translate", "ViewMatrix[12..13]",
+                                                   "InvViewMatrix[12..13]"};
+    log::info("probe: watching writes to the controller's pose and matrices for 2 s");
+    const auto hits = watch::watch_writes(watched, std::chrono::milliseconds(2000));
+    if (hits.empty()) {
+        log::info("probe:   no writes seen");
+    }
+    for (const auto& hit : hits) {
+        log::info("probe:   {} written at {} x{}", kNames[hit.watch_index], describe(hit.rip), hit.count);
+        std::string stack;
+        for (std::uintptr_t caller : hit.callers) {
+            if (caller == 0) {
+                break;
+            }
+            stack += "  <- " + describe(caller);
+        }
+        log::info("probe:     stack{}", stack);
+    }
+    log::info("probe: done");
+}
+
 std::filesystem::path default_bridge_path() {
     wchar_t buffer[MAX_PATH];
     const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, MAX_PATH);
@@ -198,6 +259,19 @@ DWORD WINAPI watch_bridge(void* param) {
             }
         }
 
+        if (request.probe) {
+            std::uintptr_t controller = 0;
+            {
+                std::scoped_lock lock(g_mutex);
+                controller = g_controller;
+            }
+            if (controller) {
+                run_probe(controller);
+            } else {
+                log::warn("probe: no validated controller to probe");
+            }
+        }
+
         const std::uint64_t calls = g_update_calls.load(std::memory_order_relaxed);
         log::info("camera: Update called {} times since the last bridge change", calls - last_reported_calls);
         last_reported_calls = calls;
@@ -242,6 +316,9 @@ BridgeRequest parse_bridge(std::string_view content) {
             if (const auto address = text::parse_int(std::string("0x") + std::string(hex))) {
                 request.controller = static_cast<std::uintptr_t>(*address);
             }
+        } else if (key == "probe") {
+            const std::string flag = text::to_lower(value);
+            request.probe = flag == "1" || flag == "true" || flag == "yes";
         } else if (key == "pose") {
             if (text::to_lower(value) == "off") {
                 request.pose_off = true;

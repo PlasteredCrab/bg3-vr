@@ -6,9 +6,14 @@
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/watch.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <span>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -140,6 +145,52 @@ void test_inline_hook() {
     CHECK(fn(2, 3) == 5);
 }
 
+alignas(8) volatile std::uint64_t g_watched_value = 0;
+
+__declspec(noinline) void write_watched(std::uint64_t value) {
+    g_watched_value = value;
+}
+
+__declspec(noinline) int counted_function(int x) {
+    return x * 3 + 1;
+}
+
+void test_watch_probes() {
+    std::atomic<bool> running{true};
+    std::thread worker([&] {
+        std::uint64_t i = 0;
+        int (*volatile fn)(int) = &counted_function;
+        while (running.load()) {
+            write_watched(++i);
+            fn(static_cast<int>(i));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20)); // let the worker start
+
+    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(&g_watched_value);
+    const auto hits = watch::watch_writes(std::span(&address, 1), std::chrono::milliseconds(300));
+    CHECK(!hits.empty());
+    if (!hits.empty()) {
+        CHECK(hits[0].watch_index == 0 && hits[0].count > 10);
+        // The instruction after the write sits inside write_watched (or its incremental-link body).
+        bool in_writer = false;
+        for (const auto& hit : hits) {
+            const auto start = reinterpret_cast<std::uintptr_t>(&write_watched);
+            in_writer = in_writer || (hit.rip > start - 0x100000 && hit.rip < start + 0x100000);
+        }
+        CHECK(in_writer);
+    }
+
+    const std::uintptr_t function = reinterpret_cast<std::uintptr_t>(&counted_function);
+    const auto counts = watch::count_calls(std::span(&function, 1), std::chrono::milliseconds(300));
+    CHECK(counts.size() == 1 && counts[0] != UINT64_MAX && counts[0] > 10);
+
+    running = false;
+    worker.join();
+    CHECK(counted_function(2) == 7); // still works after unhooking
+}
+
 bool near_eq(float a, float b) {
     return a - b < 1e-4f && b - a < 1e-4f;
 }
@@ -179,7 +230,8 @@ void test_parse_bridge() {
     CHECK(!request.pose_off);
 
     const auto off = camera::parse_bridge("controller=0x10\npose=off\n");
-    CHECK(off.controller == 0x10u && off.pose_off && !off.pose);
+    CHECK(off.controller == 0x10u && off.pose_off && !off.pose && !off.probe);
+    CHECK(camera::parse_bridge("probe=1\n").probe);
 
     const auto bad = camera::parse_bridge("pose=1 2 three 4 5\ncontroller=zz\n");
     CHECK(!bad.pose && !bad.controller);
@@ -207,6 +259,7 @@ int main() {
     test_inline_hook();
     test_pose_matrices();
     test_parse_bridge();
+    test_watch_probes();
     test_config();
     if (g_failures == 0) {
         std::printf("all tests passed\n");

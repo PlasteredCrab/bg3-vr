@@ -7,6 +7,7 @@ add_library(bg3vr_base STATIC
     src/module_info.cpp
     src/pattern.cpp
     src/signatures.cpp
+    src/watch.cpp
     src/win_util.cpp
 )
 target_include_directories(bg3vr_base PUBLIC include)

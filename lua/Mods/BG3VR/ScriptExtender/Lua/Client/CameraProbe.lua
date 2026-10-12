@@ -15,6 +15,7 @@
 --   !vr_cam_set <x> <y> <z> <yaw> <pitch>
 --                             hold the camera at an explicit pose (yaw 0 looks along +Z)
 --   !vr_cam_set off           release the camera
+--   !vr_cam_probe             count vtable calls and find what writes the camera (bg3vr.log)
 --
 -- Matrices are glm mat4: 16 numbers, column-major (translation in elements 13..15).
 
@@ -236,6 +237,20 @@ Ext.RegisterConsoleCommand("vr_cam_set", Safely(function(_, a, b, c, d, e)
         BG3VR.Log("bridge: controller %s, pose %s (see bg3vr.log for the native side)", address, pose)
     else
         BG3VR.Warn("couldn't write %s", BRIDGE_FILE)
+    end
+end))
+
+-- Asks the core to count calls on the controller's vtable slots (3 s) and record which
+-- instructions write its pose and matrices (2 s). Results go to bg3vr.log.
+Ext.RegisterConsoleCommand("vr_cam_probe", Safely(function()
+    local _, controller = ActiveCamera()
+    local address = controller and ProxyAddress(controller)
+    if not address then
+        BG3VR.Warn("no active camera controller")
+        return
+    end
+    if Ext.IO.SaveFile(BRIDGE_FILE, string.format("controller=%s\npose=off\nprobe=1\n", address)) then
+        BG3VR.Log("probe requested for controller %s; results in bg3vr.log in about 6 s", address)
     end
 end))
 
