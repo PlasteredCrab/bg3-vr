@@ -21,6 +21,8 @@ param(
     [switch]$SkipLua,
     [switch]$InstallScriptExtender,
     [string]$ScriptExtenderDll = (Join-Path (Split-Path -Parent $PSScriptRoot) "downloads\bg3se-v32\extracted\DWrite.dll"),
+    # Where the Script Extender keeps its downloaded payload and logs (its default is %LOCALAPPDATA% on C:).
+    [string]$ScriptExtenderDataDir = "E:\Modding\BG3ScriptExtender",
     [switch]$Force
 )
 
@@ -53,6 +55,31 @@ if ($InstallScriptExtender -and -not $Uninstall) {
     }
     Copy-Item $ScriptExtenderDll $seTarget -Force
     Write-Host "installed Script Extender updater to $seTarget (it downloads the extender itself on first launch)"
+
+    # Both files are read from the game's bin folder. Written once; later edits are kept.
+    $seCache = Join-Path $ScriptExtenderDataDir "Cache"
+    $seLogs = Join-Path $ScriptExtenderDataDir "Logs"
+    New-Item -ItemType Directory -Force $seCache, $seLogs | Out-Null
+    $seConfigs = [ordered]@{
+        "ScriptExtenderUpdaterConfig.json" = [ordered]@{ CachePath = $seCache }
+        "ScriptExtenderSettings.json"      = [ordered]@{
+            CreateConsole    = $true
+            DeveloperMode    = $true
+            EnableLogging    = $true
+            LogDirectory     = $seLogs
+            SendCrashReports = $false
+        }
+    }
+    foreach ($name in $seConfigs.Keys) {
+        $path = Join-Path $gameBin $name
+        if (Test-Path $path) {
+            Write-Host "kept existing $path"
+        } else {
+            # No BOM, and works on Windows PowerShell 5.1 as well as 7.
+            [IO.File]::WriteAllText($path, ($seConfigs[$name] | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+            Write-Host "created $path"
+        }
+    }
 }
 
 if ($Uninstall) {

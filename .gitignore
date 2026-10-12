@@ -23,3 +23,6 @@ CMakeUserPresets.json
 *.dll
 *.exe
 *.pdb
+
+# Local scratch files (keep all temp work on E:)
+/scratch/
