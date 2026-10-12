@@ -41,8 +41,8 @@ local function Dump()
             BG3VR.Log("    fov=%.4f rad (%.1f deg) near=%.3f far=%.1f aspect=%.3f offcenter=%s dirty=%s/%s", c.FOV,
                 math.deg(c.FOV), c.NearPlane, c.FarPlane, c.AspectRatio, tostring(c.OffCenter), tostring(c.ViewDirty),
                 tostring(c.ProjectionDirty))
-            BG3VR.Log("    camera pos=%s forward(-Z)=%s up=%s", Fmt({ inv[13], inv[14], inv[15] }),
-                Fmt({ -inv[9], -inv[10], -inv[11] }), Fmt({ inv[5], inv[6], inv[7] }))
+            BG3VR.Log("    camera pos=%s forward(+Z)=%s up=%s", Fmt({ inv[13], inv[14], inv[15] }),
+                Fmt({ inv[9], inv[10], inv[11] }), Fmt({ inv[5], inv[6], inv[7] }))
             BG3VR.Log("    WorldTransform pos=%s rot=%s  LookAt=%s", Fmt(c.WorldTransform.Translate),
                 Fmt(c.WorldTransform.RotationQuat), Fmt(c.LookAt))
             local proj = c.Camera.ProjectionMatrix
@@ -95,18 +95,23 @@ local function PoseMatrices(p, q)
     return world, view
 end
 
-local follow = { handle = nil, mode = "view", height = 1.7, yaw = 0.0, ticks = 0, controller = nil, character = nil }
+local follow = { handle = nil, mode = "view", height = 1.7, yaw = 0.0, ticks = 0, camera = nil, character = nil }
 
 local function FollowTick()
-    -- Re-resolve once a second; searching all entities every tick costs milliseconds.
-    if follow.ticks % 60 == 0 or not follow.controller or not follow.character then
-        local _, controller = ActiveCamera()
-        follow.controller = controller
+    -- Entity handles survive across ticks; component and controller proxies expire at the end of
+    -- the tick that produced them. So cache the entities (searching all entities costs
+    -- milliseconds) and re-read the controller every tick.
+    if follow.ticks % 60 == 0 or not follow.camera or not follow.character then
+        follow.camera = ActiveCamera()
         follow.character = _C()
     end
     follow.ticks = follow.ticks + 1
-    local controller, character = follow.controller, follow.character
-    if not controller or not character then
+    if not follow.camera or not follow.character then
+        return
+    end
+    local controller = follow.camera.Camera.Controller
+    local character = follow.character
+    if not controller then
         return
     end
 
@@ -124,8 +129,9 @@ local function FollowTick()
         controller.WorldTransform.RotationQuat = rot
         controller.ViewDirty = true
     elseif follow.mode == "lookat" then
+        -- The camera looks along its +Z axis.
         local world = PoseMatrices(eye, rot)
-        controller.LookAt = { eye[1] - world[9], eye[2] - world[10], eye[3] - world[11] }
+        controller.LookAt = { eye[1] + world[9], eye[2] + world[10], eye[3] + world[11] }
     end
 end
 
@@ -143,7 +149,7 @@ local function StartFollow(mode, height, yaw)
     follow.height = tonumber(height) or follow.height
     follow.yaw = tonumber(yaw) or follow.yaw
     follow.ticks = 0
-    follow.controller, follow.character = nil, nil
+    follow.camera, follow.character = nil, nil
     follow.handle = Ext.Events.Tick:Subscribe(function()
         local ok, err = pcall(FollowTick)
         if not ok then

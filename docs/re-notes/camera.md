@@ -9,6 +9,16 @@ Goal for Phase 0: find the structure that holds the gameplay camera's transform 
 - Scale `(1, 1, 1)` for a human. Units are probably metres; confirm by walking a known distance.
 - OpenXR is also Y-up and right-handed. Check BG3's handedness (sign of Z when walking "forward") before mapping poses.
 
+## Gameplay camera, measured (`!vr_cam`, 2026-10-12)
+
+- The active gameplay camera (`MasterBehaviorType` 8, component `ecl::EocCameraBehavior`) **looks along its +Z axis**. Camera at `(60.342, 27.073, -429.755)`; +Z column of `InvViewMatrix` `(-0.646, -0.652, 0.396)` points about 12 units to the orbit pivot.
+- `WorldTransform` on this controller is the **orbit pivot**, not the eye: `(52.586, 19.346, -425.002)`, yaw-only rotation; `LookAt` is the pivot 0.1 lower.
+- **Projection is reversed-Z with an infinite far plane.** Column-major elements: `[1]=1.201 [6]=1.921 [11]=0 [12]=1 [15]=0.1` gives `z_clip = near`, `w_clip = z_view` (left-handed, +Z forward). `FarPlane` reads 10000 but isn't used in the matrix.
+- **FOV is vertical, in radians:** 0.9599 (55°); `1.921 = 1/tan(27.5°)`; `1.201 = 1.921 / aspect 1.6`.
+- Writing `FOV` sticks for a moment, but the game eases it back to its own target (read 54.0 a few seconds after setting 30): per-frame state is owned by the camera update.
+- Script Extender proxies (`Controller`, components) expire at the end of the tick that fetched them; keep `EntityHandle`s across ticks and re-read proxies.
+- The second camera entity (behavior 3, only `ls::SoundCameraComponent`) is an inactive sound camera at the origin.
+
 ## What the Script Extender already maps (source at commit af85fd2, read 2026-10-12)
 
 Files: `BG3Extender/GameDefinitions/Components/Camera.h`, `GameDefinitions/RenderFramework.h`, `Extender/Client/IMGUI/DX11.inl` in [Norbyte/bg3se](https://github.com/Norbyte/bg3se). Licence: MIT with the Commons Clause (no selling; a free fork is allowed).
