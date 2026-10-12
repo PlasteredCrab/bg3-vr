@@ -1,0 +1,19 @@
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoA=GetFileVersionInfoA_stub
+    GetFileVersionInfoByHandle=GetFileVersionInfoByHandle_stub
+    GetFileVersionInfoExA=GetFileVersionInfoExA_stub
+    GetFileVersionInfoExW=GetFileVersionInfoExW_stub
+    GetFileVersionInfoSizeA=GetFileVersionInfoSizeA_stub
+    GetFileVersionInfoSizeExA=GetFileVersionInfoSizeExA_stub
+    GetFileVersionInfoSizeExW=GetFileVersionInfoSizeExW_stub
+    GetFileVersionInfoSizeW=GetFileVersionInfoSizeW_stub
+    GetFileVersionInfoW=GetFileVersionInfoW_stub
+    VerFindFileA=VerFindFileA_stub
+    VerFindFileW=VerFindFileW_stub
+    VerInstallFileA=VerInstallFileA_stub
+    VerInstallFileW=VerInstallFileW_stub
+    VerLanguageNameA=VerLanguageNameA_stub
+    VerLanguageNameW=VerLanguageNameW_stub
+    VerQueryValueA=VerQueryValueA_stub
+    VerQueryValueW=VerQueryValueW_stub

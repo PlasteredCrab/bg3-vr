@@ -1,0 +1,11 @@
+# Signatures scanned at startup. Results go to bg3vr.log and the core's signature registry.
+# tools/deploy.ps1 copies this to <game>\bin\bg3vr\signatures.txt on first deploy only.
+#
+# Format:   name = <IDA-style bytes, ?? = wildcard> [| offset <n>] [| rip <disp_offset> <instr_len>]
+#   offset  moves from the match start (applied first; decimal or 0x hex, may be negative)
+#   rip     reads a RIP-relative disp32 at +disp_offset and resolves it against instr_len
+#
+# A signature must match exactly once to be published. Record every confirmed one in docs/offsets.md.
+#
+# Example only, not a real BG3 signature:
+# camera_singleton = 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? | rip 3 7

@@ -1,0 +1,22 @@
+# Build output
+/build/
+/out/
+.vs/
+*.user
+CMakeUserPresets.json
+
+# Local reverse-engineering databases and captures (large, and derived from game binaries)
+/re-local/
+*.i64
+*.idb
+*.gzf
+*.rep
+*.rdc
+*.nsight-gfxproj
+*.CT
+
+# Packaged mods and game files: never commit game assets
+*.pak
+*.dll
+*.exe
+*.pdb

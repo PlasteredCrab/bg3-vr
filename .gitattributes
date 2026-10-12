@@ -1,0 +1,10 @@
+* text=auto
+
+*.ps1 text eol=crlf
+*.asm text eol=crlf
+*.def text eol=crlf
+*.rc  text eol=crlf
+
+*.pak binary
+*.rdc binary
+*.png binary
