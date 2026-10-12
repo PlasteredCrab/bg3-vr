@@ -1,0 +1,2 @@
+add_executable(bg3vr_disasm disasm.cpp)
+target_link_libraries(bg3vr_disasm PRIVATE bg3vr_base safetyhook bg3vr_warnings)

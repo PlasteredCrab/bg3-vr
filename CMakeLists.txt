@@ -34,6 +34,7 @@ option(BG3VR_BUILD_TESTS "Build native unit tests" ON)
 
 add_subdirectory(third_party/safetyhook)
 add_subdirectory(native)
+add_subdirectory(tools/disasm)
 
 if(BG3VR_BUILD_TESTS)
     enable_testing()

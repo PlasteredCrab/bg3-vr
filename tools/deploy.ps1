@@ -5,7 +5,8 @@
 .DESCRIPTION
     Native:  build\vs2026\bin\<Config>\version.dll       -> <game>\bin\version.dll
              build\vs2026\bin\<Config>\bg3vr_core.dll    -> <game>\bin\bg3vr\bg3vr_core.dll (+ .pdb)
-             config\bg3vr.ini, config\signatures.txt     -> <game>\bin\bg3vr\  (first deploy only)
+             config\bg3vr.ini                            -> <game>\bin\bg3vr\  (first deploy only)
+             config\signatures.txt                       -> <game>\bin\bg3vr\  (every deploy)
     Lua:     lua\Mods\BG3VR\ScriptExtender               -> <game>\Data\Mods\BG3VR\ScriptExtender  (loose override;
              the module itself ships as BG3VR.pak via tools/pack-lua.ps1)
     SE:      with -InstallScriptExtender, the verified DWrite.dll from downloads\ -> <game>\bin\DWrite.dll
@@ -149,13 +150,14 @@ foreach ($pdb in "bg3vr_core.pdb", "version.pdb") {
 }
 Write-Host "deployed native ($Config) to $gameBin"
 
-foreach ($name in "bg3vr.ini", "signatures.txt") {
-    $target = Join-Path $vrDir $name
-    if (-not (Test-Path $target)) {
-        Copy-Item (Join-Path $repo "config\$name") $target
-        Write-Host "created $target"
-    }
+# bg3vr.ini is the user's to edit (first deploy only); signatures.txt tracks the repo every time.
+$iniTarget = Join-Path $vrDir "bg3vr.ini"
+if (-not (Test-Path $iniTarget)) {
+    Copy-Item (Join-Path $repo "config\bg3vr.ini") $iniTarget
+    Write-Host "created $iniTarget"
 }
+Copy-Item (Join-Path $repo "config\signatures.txt") (Join-Path $vrDir "signatures.txt") -Force
+Write-Host "updated $(Join-Path $vrDir 'signatures.txt')"
 
 if (-not $SkipLua) {
     Publish-Lua

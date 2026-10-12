@@ -19,6 +19,13 @@ Goal for Phase 0: find the structure that holds the gameplay camera's transform 
 - Script Extender proxies (`Controller`, components) expire at the end of the tick that fetched them; keep `EntityHandle`s across ticks and re-read proxies.
 - The second camera entity (behavior 3, only `ls::SoundCameraComponent`) is an inactive sound camera at the origin.
 
+## Where the view is set (`!vr_cam_probe`, 2026-10-12)
+
+- Writing pose fields from Lua's `Tick` has no visible effect: the camera update recomputes them before rendering.
+- Vtable slot 5 (`Update` per the Script Extender) is never called for the gameplay camera. In 3 s, slot 9 (`GetWorldTranslate`) ran 43,953 times, slots 11 and 13 (shared function) 7,417 times; slots 3, 16, 19 and 23 also ran.
+- A hardware write watch on the view and inverse-view translation caught exactly one writer per frame: the matrix setter 0x408BD60, called from the controller view update 0x4085150 at 0x40851CA. See [../offsets.md](../offsets.md).
+- **Hook:** a mid-hook on that call replaces the view matrix in `rdx` before the setter runs, so the inverse, the frustum and culling are rebuilt from our pose by the game itself.
+
 ## What the Script Extender already maps (source at commit af85fd2, read 2026-10-12)
 
 Files: `BG3Extender/GameDefinitions/Components/Camera.h`, `GameDefinitions/RenderFramework.h`, `Extender/Client/IMGUI/DX11.inl` in [Norbyte/bg3se](https://github.com/Norbyte/bg3se). Licence: MIT with the Commons Clause (no selling; a free fork is allowed).

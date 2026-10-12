@@ -1,11 +1,14 @@
-// Phase 0 camera experiment: Lua reports the active rf::CameraController's address through a
-// bridge file; we check it against the Script Extender's layout, inline-hook its Update, and after
-// each update overwrite the view matrices with a requested pose. Inline (not vtable) hooking
-// because the game is built with Control Flow Guard.
+// Phase 0 camera experiment. The controller's view update (exe 4.1.1.7631656: function 0x4085150)
+// builds a view matrix on the stack and passes it to the matrix setter (0x408BD60), which stores it
+// at controller+0x90, computes the inverse, and is followed by the frustum rebuild. A mid-hook on
+// that call (signature camera_set_view_call) swaps in our view matrix, so the inverse, frustum and
+// culling all follow the requested pose. Lua reports which controller to drive (and the pose)
+// through a bridge file; other cameras pass through untouched.
 
 #include "bg3vr/camera.hpp"
 
 #include "bg3vr/log.hpp"
+#include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/watch.hpp"
 #include "bg3vr/win_util.hpp"
@@ -43,14 +46,14 @@ Vec3 normalize(const Vec3& v) {
     return {v.x / length, v.y / length, v.z / length};
 }
 
-// State shared between the watcher thread and the game's update thread.
+// State shared between the watcher thread and the game's camera update.
 std::mutex g_mutex;
 std::uintptr_t g_controller = 0;
 std::optional<Pose> g_pose;
-std::atomic<std::uint64_t> g_update_calls{0};
+std::atomic<std::uint64_t> g_view_calls{0};
+std::atomic<std::uint64_t> g_view_overrides{0};
 
-safetyhook::InlineHook g_update_hook;
-std::uintptr_t g_hooked_function = 0;
+safetyhook::MidHook g_set_view_hook;
 
 ModuleInfo g_module;
 
@@ -78,30 +81,40 @@ T read(std::uintptr_t address) {
     return value;
 }
 
-void write_matrix(std::uintptr_t address, const Mat4& m) {
-    std::memcpy(reinterpret_cast<void*>(address), m.data(), sizeof(float) * 16);
-}
-
-void update_detour(void* self, const void* game_time) {
-    g_update_hook.call<void>(self, game_time);
-    g_update_calls.fetch_add(1, std::memory_order_relaxed);
-
+// At the call to the matrix setter: rbx = controller, rdx = the freshly built view matrix.
+void on_set_view(safetyhook::Context& ctx) {
+    g_view_calls.fetch_add(1, std::memory_order_relaxed);
     Pose pose;
     {
         std::scoped_lock lock(g_mutex);
-        if (!g_pose || reinterpret_cast<std::uintptr_t>(self) != g_controller) {
+        if (!g_pose || ctx.rbx != g_controller) {
             return;
         }
         pose = *g_pose;
     }
     Mat4 world, view;
     pose_matrices(pose, world, view);
-    const auto base = reinterpret_cast<std::uintptr_t>(self);
-    write_matrix(base + layout::kViewMatrix, view);
-    write_matrix(base + layout::kInvViewMatrix, world);
+    std::memcpy(reinterpret_cast<void*>(ctx.rdx), view.data(), sizeof(view));
+    g_view_overrides.fetch_add(1, std::memory_order_relaxed);
 }
 
-// Checks that `controller` looks like an rf::CameraController and hooks its class's Update.
+void install_view_hook() {
+    const auto site = sig::lookup("camera_set_view_call");
+    if (!site) {
+        log::error("camera: signature camera_set_view_call not resolved; pose override unavailable");
+        return;
+    }
+    auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), &on_set_view);
+    if (!hook) {
+        log::error("camera: mid-hook at exe+0x{:X} failed (error type {})", *site - g_module.base,
+                   static_cast<int>(hook.error().type));
+        return;
+    }
+    g_set_view_hook = std::move(*hook);
+    log::info("camera: view hook installed at exe+0x{:X}", *site - g_module.base);
+}
+
+// Checks that `controller` looks like an rf::CameraController before we act on it.
 bool attach(std::uintptr_t controller) {
     if (!readable(controller, layout::kSize)) {
         log::warn("camera: 0x{:X} is not readable memory", controller);
@@ -128,22 +141,8 @@ bool attach(std::uintptr_t controller) {
               fov * 180.0f / std::numbers::pi_v<float>, near_plane, aspect, inv_view[12], inv_view[13], inv_view[14]);
 
     if (!(fov > 0.1f && fov < 3.2f) || !(near_plane > 0.0f && near_plane < 10.0f) || !(aspect > 0.5f && aspect < 5.0f)) {
-        log::warn("camera: field values don't match the expected layout; not hooking");
+        log::warn("camera: field values don't match the expected layout; ignoring this controller");
         return false;
-    }
-
-    if (g_hooked_function != update) {
-        g_update_hook = {};
-        auto hook = safetyhook::InlineHook::create(reinterpret_cast<void*>(update), reinterpret_cast<void*>(&update_detour));
-        if (!hook) {
-            log::error("camera: hooking Update at rva 0x{:X} failed (error type {})", update - g_module.base,
-                       static_cast<int>(hook.error().type));
-            g_hooked_function = 0;
-            return false;
-        }
-        g_update_hook = std::move(*hook);
-        g_hooked_function = update;
-        log::info("camera: hooked Update at rva 0x{:X}", update - g_module.base);
     }
     return true;
 }
@@ -272,8 +271,9 @@ DWORD WINAPI watch_bridge(void* param) {
             }
         }
 
-        const std::uint64_t calls = g_update_calls.load(std::memory_order_relaxed);
-        log::info("camera: Update called {} times since the last bridge change", calls - last_reported_calls);
+        const std::uint64_t calls = g_view_calls.load(std::memory_order_relaxed);
+        log::info("camera: view set {} times since the last bridge change ({} overridden in total)",
+                  calls - last_reported_calls, g_view_overrides.load(std::memory_order_relaxed));
         last_reported_calls = calls;
     }
 }
@@ -350,6 +350,7 @@ void start(const Config& config, const ModuleInfo& module) {
         return;
     }
     g_module = module;
+    install_view_hook();
     const std::string configured = config.get("camera", "bridge_file");
     auto* path = new std::filesystem::path(configured.empty() ? default_bridge_path()
                                                               : std::filesystem::path(configured));

@@ -1,5 +1,6 @@
 # Signatures scanned at startup. Results go to bg3vr.log and the core's signature registry.
-# tools/deploy.ps1 copies this to <game>\bin\bg3vr\signatures.txt on first deploy only.
+# This file is the source of truth: tools/deploy.ps1 copies it to <game>\bin\bg3vr\ on every deploy.
+# Generate new ones with: bg3vr_disasm <exe> --sig <rva>
 #
 # Format:   name = <IDA-style bytes, ?? = wildcard> [| offset <n>] [| rip <disp_offset> <instr_len>]
 #   offset  moves from the match start (applied first; decimal or 0x hex, may be negative)
@@ -7,5 +8,7 @@
 #
 # A signature must match exactly once to be published. Record every confirmed one in docs/offsets.md.
 #
-# Example only, not a real BG3 signature:
-# camera_singleton = 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? | rip 3 7
+# Camera controller view update (fn 0x4085150 in 4.1.1.7631656): the call that stores the freshly
+# built view matrix (rdx) into controller+0x90 (rcx = rbx + 0x90). The camera hook lives here.
+#   lea rcx,[rbx+90h] ; lea rdx,[rsp+60h] ; call SetViewMatrix ; mov rcx,rbx ; mov byte [rbx+10h],0 (ViewDirty)
+camera_set_view_call = 48 8D 8B 90 00 00 00 48 8D 54 24 60 E8 ?? ?? ?? ?? 48 8B CB C6 43 10 00 | offset 12
