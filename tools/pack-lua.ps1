@@ -75,6 +75,13 @@ $writerSettings = [Xml.XmlWriterSettings]::new()
 $writerSettings.Indent = $true
 $writerSettings.IndentChars = "    "
 $writerSettings.Encoding = [Text.UTF8Encoding]::new($false)
-$writer = [Xml.XmlWriter]::Create($modSettings, $writerSettings)
-try { $settings.Save($writer) } finally { $writer.Dispose() }
-Write-Host "added BG3VR to $modSettings"
+
+# Write to a temp file and swap it in only once it parses, so a failure never truncates the
+# real file. PSBase: PowerShell exposes the <save> root element as a property that hides Save().
+$temp = "$modSettings.tmp"
+$writer = [Xml.XmlWriter]::Create($temp, $writerSettings)
+try { $settings.PSBase.Save($writer) } finally { $writer.Dispose() }
+[void][xml](Get-Content -LiteralPath $temp -Raw)
+Copy-Item -LiteralPath $modSettings -Destination "$modSettings.bak" -Force
+Move-Item -LiteralPath $temp -Destination $modSettings -Force
+Write-Host "added BG3VR to $modSettings (previous version in modsettings.lsx.bak)"
