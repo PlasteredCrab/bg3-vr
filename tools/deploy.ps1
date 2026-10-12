@@ -70,13 +70,22 @@ if ($InstallScriptExtender -and -not $Uninstall) {
             SendCrashReports = $false
         }
     }
-    foreach ($name in $seConfigs.Keys) {
-        $path = Join-Path $gameBin $name
+    # The updater resolves its config next to the exe. The extender opens ScriptExtenderSettings.json
+    # relative to the working directory, which is Launcher\ when the Larian launcher starts the game
+    # ("..\bin\bg3_dx11.exe") and bin\ when the exe is run directly, so it goes in both.
+    $seTargets = @(
+        @{ Name = "ScriptExtenderUpdaterConfig.json"; Dir = $gameBin },
+        @{ Name = "ScriptExtenderSettings.json"; Dir = $gameBin },
+        @{ Name = "ScriptExtenderSettings.json"; Dir = (Join-Path $GameDir "Launcher") }
+    )
+    foreach ($t in $seTargets) {
+        if (-not (Test-Path $t.Dir)) { continue }
+        $path = Join-Path $t.Dir $t.Name
         if (Test-Path $path) {
             Write-Host "kept existing $path"
         } else {
             # No BOM, and works on Windows PowerShell 5.1 as well as 7.
-            [IO.File]::WriteAllText($path, ($seConfigs[$name] | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($path, ($seConfigs[$t.Name] | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
             Write-Host "created $path"
         }
     }

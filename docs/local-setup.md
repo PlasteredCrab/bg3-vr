@@ -27,3 +27,9 @@ To undo, with the game closed:
 
 - `%LOCALAPPDATA%\Larian Studios\Launcher`: the Larian Launcher's cache and logs. Launching with `--skip-launcher` stops new writes.
 - Steam and Windows themselves.
+
+## Script Extender settings location
+
+The extender reads `ScriptExtenderSettings.json` relative to the working directory: `Launcher\` when the Larian launcher starts the game (`..\bin\bg3_dx11.exe`), `bin\` when the exe is run directly. `tools/deploy.ps1` writes it to both. The updater config is always read from `bin\`.
+
+Loose-file mods under `Data\Mods` are dropped from `modsettings.lsx` at startup (seen 2026-10-12); the Lua mod has to ship as a `.pak`.
