@@ -40,9 +40,10 @@ Phase 0 answers the design doc's first spike: can we control the render camera's
 6. [x] Get the Lua mod loading. It ships as `BG3VR.pak` in the profile's `Mods` folder (on E: via the junction, see [local-setup.md](local-setup.md)), enabled in the in-game Mod Manager. `!vr_probe` in the server console prints the host character's transform (first run 2026-10-12).
     - [ ] Still to confirm: loose Lua under `Data\Mods\BG3VR\ScriptExtender` overrides the packed copy (fast edit loop): confirm loose files under `Data\Mods\BG3VR` work, or pack a `.pak`; then run `!vr_probe`.
 7. [ ] Capture a DX11 frame in RenderDoc. Map the scene pass, the camera constant buffer (view and projection), the post-FX passes and the UI pass in [re-notes/renderer.md](re-notes/renderer.md).
-8. [ ] Find the camera: watch its position change while panning (Cheat Engine or x64dbg), find what writes it, and write a signature into `signatures.txt` until the log reports one unique hit. Notes in [re-notes/camera.md](re-notes/camera.md).
-9. [ ] Read the Script Extender source for existing camera and render bindings; this feeds the fork-or-separate decision.
-10. [ ] Hook the camera update with `hooks::install`, and override its pose from `bg3vr.ini`. **This is the exit gate.**
+8. [x] Found via the Script Extender's layout plus in-game probes instead of manual debugging (see [re-notes/camera.md](re-notes/camera.md)). Original plan: Find the camera: watch its position change while panning (Cheat Engine or x64dbg), find what writes it, and write a signature into `signatures.txt` until the log reports one unique hit. Notes in [re-notes/camera.md](re-notes/camera.md).
+9. [x] Read the Script Extender source for existing camera and render bindings; this feeds the fork-or-separate decision.
+10. [x] **Exit gate met 2026-10-12.** `!vr_cam_set` moves the gameplay camera to any pose: a mid-hook on the view setter call (`camera_set_view_call`) swaps in our view matrix. Pitch sign confirmed (negative looks down); characters face their rotation's −Z, so `here` adds 180°.
+    - Known gaps, carried into Phase 1: the game's orbit camera keeps running underneath, so mouse drag and scroll still change things, and **world lighting changes when the orbit camera moves**. Some systems (shadows, light clustering, fog or roof fading are suspects) follow the orbit camera, not our matrix. More than one controller passes through the setter each frame; the core now logs each one. **This is the exit gate.**
 
 ## Decisions this phase must make
 

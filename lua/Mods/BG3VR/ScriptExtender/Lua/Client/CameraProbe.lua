@@ -11,7 +11,9 @@
 -- Native camera hook (bg3vr_core), through the bridge file Script Extender\BG3VR\camera_bridge.txt:
 --   !vr_cam_set here [height] [yaw] [pitch]
 --                             hold the camera at the character's position + height (default 1.7),
---                             facing its direction + yaw degrees, pitched up by pitch degrees
+--                             facing where the character faces + yaw degrees, pitched up by pitch
+--                             degrees (-90..90)
+--   !vr_cam_calib             run, walk forward, run again: measures the character facing offset
 --   !vr_cam_set <x> <y> <z> <yaw> <pitch>
 --                             hold the camera at an explicit pose (yaw 0 looks along +Z)
 --   !vr_cam_set off           release the camera
@@ -220,9 +222,11 @@ Ext.RegisterConsoleCommand("vr_cam_set", Safely(function(_, a, b, c, d, e)
     if a == "off" then
         pose = "off"
     elseif a == "here" then
+        -- A character faces along its rotation's -Z (seen 2026-10-12: yaw + 180 looks where the
+        -- character looks), so the extra yaw is relative to that facing.
         local t = _C().Transform.Transform
         local p = t.Translate
-        local yaw = YawOf(t.RotationQuat) + (tonumber(c) or 0)
+        local yaw = YawOf(t.RotationQuat) + 180 + (tonumber(c) or 0)
         pose = string.format("%.4f %.4f %.4f %.2f %.2f", p[1], p[2] + (tonumber(b) or 1.7), p[3], yaw, tonumber(d) or 0)
     elseif tonumber(a) and tonumber(b) and tonumber(c) then
         pose = string.format("%.4f %.4f %.4f %.2f %.2f", tonumber(a), tonumber(b), tonumber(c), tonumber(d) or 0,
@@ -238,6 +242,29 @@ Ext.RegisterConsoleCommand("vr_cam_set", Safely(function(_, a, b, c, d, e)
     else
         BG3VR.Warn("couldn't write %s", BRIDGE_FILE)
     end
+end))
+
+-- Facing calibration: run once, walk straight forward a few metres, run again. Compares the
+-- direction actually travelled with the character's rotation.
+local calibration = nil
+Ext.RegisterConsoleCommand("vr_cam_calib", Safely(function()
+    local t = _C().Transform.Transform
+    local p = t.Translate
+    if not calibration then
+        calibration = { p[1], p[2], p[3] }
+        BG3VR.Log("calibration start at %s; now walk straight forward and run !vr_cam_calib again", Fmt(p))
+        return
+    end
+    local dx, dz = p[1] - calibration[1], p[3] - calibration[3]
+    calibration = nil
+    if math.sqrt(dx * dx + dz * dz) < 1.0 then
+        BG3VR.Warn("moved less than 1 m; try again")
+        return
+    end
+    local travelled = math.deg(math.atan(dx, dz)) -- same convention as the pose yaw: 0 = +Z
+    local rotation = YawOf(t.RotationQuat)
+    local offset = (travelled - rotation + 540) % 360 - 180
+    BG3VR.Log("travelled yaw %.1f, rotation yaw %.1f, facing offset %.1f deg (expect ~180)", travelled, rotation, offset)
 end))
 
 -- Asks the core to count calls on the controller's vtable slots (3 s) and record which

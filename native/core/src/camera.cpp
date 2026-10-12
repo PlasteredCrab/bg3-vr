@@ -81,9 +81,33 @@ T read(std::uintptr_t address) {
     return value;
 }
 
+// Every controller that passes through the view setter, with call counts (fixed table, no locks).
+constexpr std::size_t kTrackedControllers = 16;
+std::array<std::atomic<std::uintptr_t>, kTrackedControllers> g_seen_controllers{};
+std::array<std::atomic<std::uint64_t>, kTrackedControllers> g_seen_counts{};
+
+void track_controller(std::uintptr_t controller) {
+    for (std::size_t i = 0; i < kTrackedControllers; ++i) {
+        std::uintptr_t current = g_seen_controllers[i].load(std::memory_order_acquire);
+        if (current == 0) {
+            std::uintptr_t expected = 0;
+            if (g_seen_controllers[i].compare_exchange_strong(expected, controller)) {
+                current = controller;
+            } else {
+                current = expected;
+            }
+        }
+        if (current == controller) {
+            g_seen_counts[i].fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+
 // At the call to the matrix setter: rbx = controller, rdx = the freshly built view matrix.
 void on_set_view(safetyhook::Context& ctx) {
     g_view_calls.fetch_add(1, std::memory_order_relaxed);
+    track_controller(ctx.rbx);
     Pose pose;
     {
         std::scoped_lock lock(g_mutex);
@@ -275,6 +299,19 @@ DWORD WINAPI watch_bridge(void* param) {
         log::info("camera: view set {} times since the last bridge change ({} overridden in total)",
                   calls - last_reported_calls, g_view_overrides.load(std::memory_order_relaxed));
         last_reported_calls = calls;
+        for (std::size_t i = 0; i < kTrackedControllers; ++i) {
+            const std::uintptr_t seen = g_seen_controllers[i].load(std::memory_order_acquire);
+            if (seen == 0) {
+                break;
+            }
+            std::uintptr_t vtable = 0;
+            if (readable(seen, sizeof(void*))) {
+                vtable = read<std::uintptr_t>(seen);
+            }
+            log::info("camera:   controller 0x{:X} vtable {} views set {}{}", seen,
+                      vtable ? describe(vtable) : std::string("?"), g_seen_counts[i].load(std::memory_order_relaxed),
+                      seen == g_controller ? "  <- driven" : "");
+        }
     }
 }
 
