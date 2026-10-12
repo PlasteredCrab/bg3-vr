@@ -35,3 +35,10 @@ The extender reads `ScriptExtenderSettings.json` relative to the working directo
 Loose-file mods under `Data\Mods` are dropped from `modsettings.lsx` at startup (seen 2026-10-12); the Lua mod has to ship as a `.pak`.
 
 The mod's `meta.lsx` must follow the game's current module schema (format 4.8.0.500; compare `Mods/PhotoMode/meta.lsx` in `Data\GustavX.pak`). The first version used the old 4.0.9 schema (`Name` as `FixedString`, `LSWString` fields, `MainMenuLevelName`) and the game ignored the pak entirely: it never appeared in the in-game Mod Manager.
+
+## RE tools
+
+| Tool | Location | Notes |
+| --- | --- | --- |
+| x64dbg (snapshot 2026-05-27) | `E:\Modding\x64dbg\x64dbg-snapshot_2026-05-27_12-11\release\x64\x64dbg.exe` | Portable; settings stay in its folder |
+| RenderDoc 1.46 | `C:\Program Files\RenderDoc` (user's choice) | Set its temporary capture directory to `E:\Modding\Baulders Gate 3 VR\re-local\captures`; its settings file lives in `%APPDATA%\qrenderdoc` |

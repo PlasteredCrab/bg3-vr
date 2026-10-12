@@ -1,38 +1,35 @@
 -- Phase 0 camera probes (client context). In the Script Extender console, type "client" first.
---   !vr_cam                 list camera entities and their controller state
---   !vr_cam_fov <degrees>   set the active camera's FOV once (does a write take effect?)
---   !vr_cam_follow [on|off] [height] [yaw]
---                           every tick, put the active camera at the controlled character's
---                           position + height (default 1.7), facing its rotation + yaw degrees
+--   !vr_cam                   list camera entities: controller state, real position (from the
+--                             inverse view matrix), forward vector, FOV, components
+--   !vr_cam_fov <degrees>     set the active camera's FOV once (stored in radians)
+--   !vr_cam_follow <mode> [height] [yaw]
+--                             every tick, place the active camera at the controlled character's
+--                             position + height (default 1.7) facing its rotation + yaw degrees.
+--                             mode: "view" writes the view matrices, "transform" writes
+--                             WorldTransform, "lookat" writes LookAt; "off" stops
+--
+-- Matrices are glm mat4: 16 numbers, column-major (translation in elements 13..15).
 
-local function Fmt(v)
+local function Fmt(v, count)
     local parts = {}
-    for i = 1, #v do
+    for i = 1, count or #v do
         parts[#parts + 1] = string.format("%.3f", v[i])
     end
     return "(" .. table.concat(parts, ", ") .. ")"
 end
 
-local function CameraEntities()
-    local result = {}
+local function ActiveCamera()
     for _, entity in ipairs(Ext.Entity.GetAllEntitiesWithComponent("Camera")) do
-        result[#result + 1] = entity
-    end
-    return result
-end
-
-local function ActiveController()
-    for _, entity in ipairs(CameraEntities()) do
         local camera = entity.Camera
         if camera.Active and camera.Controller then
-            return camera.Controller
+            return entity, camera.Controller
         end
     end
-    return nil
+    return nil, nil
 end
 
 local function Dump()
-    local entities = CameraEntities()
+    local entities = Ext.Entity.GetAllEntitiesWithComponent("Camera")
     BG3VR.Log("%d camera entities", #entities)
     for i, entity in ipairs(entities) do
         local camera = entity.Camera
@@ -40,15 +37,26 @@ local function Dump()
         BG3VR.Log("[%d] active=%s input=%s behavior=%d", i, tostring(camera.Active), tostring(camera.AcceptsInput),
             camera.MasterBehaviorType)
         if c then
-            BG3VR.Log("    id=%s fov=%.2f near=%.3f far=%.1f aspect=%.3f ortho=%s offcenter=%s", tostring(c.ID), c.FOV,
-                c.NearPlane, c.FarPlane, c.AspectRatio, tostring(c.IsOrthographic), tostring(c.OffCenter))
-            BG3VR.Log("    pos=%s rot=%s lookat=%s", Fmt(c.WorldTransform.Translate), Fmt(c.WorldTransform.RotationQuat),
-                Fmt(c.LookAt))
+            local inv = c.Camera.InvViewMatrix
+            BG3VR.Log("    fov=%.4f rad (%.1f deg) near=%.3f far=%.1f aspect=%.3f offcenter=%s dirty=%s/%s", c.FOV,
+                math.deg(c.FOV), c.NearPlane, c.FarPlane, c.AspectRatio, tostring(c.OffCenter), tostring(c.ViewDirty),
+                tostring(c.ProjectionDirty))
+            BG3VR.Log("    camera pos=%s forward(-Z)=%s up=%s", Fmt({ inv[13], inv[14], inv[15] }),
+                Fmt({ -inv[9], -inv[10], -inv[11] }), Fmt({ inv[5], inv[6], inv[7] }))
+            BG3VR.Log("    WorldTransform pos=%s rot=%s  LookAt=%s", Fmt(c.WorldTransform.Translate),
+                Fmt(c.WorldTransform.RotationQuat), Fmt(c.LookAt))
+            local proj = c.Camera.ProjectionMatrix
+            BG3VR.Log("    proj diag=%s  [9]=%.4f [10]=%.4f [11]=%.4f [12]=%.4f [15]=%.4f", Fmt({ proj[1], proj[6], proj[11], proj[16] }),
+                proj[9], proj[10], proj[11], proj[12], proj[15])
+        end
+        local ok, names = pcall(function() return entity:GetAllComponentNames(false) end)
+        if ok and names then
+            BG3VR.Log("    components: %s", table.concat(names, ", "))
         end
     end
 end
 
--- Quaternion (x, y, z, w) for a rotation of `degrees` about +Y.
+-- Quaternion helpers; quaternions are (x, y, z, w).
 local function YawQuat(degrees)
     local half = math.rad(degrees) / 2
     return { 0.0, math.sin(half), 0.0, math.cos(half) }
@@ -63,41 +71,87 @@ local function QuatMul(a, b)
     }
 end
 
-local follow = { handle = nil, height = 1.7, yaw = 0.0, ticks = 0 }
+-- World (camera-to-world) and view (world-to-camera) matrices for position p and rotation q.
+local function PoseMatrices(p, q)
+    local x, y, z, w = q[1], q[2], q[3], q[4]
+    local m00, m01, m02 = 1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)
+    local m10, m11, m12 = 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)
+    local m20, m21, m22 = 2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)
+    local world = {
+        m00, m10, m20, 0,
+        m01, m11, m21, 0,
+        m02, m12, m22, 0,
+        p[1], p[2], p[3], 1,
+    }
+    local view = {
+        m00, m01, m02, 0,
+        m10, m11, m12, 0,
+        m20, m21, m22, 0,
+        -(m00 * p[1] + m10 * p[2] + m20 * p[3]),
+        -(m01 * p[1] + m11 * p[2] + m21 * p[3]),
+        -(m02 * p[1] + m12 * p[2] + m22 * p[3]),
+        1,
+    }
+    return world, view
+end
+
+local follow = { handle = nil, mode = "view", height = 1.7, yaw = 0.0, ticks = 0, controller = nil, character = nil }
 
 local function FollowTick()
-    local controller = ActiveController()
-    local character = _C()
+    -- Re-resolve once a second; searching all entities every tick costs milliseconds.
+    if follow.ticks % 60 == 0 or not follow.controller or not follow.character then
+        local _, controller = ActiveCamera()
+        follow.controller = controller
+        follow.character = _C()
+    end
+    follow.ticks = follow.ticks + 1
+    local controller, character = follow.controller, follow.character
     if not controller or not character then
         return
     end
+
     local t = character.Transform.Transform
     local p = t.Translate
-    controller.WorldTransform.Translate = { p[1], p[2] + follow.height, p[3] }
-    controller.WorldTransform.RotationQuat = QuatMul(t.RotationQuat, YawQuat(follow.yaw))
-    controller.ViewDirty = true
-    follow.ticks = follow.ticks + 1
+    local eye = { p[1], p[2] + follow.height, p[3] }
+    local rot = QuatMul(t.RotationQuat, YawQuat(follow.yaw))
+
+    if follow.mode == "view" then
+        local world, view = PoseMatrices(eye, rot)
+        controller.Camera.InvViewMatrix = world
+        controller.Camera.ViewMatrix = view
+    elseif follow.mode == "transform" then
+        controller.WorldTransform.Translate = eye
+        controller.WorldTransform.RotationQuat = rot
+        controller.ViewDirty = true
+    elseif follow.mode == "lookat" then
+        local world = PoseMatrices(eye, rot)
+        controller.LookAt = { eye[1] - world[9], eye[2] - world[10], eye[3] - world[11] }
+    end
 end
 
-local function SetFollow(enabled, height, yaw)
+local function StopFollow()
     if follow.handle then
         Ext.Events.Tick:Unsubscribe(follow.handle)
         follow.handle = nil
         BG3VR.Log("camera follow off after %d ticks", follow.ticks)
     end
-    if enabled then
-        follow.height = tonumber(height) or follow.height
-        follow.yaw = tonumber(yaw) or follow.yaw
-        follow.ticks = 0
-        follow.handle = Ext.Events.Tick:Subscribe(function()
-            local ok, err = pcall(FollowTick)
-            if not ok then
-                BG3VR.Warn("camera follow failed, stopping: %s", tostring(err))
-                SetFollow(false)
-            end
-        end)
-        BG3VR.Log("camera follow on (height %.2f, yaw %.1f)", follow.height, follow.yaw)
-    end
+end
+
+local function StartFollow(mode, height, yaw)
+    StopFollow()
+    follow.mode = mode
+    follow.height = tonumber(height) or follow.height
+    follow.yaw = tonumber(yaw) or follow.yaw
+    follow.ticks = 0
+    follow.controller, follow.character = nil, nil
+    follow.handle = Ext.Events.Tick:Subscribe(function()
+        local ok, err = pcall(FollowTick)
+        if not ok then
+            BG3VR.Warn("camera follow failed, stopping: %s", tostring(err))
+            StopFollow()
+        end
+    end)
+    BG3VR.Log("camera follow '%s' on (height %.2f, yaw %.1f)", follow.mode, follow.height, follow.yaw)
 end
 
 local function Safely(fn)
@@ -112,17 +166,24 @@ end
 Ext.RegisterConsoleCommand("vr_cam", Safely(function() Dump() end))
 
 Ext.RegisterConsoleCommand("vr_cam_fov", Safely(function(_, degrees)
-    local controller = ActiveController()
-    if not controller then
-        BG3VR.Warn("no active camera controller")
+    local _, controller = ActiveCamera()
+    local value = tonumber(degrees)
+    if not controller or not value then
+        BG3VR.Warn("usage: !vr_cam_fov <degrees> (needs an active camera)")
         return
     end
     local before = controller.FOV
-    controller.FOV = tonumber(degrees) or before
+    controller.FOV = math.rad(value)
     controller.ProjectionDirty = true
-    BG3VR.Log("fov %.2f -> %.2f (read back %.2f)", before, tonumber(degrees) or before, controller.FOV)
+    BG3VR.Log("fov %.1f -> %.1f deg (read back %.1f)", math.deg(before), value, math.deg(controller.FOV))
 end))
 
 Ext.RegisterConsoleCommand("vr_cam_follow", Safely(function(_, mode, height, yaw)
-    SetFollow(mode ~= "off", height, yaw)
+    if mode == nil or mode == "off" then
+        StopFollow()
+    elseif mode == "view" or mode == "transform" or mode == "lookat" then
+        StartFollow(mode, height, yaw)
+    else
+        BG3VR.Warn("usage: !vr_cam_follow view|transform|lookat|off [height] [yaw]")
+    end
 end))
