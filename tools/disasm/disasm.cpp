@@ -4,6 +4,7 @@
 //   bg3vr_disasm <exe> --func <rva>      disassemble the whole function containing rva (.pdata)
 //   bg3vr_disasm <exe> --sig <rva>       shortest signature starting at rva that is unique in .text
 //   bg3vr_disasm <exe> --find "<sig>"    where a signature matches in .text (exit 0 if exactly once)
+//   bg3vr_disasm <exe> --vtable <rva> [n] list n vtable slots (default 24) with their first instructions
 //
 // RVAs are hex (with or without 0x). Signatures wildcard relative branch targets and RIP-relative
 // displacements, the parts that change between game builds.
@@ -211,6 +212,34 @@ int main(int argc, char** argv) {
     }
 
     const std::string mode = argv[2];
+    if (mode == "--vtable") {
+        const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;
+        const std::size_t count = argc > 4 ? std::strtoul(argv[4], nullptr, 10) : 24;
+        if (!rva) {
+            std::fprintf(stderr, "bad rva\n");
+            return 1;
+        }
+        const std::uint64_t image_base = image.nt->OptionalHeader.ImageBase;
+        for (std::size_t slot = 0; slot < count; ++slot) {
+            const auto offset = image.offset_of(*rva + static_cast<std::uint32_t>(slot * 8));
+            if (!offset) {
+                break;
+            }
+            std::uint64_t target = 0;
+            std::memcpy(&target, image.file.data() + *offset, sizeof(target));
+            const auto target_rva = static_cast<std::uint32_t>(target - image_base);
+            ZydisDisassembledInstruction ins;
+            std::string first;
+            std::uint32_t cursor = target_rva;
+            for (int n = 0; n < 6 && decode(image, cursor, ins); ++n) {
+                first += ins.text;
+                first += " ; ";
+                cursor += ins.info.length;
+            }
+            std::printf("slot %2zu  %08X  %s\n", slot, target_rva, first.c_str());
+        }
+        return 0;
+    }
     if (mode == "--find") {
         const auto pattern = argc > 3 ? bg3vr::parse_pattern(argv[3]) : std::nullopt;
         const IMAGE_SECTION_HEADER* text = image.section(".text");

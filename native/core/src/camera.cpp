@@ -119,9 +119,10 @@ std::optional<Pose> pose_for(std::uintptr_t controller) {
 }
 
 // ---- hiding visuals from the main view (first-person head) ----------------------------------
-// The game's own MoveableObject::ToggleCullFlag600(bool) clears/sets the main-view bits. Calls are
-// made on the game thread (from the view update hook), every frame, so the hide sticks; objects are
-// re-validated each time (readable, same vtable) so a destroyed visual is dropped, not called.
+// The game's own MoveableObject::ToggleCullFlag600(bool set) sets/clears the main-view bits (0x600,
+// an inclusion mask). Calls are made on the game thread (from the view update hook): each frame we
+// check the flags and clear them again only if the game restored them. Objects are re-validated
+// every time (readable, same vtable) so a destroyed visual is dropped, not called.
 
 struct CullTarget {
     std::uintptr_t object = 0;
@@ -130,29 +131,35 @@ struct CullTarget {
 std::vector<CullTarget> g_cull_targets; // guarded by g_mutex
 std::vector<CullTarget> g_cull_restore; // shown again once, then dropped
 std::atomic<std::uint64_t> g_cull_frames{0};
+std::atomic<std::uint64_t> g_cull_calls{0};
 
 using ToggleCullFn = void (*)(std::uintptr_t, bool);
 
 bool still_valid(const CullTarget& target) {
-    return readable(target.object, sizeof(void*)) && read<std::uintptr_t>(target.object) == target.vtable;
+    return readable(target.object, layout::kCullFlags + sizeof(std::uint16_t)) &&
+           read<std::uintptr_t>(target.object) == target.vtable;
 }
 
-void toggle_cull(const CullTarget& target, bool cull) {
+void set_main_view(const CullTarget& target, bool visible) {
     const auto toggle = read<ToggleCullFn>(target.vtable + layout::kToggleCullFlag600Slot * sizeof(void*));
-    toggle(target.object, cull);
+    toggle(target.object, visible);
+    g_cull_calls.fetch_add(1, std::memory_order_relaxed);
 }
 
 void process_cull() {
     std::scoped_lock lock(g_mutex);
     for (const CullTarget& target : g_cull_restore) {
         if (still_valid(target)) {
-            toggle_cull(target, false);
+            set_main_view(target, true);
         }
     }
     g_cull_restore.clear();
     std::erase_if(g_cull_targets, [](const CullTarget& target) { return !still_valid(target); });
     for (const CullTarget& target : g_cull_targets) {
-        toggle_cull(target, true);
+        const auto flags = read<std::uint16_t>(target.object + layout::kCullFlags);
+        if (flags & layout::kMainViewBits) {
+            set_main_view(target, false);
+        }
     }
     if (!g_cull_targets.empty()) {
         g_cull_frames.fetch_add(1, std::memory_order_relaxed);
@@ -284,8 +291,9 @@ std::optional<CullTarget> check_cull_target(std::uintptr_t object) {
     for (std::size_t i = 0; i + 1 < code.size(); ++i) {
         has_constant = has_constant || (code[i] == 0x00 && code[i + 1] == 0x06) || (code[i] == 0xFF && code[i + 1] == 0xF9);
     }
-    log::info("hide: object 0x{:X} vtable {} ToggleCullFlag600 {} GetCullFlags {} check {}", object,
-              describe(vtable), describe(toggle), describe(get_flags), has_constant ? "passed" : "FAILED");
+    log::info("hide: object 0x{:X} vtable {} ToggleCullFlag600 {} GetCullFlags {} flags 0x{:X} check {}", object,
+              describe(vtable), describe(toggle), describe(get_flags),
+              read<std::uint16_t>(object + layout::kCullFlags), has_constant ? "passed" : "FAILED");
     if (!has_constant) {
         return std::nullopt;
     }
@@ -436,6 +444,8 @@ DWORD WINAPI watch_bridge(void* param) {
                   calls - last_reported_calls, g_transform_writes.load(std::memory_order_relaxed),
                   g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
                   g_force_view ? " (force_view on)" : "", g_cull_frames.load(std::memory_order_relaxed));
+        log::info("hide: ToggleCullFlag600 called {} times so far (once per hide, plus each time the game "
+                  "restored the flags)", g_cull_calls.load(std::memory_order_relaxed));
         g_view_max_error.store(0.0f, std::memory_order_relaxed);
         last_reported_calls = calls;
         for (std::size_t i = 0; i < kTrackedControllers; ++i) {

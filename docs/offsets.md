@@ -41,3 +41,5 @@ Related functions in bg3_dx11.exe 4.1.1.7631656 (not hooked; for orientation):
 | 0x4084CB0 / 0x4084DC0 / 0x4084ED0 | Rotate +X / +Y / +Z by the Transform's quaternion: the view's right / up / forward rows |
 | 0x4084FF0 | Builds the view matrix from right, up, forward and position |
 | 0xE59570 | ECS component lookup (world, entity handle) |
+| 0x588CB30 | `rf::Visual` vtable: slot 0 GetRTTI (returns 0x1001), 2-11 transform setters, **13 GetCullFlags** (`word [rcx+0xF4]`), 14 SetSomeCullFlag, **15 ToggleCullFlag600(bool set)**. The Script Extender lists 13/15 one slot later. |
+| 0x3C6B810 | Visual cull-flag setter (this, mask, set): `flags at +0xF4 |= mask` or `&= ~mask`, notifies the scene, recurses into attachments (array at +0xB8, stride 0x30, count +0xC4) |

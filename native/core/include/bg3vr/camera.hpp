@@ -30,10 +30,16 @@ inline constexpr std::size_t kVtableSlots = 24;
 inline constexpr std::size_t kGetWorldTransformSlot = 13;
 inline constexpr std::size_t kTransformTranslate = 0x10;
 
-// MoveableObject (base of visuals and renderables), per the Script Extender's Render.h:
-// slot 14 uint16_t GetCullFlags(uint16_t&), slot 16 void ToggleCullFlag600(bool cull).
-inline constexpr std::size_t kGetCullFlagsSlot = 14;
-inline constexpr std::size_t kToggleCullFlag600Slot = 16;
+// MoveableObject (base of visuals and renderables). Verified in the Visual vtable (exe 0x588CB30,
+// 4.1.1.7631656) by disassembly; the Script Extender's Render.h lists both one slot later.
+// slot 13: uint16_t GetCullFlags(uint16_t&) = movzx eax, word [rcx+0xF4]
+// slot 15: ToggleCullFlag600(bool set): set ? flags |= 0x600 : flags &= ~0x600 (via 0x3C6B810, which
+//          also notifies the scene and recurses into attachments). Visible parts have 0x600 set, so
+//          false hides from the main view; shadow bits are untouched.
+inline constexpr std::size_t kGetCullFlagsSlot = 13;
+inline constexpr std::size_t kToggleCullFlag600Slot = 15;
+inline constexpr std::size_t kCullFlags = 0xF4;
+inline constexpr std::uint16_t kMainViewBits = 0x600;
 } // namespace layout
 
 using Mat4 = std::array<float, 16>; // column-major, like glm
