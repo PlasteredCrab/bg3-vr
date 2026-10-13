@@ -430,6 +430,63 @@ void log_stages(const char* label, std::uintptr_t view) {
     log::info("views:   {} 0x{:X}: {} stage(s) at 0x{:X}, ids:{}", label, view, count, array, text);
 }
 
+// The resource manager a stage uses is [[stage+0x10]] (stage 0x0B's init, 0x3E4DBA0). Its key table
+// (0x40956C0 / 0x409DB80): buckets at +0x78, bucket count +0x80, next +0x88, keys (u32) +0x98.
+bool manager_has_key(std::uintptr_t manager, std::uint32_t key) {
+    std::uintptr_t buckets = 0, next = 0, keys = 0;
+    std::int32_t count = 0;
+    if (!mem::try_copy(&buckets, manager + 0x78, 8) || !mem::try_copy(&count, manager + 0x80, 4) ||
+        !mem::try_copy(&next, manager + 0x88, 8) || !mem::try_copy(&keys, manager + 0x98, 8) || count <= 0) {
+        return false;
+    }
+    std::int32_t index = -1;
+    mem::try_copy(&index, buckets + (key % static_cast<std::uint32_t>(count)) * 4, 4);
+    for (int guard = 0; index >= 0 && guard < 100000; ++guard) {
+        std::uint32_t k = 0;
+        if (!mem::try_copy(&k, keys + static_cast<std::uintptr_t>(index) * 4, 4)) {
+            return false;
+        }
+        if (k == key) {
+            return true;
+        }
+        if (!mem::try_copy(&index, next + static_cast<std::uintptr_t>(index) * 4, 4)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+// The manager [[stage+0x10]] of the view's stage with `id`, or 0.
+std::uintptr_t stage_manager(std::uintptr_t view, int id) {
+    std::uintptr_t array = 0;
+    std::int32_t count = 0;
+    mem::try_copy(&array, view + 0x28, 8);
+    mem::try_copy(&count, view + 0x34, 4);
+    for (std::int32_t i = 0; i < count && i < 64; ++i) {
+        std::uintptr_t stage = 0, group = 0, manager = 0;
+        mem::try_copy(&stage, array + i * 8, 8);
+        if (stage && stage_id(stage) == id && mem::try_copy(&group, stage + 0x10, 8) &&
+            mem::try_copy(&manager, group, 8)) {
+            return manager;
+        }
+    }
+    return 0;
+}
+
+// Facts for the stage 0x0B failure: which manager each view's stages use and whether the key stage
+// 0x0B binds (0x361F94A4) is registered in it.
+void log_resource_facts(const char* when, std::uintptr_t main_view, std::uintptr_t target) {
+    constexpr std::uint32_t kKey = 0x361F94A4;
+    const std::uintptr_t main_manager = stage_manager(main_view, 0x0B);
+    std::uintptr_t target_group = 0, target_manager = 0;
+    mem::try_copy(&target_group, target + 0x18, 8); // what [[stage+0x10]] is for a stage of `target`
+    target_manager = target_group;
+    log::info("views:   {}: main stage 0x0B manager 0x{:X} (key 0x{:X} {}); target view's [view+0x18] 0x{:X} (key "
+              "{})",
+              when, main_manager, kKey, main_manager ? (manager_has_key(main_manager, kKey) ? "present" : "absent") : "?",
+              target_manager, target_manager ? (manager_has_key(target_manager, kKey) ? "present" : "absent") : "?");
+}
+
 std::uint32_t stage_count(std::uintptr_t view) {
     std::uint32_t count = 0;
     mem::try_copy(&count, view + 0x34, sizeof(count));
@@ -618,6 +675,7 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                     log::info("views:   pointer fields set in main, null in target:{}", text.empty() ? " none" : text);
                 }
             }
+            log_resource_facts("before build", main_view, target);
             const std::uint32_t before = stage_count(target);
             bool ok = true;
             Fault fault;
@@ -634,6 +692,7 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
             log::info("views: stage lists{} for view 0x{:X} {}: {} stage(s) before, {} after",
                       compositing ? " (with 0x45/0x07)" : "", target, ok ? "built" : "FAULTED (access violation caught)",
                       before, stage_count(target));
+            log_resource_facts("after build", main_view, target);
             if (!ok) {
                 log::info("views:   fault at {} accessing 0x{:X}; rcx 0x{:X} rdx 0x{:X} r8 0x{:X}; stack:{}",
                           mem::describe(g_module, fault.code_address), fault.data_address, fault.rcx, fault.rdx,

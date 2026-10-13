@@ -17,6 +17,7 @@
 param(
     [string]$Ghidra = "E:\Ghidra\ghidra_12.0.3_PUBLIC",
     [string]$MaxMem = "16G",
+    [string]$Project = "BG3", # BG3: fully analyzed (for MCP); BG3quick: no analysis, for quick decompiles
     [Parameter(Mandatory)] [string[]]$GhidraArgs
 )
 $ErrorActionPreference = "Stop"
@@ -33,5 +34,5 @@ Remove-Item Env:_JAVA_OPTIONS -ErrorAction SilentlyContinue # its "Picked up" li
 
 $launch = Join-Path $Ghidra "support\launch.bat"
 $vmargs = "-XX:ParallelGCThreads=4 -XX:CICompilerCount=2"
-& $launch fg jdk Ghidra-Headless $MaxMem $vmargs ghidra.app.util.headless.AnalyzeHeadless $work BG3 @GhidraArgs
+& $launch fg jdk Ghidra-Headless $MaxMem $vmargs ghidra.app.util.headless.AnalyzeHeadless $work $Project @GhidraArgs
 exit $LASTEXITCODE

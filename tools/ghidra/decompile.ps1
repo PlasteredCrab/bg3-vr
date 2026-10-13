@@ -3,42 +3,31 @@
     Decompiles functions of the game exe with Ghidra, headless, into a text file.
 
 .DESCRIPTION
-    The first run imports bg3_dx11.exe into a Ghidra project under re-local\ghidra (no auto-analysis:
-    far too slow for this exe; functions are created from the RVAs given). Later runs reuse it.
-    Ghidra's home, settings and temp files are kept on E: too.
+    Uses the project re-local\ghidra\BG3quick: bg3_dx11.exe imported WITHOUT auto-analysis (the full
+    analysis lives in project BG3 and takes hours). Each RVA's function is created from its entry and
+    decompiled; output is rougher than after analysis but readable. The first run imports (minutes).
 
 .EXAMPLE
-    tools\ghidra\decompile.ps1 -Rva 0x4096520,0x407A440 -Out re-local\ghidra\fault.c
+    tools\ghidra\decompile.ps1 -Rva 0x4095F50,0x17DCB10 -Out re-local\ghidra\resource.c
 #>
 param(
     [Parameter(Mandatory)] [string[]]$Rva,
     [string]$Out = "re-local\ghidra\decompiled.c",
-    [string]$Ghidra = "E:\Ghidra\ghidra_12.0.3_PUBLIC",
     [string]$Exe = "E:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin\bg3_dx11.exe"
 )
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$work = Join-Path $repo "re-local\ghidra"
-$home_dir = Join-Path $work "home"
-$temp = Join-Path $work "temp"
-New-Item -ItemType Directory -Force $work, $home_dir, $temp | Out-Null
-
-# Everything Ghidra writes goes to E: (user settings, caches, temp).
-$env:TEMP = $temp
-$env:TMP = $temp
-$env:_JAVA_OPTIONS = "-Duser.home=$home_dir -Djava.io.tmpdir=$temp"
-
-$headless = Join-Path $Ghidra "support\analyzeHeadless.bat"
-$project = "bg3"
-$program = Split-Path -Leaf $Exe
+$headless = Join-Path $PSScriptRoot "headless.ps1"
 $outPath = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $repo $Out }
-$rvas = $Rva | ForEach-Object { $_ -split "," } | Where-Object { $_ }
-
-if (-not (Test-Path (Join-Path $work "$project.gpr"))) {
-    Write-Host "importing $program (first run only, a few minutes)"
-    & $headless $work $project -import $Exe -noanalysis 2>&1 | Select-Object -Last 5
+# Unquoted 0x... arguments reach the script already converted to decimal by PowerShell: anything that
+# isn't 0x-prefixed is taken as that decimal number. Pass hex with 0x (quoted or not).
+$rvas = $Rva | ForEach-Object { $_ -split "," } | Where-Object { $_ } | ForEach-Object {
+    if ($_ -match '^0x[0-9a-fA-F]+$') { $_.Substring(2) } else { '{0:X}' -f [uint64]$_ }
 }
-& $headless $work $project -process $program -noanalysis -readOnly `
-    -scriptPath (Join-Path $repo "tools\ghidra") -postScript DecompileAt.java $outPath @rvas 2>&1 |
-    Select-String -Pattern "ERROR|Exception|DecompileAt" | Select-Object -Last 10
+if (-not (Test-Path (Join-Path $repo "re-local\ghidra\BG3quick.gpr"))) {
+    Write-Host "importing $(Split-Path -Leaf $Exe) without analysis (first run only)"
+    & $headless -Project BG3quick -GhidraArgs "-import", $Exe, "-noanalysis"
+}
+& $headless -Project BG3quick -GhidraArgs (@("-process", (Split-Path -Leaf $Exe), "-noanalysis", "-readOnly",
+    "-scriptPath", (Join-Path $repo "tools\ghidra"), "-postScript", "DecompileAt.java", $outPath) + $rvas)
 Write-Host "wrote $outPath"
