@@ -212,19 +212,17 @@ void log_view(std::uintptr_t read_state) {
                 ++listed;
             }
         }
-    }    log_state("ReadState ", read_state);
+    }
+    log_state("ReadState ", read_state);
     log_state("WriteState", write_state);
     std::uintptr_t controller = 0;
     mem::try_copy(&controller, read_state + state::kController, sizeof(controller));
     log_matrix_copies(view, controller ? controller : g_controller);
 }
 
-} // namespace
-
-std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
-    const auto start = std::chrono::steady_clock::now();
+// Every aligned qword equal to `value` in committed private read-write memory (up to 4096).
+std::vector<std::uintptr_t> scan_memory(std::uintptr_t value, std::size_t& scanned, std::size_t& regions) {
     std::vector<std::uintptr_t> hits;
-    std::size_t scanned = 0, regions = 0;
     constexpr std::size_t kChunk = 4 << 20;
     std::vector<std::uintptr_t> buffer(kChunk / sizeof(std::uintptr_t));
 
@@ -251,12 +249,21 @@ std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
             }
             scanned += size;
             for (std::size_t i = 0; i < size / sizeof(std::uintptr_t); ++i) {
-                if (buffer[i] == controller) {
+                if (buffer[i] == value) {
                     hits.push_back(from + i * sizeof(std::uintptr_t));
                 }
             }
         }
     }
+    return hits;
+}
+
+} // namespace
+
+std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
+    const auto start = std::chrono::steady_clock::now();
+    std::size_t scanned = 0, regions = 0;
+    const std::vector<std::uintptr_t> hits = scan_memory(controller, scanned, regions);
 
     // Keep the hits that sit at the end of a RenderViewState followed (or preceded) by another one:
     // the ReadState / WriteState pair of a render view.
@@ -272,9 +279,24 @@ std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
             views.insert(candidate - state::kSize);
         }
     }
+    // Views of other cameras (a second local player's): every object with the same vtable as the
+    // views found, whose states sit where ours do.
+    std::size_t by_vtable = 0;
+    std::uintptr_t vtable = 0;
+    if (!views.empty() && mem::try_copy(&vtable, *views.begin() - kReadStateInView, sizeof(vtable)) &&
+        mem::in_section(g_module, ".rdata", vtable, sizeof(void*))) {
+        for (const std::uintptr_t hit : scan_memory(vtable, scanned, regions)) {
+            const std::uintptr_t read_state = hit + kReadStateInView;
+            if (plausible_state(read_state) && plausible_state(read_state + state::kSize) && views.insert(read_state).second) {
+                ++by_vtable;
+            }
+        }
+    }
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    log::info("views: scanned {} MB in {} regions in {:.1f} s: {} pointers to controller 0x{:X}, {} render view(s)",
-              scanned >> 20, regions, seconds, hits.size(), controller, views.size());
+    log::info("views: scanned {} MB in {} regions in {:.1f} s: {} pointers to controller 0x{:X}, {} render view(s) "
+              "({} more found by vtable {})",
+              scanned >> 20, regions, seconds, hits.size(), controller, views.size(), by_vtable,
+              mem::describe(g_module, vtable));
     for (std::size_t i = 0; i < hits.size() && i < 32; ++i) {
         log::debug("views:   pointer at 0x{:X}", hits[i]);
     }
