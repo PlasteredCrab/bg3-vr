@@ -2,6 +2,7 @@
 
 #include "bg3vr/log.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/win_util.hpp"
 
 #include <safetyhook.hpp>
 
@@ -17,6 +18,9 @@ std::atomic<IDXGISwapChain*> g_swapchain{nullptr};
 std::atomic<ID3D11Device*> g_device{nullptr};
 std::atomic<PresentCallback> g_callback{nullptr};
 std::atomic<int> g_sync_override{-1};
+// The game's own Present arguments (before any override), for the report.
+std::atomic<std::uint32_t> g_game_sync_interval{0};
+std::atomic<std::uint32_t> g_game_present_flags{0};
 std::atomic<std::uint64_t> g_sync_overrides{0};
 std::atomic<std::uint64_t> g_frames{0};
 std::uint64_t g_last_frames = 0;
@@ -31,6 +35,22 @@ void describe_swapchain(IDXGISwapChain* swapchain) {
     }
     DXGI_SWAP_CHAIN_DESC desc{};
     swapchain->GetDesc(&desc);
+    // Which GPU the game renders on: the headset needs the same one, and an integrated GPU would
+    // explain a low frame rate.
+    IDXGIDevice* dxgi = nullptr;
+    if (device && SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi)))) {
+        IDXGIAdapter* adapter = nullptr;
+        DXGI_ADAPTER_DESC adapter_desc{};
+        if (SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&adapter_desc))) {
+            log::info("render: GPU '{}' (vendor 0x{:04X}, {} MB dedicated), feature level 0x{:X}",
+                      to_utf8(adapter_desc.Description), adapter_desc.VendorId,
+                      adapter_desc.DedicatedVideoMemory >> 20, static_cast<unsigned>(device->GetFeatureLevel()));
+        }
+        if (adapter) {
+            adapter->Release();
+        }
+        dxgi->Release();
+    }
     log::info("render: swapchain 0x{:X} device 0x{:X}: {}x{} format {} buffers {} swap effect {} windowed {} flags 0x{:X}",
               reinterpret_cast<std::uintptr_t>(swapchain), reinterpret_cast<std::uintptr_t>(device),
               desc.BufferDesc.Width, desc.BufferDesc.Height, static_cast<int>(desc.BufferDesc.Format),
@@ -44,6 +64,8 @@ void on_present(safetyhook::Context& ctx) {
         return;
     }
     g_frames.fetch_add(1, std::memory_order_relaxed);
+    g_game_sync_interval.store(static_cast<std::uint32_t>(ctx.rdx), std::memory_order_relaxed);
+    g_game_present_flags.store(static_cast<std::uint32_t>(ctx.r8), std::memory_order_relaxed);
     if (g_swapchain.exchange(swapchain, std::memory_order_acq_rel) != swapchain) {
         describe_swapchain(swapchain); // first frame, or the swapchain was recreated
     }
@@ -106,6 +128,8 @@ void report() {
     const double seconds = std::chrono::duration<double>(now - g_last_report).count();
     log::info("render: {} frames presented since the last report ({:.1f} fps over {:.0f} s)", frames - g_last_frames,
               seconds > 0 ? static_cast<double>(frames - g_last_frames) / seconds : 0.0, seconds);
+    log::info("render: the game presents with sync interval {} (1 = vsync on), flags 0x{:X}",
+              g_game_sync_interval.load(std::memory_order_relaxed), g_game_present_flags.load(std::memory_order_relaxed));
     if (g_sync_override.load(std::memory_order_relaxed) >= 0) {
         log::info("render: sync interval overridden on {} presents in total", g_sync_overrides.load(std::memory_order_relaxed));
     }
