@@ -72,7 +72,7 @@ constexpr int kSearchEvery = 30;
 constexpr int kSearchAttempts = 300;
 std::optional<std::size_t> g_frame_offset;
 std::size_t g_frame_source = 0; // 0: the RenderFrame, then each render view
-constexpr std::size_t kRenderViewReadState = 0x2148; // see views.cpp
+constexpr std::size_t kRenderViewReadState = 0x2158; // see views.cpp
 int g_searches = 0;
 int g_offset_misses = 0;
 std::atomic<int> g_measured_lag{-1};

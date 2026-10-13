@@ -22,6 +22,12 @@ void find(const ModuleInfo& module, std::uintptr_t controller);
 // The scan itself, synchronously: the ReadState addresses found (also logged and kept for found()).
 std::vector<std::uintptr_t> scan_now(std::uintptr_t controller);
 
+// Step 5 experiment: lay the first two found views side by side (each state's Scale (0.5, 1),
+// Offset (0 / 0.5, 0), written every frame) or back to full screen (written once).
+void set_layout(bool side_by_side);
+// Per-frame work on the game thread (the camera's frame callback).
+void on_frame();
+
 // Logs the current state of the views found by the last scan (cheap; no scan).
 void dump();
 

@@ -8,6 +8,7 @@
 //   bg3vr_disasm <exe> --xref <rva>      instructions that call, jump to, or RIP-address rva
 //   bg3vr_disasm <exe> --str <text>      ASCII and UTF-16 occurrences of text, as RVAs
 //   bg3vr_disasm <exe> --ptr <rva>       8-byte absolute pointers to rva outside .text (vtable slots, tables)
+//   bg3vr_disasm <exe> --rtti <rva>      the class name of the vtable at rva (MSVC RTTI), and its bases
 //
 // RVAs are hex (with or without 0x). Signatures wildcard relative branch targets and RIP-relative
 // displacements, the parts that change between game builds.
@@ -347,6 +348,61 @@ int find_pointers(const Image& image, std::uint32_t target) {
     return hits ? 0 : 2;
 }
 
+// MSVC x64 RTTI: vtable[-1] is the CompleteObjectLocator (signature 1, then offsets, then RVAs of the
+// TypeDescriptor and the ClassHierarchyDescriptor); a TypeDescriptor's decorated name is at +0x10.
+std::string type_name(const Image& image, std::uint32_t type_descriptor) {
+    const auto offset = image.offset_of(type_descriptor + 0x10);
+    if (!offset) {
+        return "?";
+    }
+    std::string name;
+    for (std::size_t i = *offset; i < image.file.size() && image.file[i] && name.size() < 200; ++i) {
+        name += static_cast<char>(image.file[i]);
+    }
+    return name;
+}
+
+int print_rtti(const Image& image, std::uint32_t vtable) {
+    const std::uint64_t image_base = image.nt->OptionalHeader.ImageBase;
+    const auto slot = image.offset_of(vtable - 8);
+    if (!slot) {
+        return 1;
+    }
+    std::uint64_t locator = 0;
+    std::memcpy(&locator, image.file.data() + *slot, sizeof(locator));
+    const auto col = image.offset_of(static_cast<std::uint32_t>(locator - image_base));
+    if (!col || image.file[*col] != 1) {
+        std::printf("no RTTI locator before %08X\n", vtable);
+        return 2;
+    }
+    std::uint32_t this_offset = 0, type = 0, hierarchy = 0;
+    std::memcpy(&this_offset, image.file.data() + *col + 4, 4);
+    std::memcpy(&type, image.file.data() + *col + 0x0C, 4);
+    std::memcpy(&hierarchy, image.file.data() + *col + 0x10, 4);
+    std::printf("vtable %08X: %s (this at +0x%X in the complete object)\n", vtable, type_name(image, type).c_str(),
+                this_offset);
+    const auto chd = image.offset_of(hierarchy);
+    if (!chd) {
+        return 0;
+    }
+    std::uint32_t count = 0, bases = 0;
+    std::memcpy(&count, image.file.data() + *chd + 8, 4);
+    std::memcpy(&bases, image.file.data() + *chd + 0x0C, 4);
+    for (std::uint32_t i = 1; i < count && i < 32; ++i) {
+        const auto entry = image.offset_of(bases + i * 4);
+        if (!entry) {
+            break;
+        }
+        std::uint32_t base_descriptor = 0, base_type = 0;
+        std::memcpy(&base_descriptor, image.file.data() + *entry, 4);
+        if (const auto bd = image.offset_of(base_descriptor)) {
+            std::memcpy(&base_type, image.file.data() + *bd, 4);
+            std::printf("  base %s\n", type_name(image, base_type).c_str());
+        }
+    }
+    return 0;
+}
+
 std::optional<std::uint32_t> parse_rva(const char* text) {
     std::string s(text);
     if (s.starts_with("0x") || s.starts_with("0X")) {
@@ -388,6 +444,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         return find_xrefs(image, *rva);
+    }
+    if (mode == "--rtti") {
+        const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;
+        if (!rva) {
+            std::fprintf(stderr, "bad rva\n");
+            return 1;
+        }
+        return print_rtti(image, *rva);
     }
     if (mode == "--ptr") {
         const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;

@@ -34,6 +34,12 @@ P = \begin{pmatrix} \frac{2}{t_R - t_L} & 0 & -\frac{t_R + t_L}{t_R - t_L} & 0 \
 - The back buffer is **1920×1200, format 24 (R10G10B10A2_UNORM)**, 3 buffers, flip-discard. A 10-bit format has no sRGB form, so the headset copy is now a shader blit (`blit.cpp`): back buffer → sampleable copy → decode sRGB → 8-bit sRGB eye image, under `SwapDeviceContextState` so the game's cached D3D state is untouched (unit-tested on WARP).
 - The game ran at **about 30 fps** throughout, before any toggles.
 - `!vr_follow`: 4,836 reads, 0 rejected over 21 s.
+Second session, 2026-10-13:
+- **The 30 fps is a background throttle**: in game it was exactly 30.0 fps in every report (normal camera and first person alike) while menus ran at 97 fps, the game is on the RTX A4000, and it presents with sync interval 0 and the tearing flag (vsync off). The console window had focus the whole time; BG3 limits its frame rate when its window isn't focused. Measure with the game window focused.
+- The game render view's vtable is **exe+0x55F42F8, at ReadState−0x2158** (its methods use +0x2150, +0x21D8, +0x2298, +0x2961, +0x2C98), so views start 0x10 earlier than the Script Extender layout says; the command buffer's vtable exe+0x590A4D0 is at view+0x50. No RTTI in the exe (`/GR-`), so `bg3vr_disasm --rtti` finds nothing.
+- The second view created by `ForceSplitscreen` has the command buffer at the same place but **no exe vtable at ReadState−0x2158**: a different class, or a different layout. `!vr_views` now logs the first word of every view.
+- Slot 6 of the render view's vtable (0x3CC86D0) copies a byte from the big settings object at [0x604B1B8]+0x1BC into view+0x2298 and recomputes tile counts from the view size (+0x2290/+0x2294, tile +0x229C).
+- Next experiment: `!vr_views sbs` writes Scale (0.5, 1) and Offset (0 / 0.5, 0) into both states of the first two views every frame; `!vr_views full` restores (1, 1) / (0, 0). If the game composites both views, the screen splits.
 ## Making alternate-eye smooth (until step 5 lands)
 
 Alternate-eye is how several commercial-quality VR conversions of flat games work. What decides how smooth it is:

@@ -26,7 +26,8 @@ struct Request {
     std::optional<std::vector<std::uintptr_t>> hide;           // visuals to hide; empty = show all again
     std::optional<std::optional<camera::Follow>> follow;       // present: follow (value) or stop (nullopt)
     bool recenter = false;                                     // headset: take the current head pose as centre
-    std::optional<bool> views_find;                            // render views: true = scan, false = dump
+    std::optional<bool> views_find;
+    std::optional<bool> views_side_by_side;                    // layout experiment: true = side by side, false = full                            // render views: true = scan, false = dump
     std::optional<int> xr_lag;                                 // frames between camera update and present; -1 = auto
 };
 
@@ -39,7 +40,7 @@ struct Request {
 //   sweep=on | sweep=<yaw> [<pitch> [<seconds>]] | sweep=off
 //   fov=<left> <right> <up> <down>   |   fov=off              (degrees; left and down negative)
 //   xr_lag=<0..7>                    |   xr_lag=auto
-//   views=find                       |   views=dump
+//   views=find | views=dump | views=sbs | views=full
 //   follow=<hex transform> [height]  |   follow=off
 //   recenter=1
 Request parse(std::string_view content);

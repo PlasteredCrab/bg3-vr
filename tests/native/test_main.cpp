@@ -455,6 +455,8 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("pose=off\n").xr_lag);
     CHECK(bridge::parse("views=find\n").views_find == true && bridge::parse("views=DUMP\n").views_find == false);
     CHECK(!bridge::parse("views=x\n").views_find);
+    CHECK(bridge::parse("views=sbs\n").views_side_by_side == true && bridge::parse("views=full\n").views_side_by_side == false);
+    CHECK(!bridge::parse("views=sbs\n").views_find);
 
     const auto follow = bridge::parse("follow=0000020A1B2C3D40 1.55\n");
     CHECK(follow.follow && *follow.follow && (*follow.follow)->transform == 0x0000020A1B2C3D40ull &&

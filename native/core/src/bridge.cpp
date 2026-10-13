@@ -174,6 +174,10 @@ Request parse(std::string_view content) {
                 request.views_find = true;
             } else if (action == "dump") {
                 request.views_find = false;
+            } else if (action == "sbs") {
+                request.views_side_by_side = true;
+            } else if (action == "full") {
+                request.views_side_by_side = false;
             }
         } else if (key == "xr_lag") {
             if (text::to_lower(value) == "auto") {

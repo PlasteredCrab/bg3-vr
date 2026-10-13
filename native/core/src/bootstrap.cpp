@@ -104,6 +104,12 @@ DWORD WINAPI watch_modules(void*) {
     return 0;
 }
 
+// On the game thread at every camera view update.
+void on_game_frame() {
+    cull::on_frame();
+    views::on_frame();
+}
+
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
 void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.controller) {
@@ -136,6 +142,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
 #endif
     if (request.hide) {
         cull::set_hidden(*request.hide);
+    }
+    if (request.views_side_by_side) {
+        views::set_layout(*request.views_side_by_side);
     }
     if (request.views_find) {
         if (*request.views_find) {
@@ -183,7 +192,7 @@ int init(const wchar_t* root_dir) {
     headset::install(g_config);
 #endif
     cull::init(module);
-    camera::set_frame_callback(&cull::on_frame);
+    camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 
     if (HANDLE thread = CreateThread(nullptr, 0, watch_modules, nullptr, 0, nullptr)) {

@@ -38,8 +38,9 @@ inline constexpr std::size_t kSize = 0x88;
 inline constexpr std::size_t kSplitScreenIndex = state::kSize + 0x00; // uint8
 inline constexpr std::size_t kViewIndex = state::kSize + 0x04;        // int
 inline constexpr std::size_t kDebugName = state::kSize + 0x08;        // MSVC std::string
-// ReadState's offset in rf::RenderView (SE: IsRecording at 0x2140, field_2144, then ReadState).
-inline constexpr std::size_t kReadStateInView = 0x2148;
+// ReadState's offset in the view. The Script Extender says 0x2148; in 4.1.1.7631656 the game render
+// view's vtable (exe+0x55F42F8) sits 0x2158 before ReadState, and its methods use fields at +0x2150.
+inline constexpr std::size_t kReadStateInView = 0x2158;
 // How far past the view's start to look for the camera's matrices (GameRenderView::PerCamera).
 inline constexpr std::size_t kMatrixSearchBytes = 0x4000;
 
@@ -47,6 +48,22 @@ std::atomic<bool> g_running{false};
 std::mutex g_mutex;
 std::vector<std::uintptr_t> g_found; // ReadState addresses
 std::uintptr_t g_controller = 0;
+
+// Screen layout override (step 5 experiment), applied every frame on the game thread.
+enum class Layout { None, SideBySide, Restore };
+std::atomic<Layout> g_layout{Layout::None};
+std::atomic<std::uint64_t> g_layout_writes{0};
+
+void write_scale_offset(std::uintptr_t state_address, float scale_x, float offset_x) {
+    const float scale[2] = {scale_x, 1.0f};
+    const float offset[2] = {offset_x, 0.0f};
+    std::uint8_t probe = 0;
+    if (!mem::try_copy(&probe, state_address, 1)) {
+        return; // the view is gone
+    }
+    std::memcpy(reinterpret_cast<void*>(state_address + state::kScale), scale, sizeof(scale));
+    std::memcpy(reinterpret_cast<void*>(state_address + state::kOffset), offset, sizeof(offset));
+}
 ModuleInfo g_module;
 
 struct Viewport {
@@ -169,7 +186,7 @@ void log_view(std::uintptr_t read_state) {
     mem::try_copy(&vtable, view, sizeof(vtable));
     mem::try_copy(&split_index, write_state + kSplitScreenIndex, sizeof(split_index));
     mem::try_copy(&view_index, write_state + kViewIndex, sizeof(view_index));
-    log::info("views: render view 0x{:X} (if ReadState is at +0x{:X}): vtable {} name '{}' split-screen index {} "
+    log::info("views: render view 0x{:X} (ReadState at +0x{:X}): first word {} name '{}' split-screen index {} "
               "view index {}",
               view, kReadStateInView, mem::describe(g_module, vtable), read_std_string(write_state + kDebugName),
               split_index, view_index);
@@ -277,6 +294,31 @@ void find(const ModuleInfo& module, std::uintptr_t controller) {
         scan_now(controller);
         g_running.store(false);
     }).detach();
+}
+
+void set_layout(bool side_by_side) {
+    g_layout.store(side_by_side ? Layout::SideBySide : Layout::Restore, std::memory_order_relaxed);
+    const auto views = found();
+    log::info("views: layout {} for {} view(s){}", side_by_side ? "side by side" : "full screen", views.size(),
+              views.size() < 2 && side_by_side ? " (needs 2: !vr_split on, then !vr_views find)" : "");
+}
+
+void on_frame() {
+    const Layout layout = g_layout.load(std::memory_order_relaxed);
+    if (layout == Layout::None) {
+        return;
+    }
+    const auto views = found();
+    for (std::size_t i = 0; i < views.size() && i < 2; ++i) {
+        const bool split = layout == Layout::SideBySide && views.size() >= 2;
+        for (const std::uintptr_t state_address : {views[i], views[i] + state::kSize}) {
+            write_scale_offset(state_address, split ? 0.5f : 1.0f, split ? 0.5f * static_cast<float>(i) : 0.0f);
+        }
+    }
+    g_layout_writes.fetch_add(1, std::memory_order_relaxed);
+    if (layout == Layout::Restore) {
+        g_layout.store(Layout::None, std::memory_order_relaxed); // written once
+    }
 }
 
 void dump() {

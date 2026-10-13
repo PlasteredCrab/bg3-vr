@@ -26,7 +26,8 @@
 --   !vr_xr_lag <0..7>|auto    headset: camera updates between a frame's pose and its display
 --                             (auto finds it; set it by hand if the world swims when you turn)
 --   !vr_views [find|dump]     find the render views that draw the camera (memory scan, a few seconds;
---                             results in bg3vr.log); dump re-logs them
+--                             results in bg3vr.log); dump re-logs them; sbs puts the first two views
+--                             side by side (after !vr_split on), full puts them back
 --   !vr_follow [height] | off  hold the camera at the character's eyes and keep it there as they move
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
@@ -411,8 +412,8 @@ end))
 -- index, and where the camera's matrices sit inside them. Results go to bg3vr.log.
 Ext.RegisterConsoleCommand("vr_views", Safely(function(_, action)
     action = action or "find"
-    if action ~= "find" and action ~= "dump" then
-        BG3VR.Warn("usage: !vr_views [find|dump]")
+    if action ~= "find" and action ~= "dump" and action ~= "sbs" and action ~= "full" then
+        BG3VR.Warn("usage: !vr_views [find|dump|sbs|full]")
         return
     end
     local _, controller = ActiveCamera()
