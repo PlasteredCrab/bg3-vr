@@ -220,6 +220,30 @@ void test_memory() {
     CHECK(!mem::in_section(module, ".text", address));
     CHECK(mem::describe(module, function).starts_with("exe+0x"));
     CHECK(mem::describe(module, reinterpret_cast<std::uintptr_t>(&GetTickCount64)).find("+0x") != std::string::npos);
+
+    std::uint64_t copied = 0;
+    CHECK(mem::try_copy(&copied, address, sizeof(int)) && static_cast<int>(copied) == 42);
+    CHECK(!mem::try_copy(&copied, 0x10, sizeof(copied)));
+
+    // Cost of the two ways to check an address before reading it (endpoint protection can make
+    // VirtualQuery expensive).
+    LARGE_INTEGER frequency, t0, t1, t2;
+    QueryPerformanceFrequency(&frequency);
+    bool all = true;
+    QueryPerformanceCounter(&t0);
+    for (int i = 0; i < 1000; ++i) {
+        all = mem::readable(address, sizeof(local)) && all;
+    }
+    QueryPerformanceCounter(&t1);
+    for (int i = 0; i < 1000; ++i) {
+        all = mem::try_copy(&copied, address, sizeof(int)) && all;
+    }
+    QueryPerformanceCounter(&t2);
+    CHECK(all);
+    const auto us = [&](LARGE_INTEGER a, LARGE_INTEGER b) {
+        return 1e6 * static_cast<double>(b.QuadPart - a.QuadPart) / static_cast<double>(frequency.QuadPart) / 1000.0;
+    };
+    std::printf("mem::readable %.3f us per call, mem::try_copy %.3f us per call\n", us(t0, t1), us(t1, t2));
 }
 
 bool near_eq(float a, float b) {

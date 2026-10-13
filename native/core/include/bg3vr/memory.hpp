@@ -13,6 +13,11 @@ namespace bg3vr::mem {
 // True if [address, address + size) is committed, readable, non-guard memory within one region.
 bool readable(std::uintptr_t address, std::size_t size);
 
+// Copies `size` bytes from `address`, returning false instead of crashing if the memory isn't
+// readable (structured exception handling; costs nothing when the read succeeds). Use it on hot
+// paths instead of readable(), whose VirtualQuery can be slow under endpoint protection.
+bool try_copy(void* destination, std::uintptr_t address, std::size_t size);
+
 template <class T>
 T read(std::uintptr_t address) {
     T value;

@@ -21,6 +21,16 @@ bool readable(std::uintptr_t address, std::size_t size) {
            address + size <= region_end;
 }
 
+bool try_copy(void* destination, std::uintptr_t address, std::size_t size) {
+    __try {
+        std::memcpy(destination, reinterpret_cast<const void*>(address), size);
+        return true;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                 : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
 bool in_section(const ModuleInfo& module, const char* name, std::uintptr_t address, std::size_t size) {
     const Section* section = find_section(module, name);
     return section && address >= section->start && address + size <= section->start + section->size;

@@ -34,9 +34,12 @@ ModuleInfo g_module;
 
 using ToggleCullFn = void (*)(std::uintptr_t, bool);
 
-bool still_valid(const Target& target) {
-    return mem::readable(target.object, layout::kCullFlags + sizeof(std::uint16_t)) &&
-           mem::read<std::uintptr_t>(target.object) == target.vtable;
+// Guarded reads, not VirtualQuery: in the game, mem::readable took ~2.6 ms per call (5.3 ms per
+// check with two objects, measured 2026-10-12), which caused a stutter every few frames.
+bool still_valid(const Target& target, std::uint16_t& flags) {
+    std::uintptr_t vtable = 0;
+    return mem::try_copy(&vtable, target.object, sizeof(vtable)) && vtable == target.vtable &&
+           mem::try_copy(&flags, target.object + layout::kCullFlags, sizeof(flags));
 }
 
 void set_main_view(const Target& target, bool visible) {
@@ -104,18 +107,22 @@ void on_frame() {
     QueryPerformanceCounter(&start);
     std::scoped_lock lock(g_mutex);
     g_pending.store(false, std::memory_order_release);
+    std::uint16_t flags = 0;
     for (const Target& target : g_restore) {
-        if (still_valid(target)) {
+        if (still_valid(target, flags)) {
             set_main_view(target, true);
         }
     }
     g_restore.clear();
-    std::erase_if(g_targets, [](const Target& target) { return !still_valid(target); });
-    for (const Target& target : g_targets) {
-        if (mem::read<std::uint16_t>(target.object + layout::kCullFlags) & layout::kMainViewBits) {
+    std::erase_if(g_targets, [&flags](const Target& target) {
+        if (!still_valid(target, flags)) {
+            return true; // destroyed or replaced: drop it
+        }
+        if (flags & layout::kMainViewBits) {
             set_main_view(target, false);
         }
-    }
+        return false;
+    });
     if (!g_targets.empty()) {
         g_checks.fetch_add(1, std::memory_order_relaxed);
     }
