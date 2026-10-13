@@ -26,7 +26,9 @@ P = \begin{pmatrix} \frac{2}{t_R - t_L} & 0 & -\frac{t_R + t_L}{t_R - t_L} & 0 \
 
 ## Other cameras in the frame
 
-Four plain `rf::CameraController` objects (base vtable 0x58EDC60, transform stored in the object) go through the view update every frame, as often as the gameplay camera. Created in 0x3E01E00, 0x3E02440, 0x3E18CE0 and 0x3E1C940. No strings nearby. The core now logs each tracked controller's orthographic flag, FOV, near plane, position and forward vector on every bridge change. If they're orthographic and follow the sun direction, they're shadow cascades.
+Four plain `rf::CameraController` objects (base vtable 0x58EDC60, transform stored in the object) go through the view update every frame, as often as the gameplay camera. Created in 0x3E01E00, 0x3E02440, 0x3E18CE0 and 0x3E1C940.
+
+**Confirmed 2026-10-12: they are the sun's shadow cascades.** All four are orthographic, share one forward vector (0.87, −0.36, −0.33, the sun direction), sit about 108 m up, and are spaced at increasing distances along it (log of a session on the Nautiloid). They're fitted around the gameplay camera, so with the pose written at the source they follow our eye. For stereo, both eyes can share one set of cascades fitted to the head position.
 
 ## The Script Extender's own hooks
 
