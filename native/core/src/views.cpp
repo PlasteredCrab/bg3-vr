@@ -327,13 +327,16 @@ struct StageList {
     std::uint32_t begin, end;
     bool compositing; // 0x45 / 0x07: the stages the special view runs for the main view
 };
+// With `compositing`, 0x45 and 0x07 are built first: stage 0x0B faulted while being added to a view
+// without them (a null signal source under its setup, 2026-10-13), and the special view, whose copy
+// the split view starts as, has them.
 constexpr StageList kStageLists[] = {
-    {0x5899BE0, 0x5899BE7, false}, // 47 08 48 35 1E 05 0B
     {0x5899BE7, 0x5899BE8, true},  // 45
+    {0x5899BF8, 0x5899BF9, true},  // 07
+    {0x5899BE0, 0x5899BE7, false}, // 47 08 48 35 1E 05 0B
     {0x5899BE8, 0x5899BEF, false}, // 46 36 44 18 17 40 37
     {0x5899BEF, 0x5899BF0, false}, // 02
     {0x5899BF0, 0x5899BF8, false}, // 41 03 1B 1A 00 21 3E 3F
-    {0x5899BF8, 0x5899BF9, true},  // 07
 };
 constexpr std::uint32_t kBuildStagesRva = 0x3AC51C0; // where the lists above are valid
 
@@ -560,6 +563,24 @@ void build(std::size_t index, bool compositing) {
             if (graphs[0] && graphs[2] != graphs[0]) {
                 *reinterpret_cast<std::uintptr_t*>(target + 0x18) = graphs[0];
                 log::info("views:   target now uses the main view's scene graph");
+            }
+            // Pointer fields the main view has and the target lacks: candidates for what a stage's setup
+            // needs (the split view starts as a copy of the compositing-only special view).
+            {
+                constexpr std::size_t kBytes = 0x3400;
+                std::vector<std::uintptr_t> main_words(kBytes / 8), target_words(kBytes / 8);
+                if (mem::try_copy(main_words.data(), main_view, kBytes) &&
+                    mem::try_copy(target_words.data(), target, kBytes)) {
+                    std::string text;
+                    int shown = 0;
+                    for (std::size_t i = 0; i < main_words.size() && shown < 48; ++i) {
+                        if (target_words[i] == 0 && main_words[i] > 0x10000 && main_words[i] < 0x7FFFFFFFFFFF) {
+                            text += std::format(" +0x{:X}", i * 8);
+                            ++shown;
+                        }
+                    }
+                    log::info("views:   pointer fields set in main, null in target:{}", text.empty() ? " none" : text);
+                }
             }
             const std::uint32_t before = stage_count(target);
             bool ok = true;
