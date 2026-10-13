@@ -13,7 +13,12 @@
 #   mov rax,rsp ; push rbx ; sub rsp,0A0h ; xorps xmm0,xmm0 ; lea rdx,[rax-58h] ; movups [rax-48h],xmm0 ; mov rbx,rcx
 camera_view_update = 48 8B C4 53 48 81 EC A0 00 00 00 0F 57 C0 48 8D 50 A8 0F 11 40 B8 48 8B D9
 
-# Same function: the call that stores the freshly
+# Camera controller projection update (fn 0x40851F0): the call that stores the freshly built projection
+# (rdx) into controller+0x110 via the Camera struct at +0x90 (rcx); then clears ProjectionDirty (+0x11).
+# Phase 1 hook site for per-eye asymmetric projections. Unique in DX11 (0x408541F) and Vulkan (0x409A90F).
+camera_set_projection_call = 48 8D 8B 90 00 00 00 48 8D 54 24 70 E8 ?? ?? ?? ?? 48 8B CB C6 43 11 00 | offset 12
+
+# View update: the call that stores the freshly
 # built view matrix (rdx) into controller+0x90 (rcx = rbx + 0x90). The camera hook lives here.
 #   lea rcx,[rbx+90h] ; lea rdx,[rsp+60h] ; call SetViewMatrix ; mov rcx,rbx ; mov byte [rbx+10h],0 (ViewDirty)
 camera_set_view_call = 48 8D 8B 90 00 00 00 48 8D 54 24 60 E8 ?? ?? ?? ?? 48 8B CB C6 43 10 00 | offset 12

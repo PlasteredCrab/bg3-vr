@@ -476,13 +476,19 @@ DWORD WINAPI watch_bridge(void* param) {
             if (seen == 0) {
                 break;
             }
-            std::uintptr_t vtable = 0;
-            if (readable(seen, sizeof(void*))) {
-                vtable = read<std::uintptr_t>(seen);
+            if (!readable(seen, layout::kSize)) {
+                log::info("camera:   controller 0x{:X} (gone) views set {}", seen,
+                          g_seen_counts[i].load(std::memory_order_relaxed));
+                continue;
             }
-            log::info("camera:   controller 0x{:X} vtable {} views set {}{}", seen,
-                      vtable ? describe(vtable) : std::string("?"), g_seen_counts[i].load(std::memory_order_relaxed),
-                      seen == g_controller ? "  <- driven" : "");
+            const auto vtable = read<std::uintptr_t>(seen);
+            const auto inv_view = read<Mat4>(seen + layout::kInvViewMatrix);
+            log::info("camera:   controller 0x{:X} vtable {} views set {} ortho {} fov {:.3f} near {:.3f} pos "
+                      "({:.2f}, {:.2f}, {:.2f}) fwd ({:.2f}, {:.2f}, {:.2f}){}",
+                      seen, describe(vtable), g_seen_counts[i].load(std::memory_order_relaxed),
+                      read<std::uint8_t>(seen + layout::kIsOrthographic), read<float>(seen + layout::kFov),
+                      read<float>(seen + layout::kNearPlane), inv_view[12], inv_view[13], inv_view[14], inv_view[8],
+                      inv_view[9], inv_view[10], seen == g_controller ? "  <- driven" : "");
         }
     }
 }

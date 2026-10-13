@@ -15,6 +15,10 @@ namespace bg3vr::camera {
 // rf::CameraController field offsets, from the Script Extender's layout
 // (GameDefinitions/Components/Camera.h). Checked against live values before any hook goes in.
 namespace layout {
+inline constexpr std::size_t kViewDirty = 0x10;       // bool
+inline constexpr std::size_t kProjectionDirty = 0x11; // bool
+inline constexpr std::size_t kIsOrthographic = 0x12;  // bool
+inline constexpr std::size_t kOffCenter = 0x13;       // bool; only honoured for orthographic cameras
 inline constexpr std::size_t kFov = 0x14;            // float, vertical, radians
 inline constexpr std::size_t kNearPlane = 0x18;      // float
 inline constexpr std::size_t kAspectRatio = 0x20;    // float

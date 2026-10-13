@@ -28,6 +28,7 @@ Script Extender in use: 33.0.0.0 (auto-updated by the v32 updater).
 | Name | Purpose | Signature (signatures.txt line) | RVA | Build | Found by |
 | --- | --- | --- | --- | --- | --- |
 | `camera_view_update` | Entry of the camera controller's view update (`rcx` = controller). Pose override writes the camera entity's Transform here. | `48 8B C4 53 48 81 EC A0 00 00 00 0F 57 C0 48 8D 50 A8 0F 11 40 B8 48 8B D9` | DX11 0x4085150; Vulkan 0x409A640 | 4.1.1.7631656 | Disassembly of the probe's call stack, 2026-10-12 |
+| `camera_set_projection_call` | Call in the projection update that stores the new projection (`rcx` = controller+0x90, `rdx` = matrix, `rbx` = controller). Phase 1 hook for per-eye projections; not hooked yet. | `48 8D 8B 90 00 00 00 48 8D 54 24 70 E8 ?? ?? ?? ?? 48 8B CB C6 43 11 00 \| offset 12` | DX11 0x408541F (match 0x4085413); Vulkan match 0x409A903 | 4.1.1.7631656 | Static: `if (ProjectionDirty) 0x40851F0(this)` pattern, 2026-10-12 |
 | `camera_set_view_call` | Call in the camera controller's view update that stores the new view matrix (`rcx` = controller+0x90, `rdx` = matrix, `rbx` = controller). Hook site for camera overrides. | `48 8D 8B 90 00 00 00 48 8D 54 24 60 E8 ?? ?? ?? ?? 48 8B CB C6 43 10 00 \| offset 12` | DX11 0x40851CA (match 0x40851BE); Vulkan match 0x409A6AE | 4.1.1.7631656 | `!vr_cam_probe` write watch, 2026-10-12 |
 
 Related functions in bg3_dx11.exe 4.1.1.7631656 (not hooked; for orientation):
@@ -41,5 +42,12 @@ Related functions in bg3_dx11.exe 4.1.1.7631656 (not hooked; for orientation):
 | 0x4084CB0 / 0x4084DC0 / 0x4084ED0 | Rotate +X / +Y / +Z by the Transform's quaternion: the view's right / up / forward rows |
 | 0x4084FF0 | Builds the view matrix from right, up, forward and position |
 | 0xE59570 | ECS component lookup (world, entity handle) |
+| 0x40851F0 | Camera controller projection update: ortho path (with off-centre bounds at +0x70..+0x7C when `OffCenter`) or perspective path (FOV from vtable slot 3, aspect from slot 4, builder 0x4084950); stores via 0x408C030, clears `ProjectionDirty`, calls 0x4086010 |
+| 0x4084950 | Perspective builder (out, fov, aspect, near, far): symmetric, left-handed, reversed-Z with a finite far plane: col2 row2 = near/(near-far), col3 row2 = -far*near/(near-far), col2 row3 = 1 |
+| 0x408C030 | Projection setter: copies the matrix to `[rcx+0x80]` (controller+0x110), computes the inverse |
+| 0x58EDC60 | Base `rf::CameraController` vtable. Transform lives in the object: slot 9 `GetWorldTranslate` = `this+0x34`, slots 11/13 = `this+0x24`; slot 3 GetFov (+0x14), slot 4 GetAspectRatio (+0x20); slot 5 is a transform setter (the Script Extender's slot list doesn't match this build) |
+| 0x3E01E00, 0x3E02440, 0x3E18CE0, 0x3E1C940 | Create base-class camera controllers (the 4 extra cameras seen per frame); purpose still open |
+| 0x15B6442 | Registers input event `ToggleForceSplitscreen` (id 0x5E0) |
+| 0x40CE0 / 0x2137110 | Registers / looks up the named global `ForceSplitscreen` |
 | 0x588CB30 | `rf::Visual` vtable: slot 0 GetRTTI (returns 0x1001), 2-11 transform setters, **13 GetCullFlags** (`word [rcx+0xF4]`), 14 SetSomeCullFlag, **15 ToggleCullFlag600(bool set)**. The Script Extender lists 13/15 one slot later. |
 | 0x3C6B810 | Visual cull-flag setter (this, mask, set): ORs the mask into the flags at +0xF4 when `set`, otherwise clears it; notifies the scene and recurses into attachments (array at +0xB8, stride 0x30, count +0xC4) |

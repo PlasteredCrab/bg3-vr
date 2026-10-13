@@ -5,6 +5,8 @@
 //   bg3vr_disasm <exe> --sig <rva>       shortest signature starting at rva that is unique in .text
 //   bg3vr_disasm <exe> --find "<sig>"    where a signature matches in .text (exit 0 if exactly once)
 //   bg3vr_disasm <exe> --vtable <rva> [n] list n vtable slots (default 24) with their first instructions
+//   bg3vr_disasm <exe> --xref <rva>      instructions that call, jump to, or RIP-address rva
+//   bg3vr_disasm <exe> --str <text>      ASCII and UTF-16 occurrences of text, as RVAs
 //
 // RVAs are hex (with or without 0x). Signatures wildcard relative branch targets and RIP-relative
 // displacements, the parts that change between game builds.
@@ -14,8 +16,11 @@
 #include <Zydis.h>
 #include <windows.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -99,6 +104,30 @@ bool decode(const Image& image, std::uint32_t rva, ZydisDisassembledInstruction&
     return ZYAN_SUCCESS(ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LONG_64, rva, image.file.data() + *offset, available, &out));
 }
 
+// If rva points at a printable ASCII or UTF-16 string (4+ chars), returns it for annotation.
+std::string string_at(const Image& image, std::uint32_t rva) {
+    const auto offset = image.offset_of(rva);
+    if (!offset) {
+        return {};
+    }
+    const auto printable = [](std::uint8_t c) { return c >= 0x20 && c < 0x7F; };
+    std::string text;
+    const std::uint8_t* p = image.file.data() + *offset;
+    const std::size_t left = image.file.size() - *offset;
+    const bool wide = left > 2 && printable(p[0]) && p[1] == 0;
+    const std::size_t step = wide ? 2 : 1;
+    for (std::size_t k = 0; k + step <= left && text.size() < 80; k += step) {
+        if (!printable(p[k]) || (wide && p[k + 1] != 0)) {
+            if (p[k] != 0) {
+                return {};
+            }
+            break;
+        }
+        text += static_cast<char>(p[k]);
+    }
+    return text.size() >= 4 ? text : std::string{};
+}
+
 void print_range(const Image& image, std::uint32_t rva, std::uint32_t end, std::size_t max_count, std::uint32_t mark) {
     for (std::size_t i = 0; i < max_count && rva < end; ++i) {
         ZydisDisassembledInstruction ins;
@@ -113,7 +142,18 @@ void print_range(const Image& image, std::uint32_t rva, std::uint32_t end, std::
             std::snprintf(b, sizeof(b), "%02X ", bytes[k]);
             hex += b;
         }
-        std::printf("%s %08X  %-36s %s\n", rva == mark ? ">>" : "  ", rva, hex.c_str(), ins.text);
+        std::string note;
+        for (std::uint8_t op = 0; op < ins.info.operand_count_visible; ++op) {
+            ZyanU64 absolute = 0;
+            if (ins.operands[op].type == ZYDIS_OPERAND_TYPE_MEMORY && ins.operands[op].mem.base == ZYDIS_REGISTER_RIP &&
+                ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&ins.info, &ins.operands[op], rva, &absolute))) {
+                const std::string text = string_at(image, static_cast<std::uint32_t>(absolute));
+                if (!text.empty()) {
+                    note = "  ; \"" + text + "\"";
+                }
+            }
+        }
+        std::printf("%s %08X  %-36s %s%s\n", rva == mark ? ">>" : "  ", rva, hex.c_str(), ins.text, note.c_str());
         rva += ins.info.length;
     }
 }
@@ -185,6 +225,105 @@ int make_signature(const Image& image, std::uint32_t rva) {
     return 2;
 }
 
+std::optional<std::uint32_t> rva_of_offset(const Image& image, std::size_t offset) {
+    for (const auto& s : image.sections) {
+        if (offset >= s.PointerToRawData && offset < s.PointerToRawData + s.SizeOfRawData) {
+            return static_cast<std::uint32_t>(s.VirtualAddress + (offset - s.PointerToRawData));
+        }
+    }
+    return std::nullopt;
+}
+
+// Every ASCII and UTF-16 occurrence of `needle` in the file, as RVAs with section names.
+int find_strings(const Image& image, const std::string& needle) {
+    std::vector<std::uint8_t> wide;
+    for (char c : needle) {
+        wide.push_back(static_cast<std::uint8_t>(c));
+        wide.push_back(0);
+    }
+    const std::vector<std::uint8_t> narrow(needle.begin(), needle.end());
+    int hits = 0;
+    const std::array<const std::vector<std::uint8_t>*, 2> patterns = {&narrow, &wide};
+    for (const auto* pattern : patterns) {
+        auto it = image.file.begin();
+        while ((it = std::search(it, image.file.end(), pattern->begin(), pattern->end())) != image.file.end()) {
+            const std::size_t offset = static_cast<std::size_t>(it - image.file.begin());
+            if (const auto rva = rva_of_offset(image, offset)) {
+                // Print the whole zero-terminated string around the match.
+                std::size_t start = offset;
+                const std::size_t step = pattern == &wide ? 2 : 1;
+                while (start >= step && image.file[start - step] >= 0x20 && image.file[start - step] < 0x7F &&
+                       (step == 1 || image.file[start - step + 1] == 0)) {
+                    start -= step;
+                }
+                std::string text;
+                for (std::size_t k = start; k < image.file.size() && image.file[k] >= 0x20 && image.file[k] < 0x7F &&
+                                            (step == 1 || image.file[k + 1] == 0) && text.size() < 160;
+                     k += step) {
+                    text += static_cast<char>(image.file[k]);
+                }
+                std::printf("%08X  %s  \"%s\"\n", *rva_of_offset(image, start), step == 2 ? "utf16" : "ascii", text.c_str());
+                ++hits;
+            }
+            ++it;
+        }
+    }
+    std::printf("%d hit(s)\n", hits);
+    return hits ? 0 : 2;
+}
+
+// Every instruction in .pdata functions that calls, jumps to, or addresses `target` (RIP-relative).
+int find_xrefs(const Image& image, std::uint32_t target) {
+    const auto& dir = image.nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    const auto table = image.offset_of(dir.VirtualAddress);
+    if (!table) {
+        return 1;
+    }
+    const auto* entries = reinterpret_cast<const RUNTIME_FUNCTION*>(image.file.data() + *table);
+    const std::size_t count = dir.Size / sizeof(RUNTIME_FUNCTION);
+
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+    ZydisDecodedInstruction ins;
+    ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+    int hits = 0;
+    std::uint32_t last_end = 0;
+    for (std::size_t f = 0; f < count; ++f) {
+        // Chained unwind entries repeat ranges; skip anything already covered.
+        std::uint32_t rva = std::max<std::uint32_t>(entries[f].BeginAddress, last_end);
+        const std::uint32_t end = entries[f].EndAddress;
+        last_end = std::max(last_end, end);
+        const auto base = image.offset_of(rva);
+        if (!base || rva >= end) {
+            continue;
+        }
+        const std::uint8_t* code = image.file.data() + *base;
+        std::size_t pos = 0;
+        while (rva + pos < end) {
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, code + pos, end - rva - pos, &ins, ops))) {
+                ++pos;
+                continue;
+            }
+            const std::uint32_t here = rva + static_cast<std::uint32_t>(pos);
+            for (std::uint8_t i = 0; i < ins.operand_count_visible; ++i) {
+                const bool relative = (ops[i].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && ops[i].imm.is_relative) ||
+                                      (ops[i].type == ZYDIS_OPERAND_TYPE_MEMORY && ops[i].mem.base == ZYDIS_REGISTER_RIP);
+                ZyanU64 absolute = 0;
+                if (relative && ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&ins, &ops[i], here, &absolute)) &&
+                    absolute == target) {
+                    ZydisDisassembledInstruction text;
+                    decode(image, here, text);
+                    std::printf("%08X  in fn %08X  %s\n", here, entries[f].BeginAddress, text.text);
+                    ++hits;
+                }
+            }
+            pos += ins.length;
+        }
+    }
+    std::printf("%d xref(s)\n", hits);
+    return hits ? 0 : 2;
+}
+
 std::optional<std::uint32_t> parse_rva(const char* text) {
     std::string s(text);
     if (s.starts_with("0x") || s.starts_with("0X")) {
@@ -212,6 +351,21 @@ int main(int argc, char** argv) {
     }
 
     const std::string mode = argv[2];
+    if (mode == "--str") {
+        if (argc < 4) {
+            std::fprintf(stderr, "usage: --str <text>\n");
+            return 1;
+        }
+        return find_strings(image, argv[3]);
+    }
+    if (mode == "--xref") {
+        const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;
+        if (!rva) {
+            std::fprintf(stderr, "bad rva\n");
+            return 1;
+        }
+        return find_xrefs(image, *rva);
+    }
     if (mode == "--vtable") {
         const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;
         const std::size_t count = argc > 4 ? std::strtoul(argv[4], nullptr, 10) : 24;
