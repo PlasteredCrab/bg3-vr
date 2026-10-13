@@ -132,6 +132,10 @@ std::vector<CullTarget> g_cull_targets; // guarded by g_mutex
 std::vector<CullTarget> g_cull_restore; // shown again once, then dropped
 std::atomic<std::uint64_t> g_cull_frames{0};
 std::atomic<std::uint64_t> g_cull_calls{0};
+std::atomic<bool> g_cull_pending{false};       // a hide/show request is waiting
+std::atomic<std::uint64_t> g_cull_updates{0};  // view updates seen, for throttling
+std::atomic<std::uint64_t> g_cull_ticks{0};    // QPC ticks spent in process_cull
+constexpr std::uint64_t kCullCheckInterval = 32; // the game hasn't been seen to restore the flags
 
 using ToggleCullFn = void (*)(std::uintptr_t, bool);
 
@@ -146,8 +150,17 @@ void set_main_view(const CullTarget& target, bool visible) {
     g_cull_calls.fetch_add(1, std::memory_order_relaxed);
 }
 
+// Runs on every view update (~5 per frame); does work only for pending requests or every
+// kCullCheckInterval-th update, since each check costs a lock and a VirtualQuery per object.
 void process_cull() {
+    const bool due = g_cull_updates.fetch_add(1, std::memory_order_relaxed) % kCullCheckInterval == 0;
+    if (!due && !g_cull_pending.load(std::memory_order_acquire)) {
+        return;
+    }
+    LARGE_INTEGER start, end;
+    QueryPerformanceCounter(&start);
     std::scoped_lock lock(g_mutex);
+    g_cull_pending.store(false, std::memory_order_release);
     for (const CullTarget& target : g_cull_restore) {
         if (still_valid(target)) {
             set_main_view(target, true);
@@ -164,6 +177,8 @@ void process_cull() {
     if (!g_cull_targets.empty()) {
         g_cull_frames.fetch_add(1, std::memory_order_relaxed);
     }
+    QueryPerformanceCounter(&end);
+    g_cull_ticks.fetch_add(static_cast<std::uint64_t>(end.QuadPart - start.QuadPart), std::memory_order_relaxed);
 }
 
 // Entry of the view update: rcx = controller. Write the pose into the camera's Transform.
@@ -421,6 +436,7 @@ DWORD WINAPI watch_bridge(void* param) {
             std::scoped_lock lock(g_mutex);
             g_cull_restore.insert(g_cull_restore.end(), g_cull_targets.begin(), g_cull_targets.end());
             g_cull_targets = std::move(validated);
+            g_cull_pending.store(true, std::memory_order_release);
             log::info("hide: {} object(s) hidden from the main view, {} to restore", g_cull_targets.size(),
                       g_cull_restore.size());
         }
@@ -444,8 +460,15 @@ DWORD WINAPI watch_bridge(void* param) {
                   calls - last_reported_calls, g_transform_writes.load(std::memory_order_relaxed),
                   g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
                   g_force_view ? " (force_view on)" : "", g_cull_frames.load(std::memory_order_relaxed));
-        log::info("hide: ToggleCullFlag600 called {} times so far (once per hide, plus each time the game "
-                  "restored the flags)", g_cull_calls.load(std::memory_order_relaxed));
+        LARGE_INTEGER frequency;
+        QueryPerformanceFrequency(&frequency);
+        const std::uint64_t checks = g_cull_frames.load(std::memory_order_relaxed);
+        const double total_us = 1e6 * static_cast<double>(g_cull_ticks.load(std::memory_order_relaxed)) /
+                                static_cast<double>(frequency.QuadPart);
+        log::info("hide: ToggleCullFlag600 called {} times so far (once per hide/show, plus each time the game "
+                  "restored the flags); {} checks, {:.1f} us total, {:.2f} us each",
+                  g_cull_calls.load(std::memory_order_relaxed), checks, total_us,
+                  checks ? total_us / static_cast<double>(checks) : 0.0);
         g_view_max_error.store(0.0f, std::memory_order_relaxed);
         last_reported_calls = calls;
         for (std::size_t i = 0; i < kTrackedControllers; ++i) {
