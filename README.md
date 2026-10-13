@@ -3,7 +3,7 @@
 First-person, full-body VR for Baldur's Gate 3: IK body, 6DOF hands, physical interaction, wrist UI, physical combat and dice, with D&D rules still deciding outcomes.
 
 - Design document: <https://claude.ai/code/artifact/63345b98-a063-4e6d-bb3b-96ef72457b15>
-- Current phase: **Phase 0, Groundwork**. See [docs/phase-0.md](docs/phase-0.md).
+- Current phase: **Phase 1, Stereo viewer**. See [docs/phase-1.md](docs/phase-1.md) (Phase 0 is done: [docs/phase-0.md](docs/phase-0.md)).
 
 ## Layout
 
