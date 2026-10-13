@@ -168,7 +168,12 @@ Request parse(std::string_view content) {
             if (ok) {
                 follow.transform = *transform;
                 request.follow = follow;
-            }        } else if (key == "views") {
+            }        } else if (key == "trace") {
+            const std::string action = text::to_lower(value);
+            if (action == "on" || action == "off" || action == "dump") {
+                request.trace = action;
+            }
+        } else if (key == "views") {
             const std::string action = text::to_lower(value);
             if (action == "find") {
                 request.views_find = true;

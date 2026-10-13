@@ -33,6 +33,7 @@
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
+--   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
 --                             then !vr_cam and !vr_views find to see what split screen created
 --
@@ -391,6 +392,16 @@ end))
 Ext.RegisterConsoleCommand("vr_fps", Safely(function()
     if BG3VR.WriteBridge({ "report=1" }) then
         BG3VR.Log("reports written to bg3vr.log (look for 'render: ... fps')")
+    end
+end))
+-- Call tracing for reverse engineering: who calls the render view and pipeline functions.
+Ext.RegisterConsoleCommand("vr_trace", Safely(function(_, mode)
+    if mode ~= "on" and mode ~= "off" and mode ~= "dump" then
+        BG3VR.Warn("usage: !vr_trace on|off|dump")
+        return
+    end
+    if BG3VR.WriteBridge({ "trace=" .. mode }) then
+        BG3VR.Log("trace %s (results in bg3vr.log)", mode)
     end
 end))
 -- Split screen (Phase 1 step 5): the game's ForceSplitscreen switch. Whether it splits with one

@@ -28,3 +28,14 @@ camera_set_projection_call = 48 8D 8B 90 00 00 00 48 8D 54 24 70 E8 ?? ?? ?? ?? 
 # built view matrix (rdx) into controller+0x90 (rcx = rbx + 0x90). The camera hook lives here.
 #   lea rcx,[rbx+90h] ; lea rdx,[rsp+60h] ; call SetViewMatrix ; mov rcx,rbx ; mov byte [rbx+10h],0 (ViewDirty)
 camera_set_view_call = 48 8D 8B 90 00 00 00 48 8D 54 24 60 E8 ?? ?? ?? ?? 48 8B CB C6 43 10 00 | offset 12
+
+# Step 5 trace targets (2026-10-13, 4.1.1.7631656; see docs/re-notes/stereo.md). Hooked only while
+# !vr_trace is on, to log who calls them and with which view.
+# Render view vtable slot 1 (0x17F21E0): begin recording; rcx = view. Sets IsRecording (+0x2150).
+render_view_begin = 40 53 48 83 EC 20 80 B9 50 21 00 00 00 48 8B D9 75 ??
+# Render view vtable slot 4 (0x3CC7010): end recording, runs the app stages; rcx = view.
+render_view_end = 48 89 5C 24 08 57 48 83 EC 20 48 8B F9 80 B9 50 21 00 00 00
+# Game-side pipeline builder (0x588E50, virtual): rcx = pipeline, rdx = view; skips if view == [rcx+0xA8].
+game_pipeline_setup = 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 68 4C 8B EA
+# Renderer-side pipeline builder (0x3B21E10, virtual): rcx = pipeline.
+render_pipeline_setup = 48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC 90 00 00 00 48 8B F1

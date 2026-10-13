@@ -28,6 +28,7 @@ struct Request {
     std::optional<std::optional<camera::Follow>> follow;       // present: follow (value) or stop (nullopt)
     bool recenter = false;                                     // headset: take the current head pose as centre
     std::optional<bool> views_find;
+    std::optional<std::string> trace;                          // on | off | dump
     bool views_refs = false;                                   // what points at each view
     bool views_diff = false;                                   // small differences between view 0 and 1
     std::optional<views::Layout> views_layout;                 // layout experiment
@@ -53,6 +54,7 @@ struct Request {
 //   views=set <index> <scale x> <scale y> <offset x> <offset y>   |   views=enable <index> <0|1>
 //   follow=<hex transform> [height]  |   follow=off
 //   recenter=1
+//   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 
 // Starts the watcher thread ([camera] bridge / bridge_file in bg3vr.ini). `on_request` runs on that

@@ -14,6 +14,7 @@ add_library(bg3vr_base STATIC
     src/probe.cpp
     src/render.cpp
     src/signatures.cpp
+    src/trace.cpp
     src/views.cpp
     src/vr_math.cpp
     src/watch.cpp

@@ -14,6 +14,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/trace.hpp"
 #include "bg3vr/views.hpp"
 #include "bg3vr/win_util.hpp"
 
@@ -142,6 +143,16 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
 #endif
     if (request.hide) {
         cull::set_hidden(*request.hide);
+    }
+    if (request.trace) {
+        if (*request.trace == "on") {
+            trace::start(module);
+        } else if (*request.trace == "off") {
+            trace::stop();
+            trace::report();
+        } else {
+            trace::report();
+        }
     }
     if (request.views_refs) {
         views::refs();
