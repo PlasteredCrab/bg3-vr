@@ -300,7 +300,7 @@ void set_layout(bool side_by_side) {
     g_layout.store(side_by_side ? Layout::SideBySide : Layout::Restore, std::memory_order_relaxed);
     const auto views = found();
     log::info("views: layout {} for {} view(s){}", side_by_side ? "side by side" : "full screen", views.size(),
-              views.size() < 2 && side_by_side ? " (needs 2: !vr_split on, then !vr_views find)" : "");
+              views.size() < 2 && side_by_side ? " (needs 2: !vr_split on, wait a few seconds; scanning again now)" : "");
 }
 
 void on_frame() {
