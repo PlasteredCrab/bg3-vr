@@ -1,5 +1,6 @@
 #include "bg3vr/headset.hpp"
 
+#include "bg3vr/blit.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
@@ -49,6 +50,10 @@ bool g_ready = false;
 xr::System g_system;
 std::unique_ptr<xr::Session> g_session;
 UINT g_image_width = 0;
+// The back buffer goes into the images through the blitter (any format, sRGB-decoded, sub-rectangles);
+// a plain copy only when it can't be set up and the formats allow.
+blit::Blitter g_blitter;
+bool g_linearize = false;
 UINT g_image_height = 0;
 
 // Head tracking state: the view each eye image was last rendered with, whether the eye has an image
@@ -225,19 +230,29 @@ std::optional<std::size_t> match_in_frame(std::uintptr_t render_frame,
         if (readable < 0x1000) {
             continue;
         }
+        // Every copy, with how many camera updates old it is; the freshest one wins (views hold
+        // several copies, e.g. this frame's and the previous frame's).
         const std::size_t floats = readable / sizeof(float);
+        std::optional<std::pair<std::size_t, std::size_t>> best; // offset, lag
         for (std::size_t at = 0; at + 16 <= floats; ++at) {
             for (std::size_t i = 0; i < count; ++i) {
                 if (matrix_matches(&buffer[at], applied[i].view_matrix)) {
-                    g_frame_source = source;
-                    g_frame_offset = at * sizeof(float);
-                    log::info("xr: found the rendered view matrix at {}+0x{:X} (0x{:X}); it was applied {} camera "
-                              "update(s) before this Present",
-                              source == 0 && render_frame ? "RenderFrame" : "render view", *g_frame_offset,
-                              sources[source], i);
-                    return i;
+                    log::info("xr:   view matrix applied {} update(s) ago at {}+0x{:X}", i,
+                              source == 0 && render_frame ? "RenderFrame" : "render view", at * sizeof(float));
+                    if (!best || i < best->second) {
+                        best = {{at * sizeof(float), i}};
+                    }
+                    break;
                 }
             }
+        }
+        if (best) {
+            g_frame_source = source;
+            g_frame_offset = best->first;
+            log::info("xr: using the view matrix at {}+0x{:X} (0x{:X}): applied {} camera update(s) before this Present",
+                      source == 0 && render_frame ? "RenderFrame" : "render view", best->first, sources[source],
+                      best->second);
+            return best->second;
         }
     }
     if (g_searches >= kSearchAttempts) {
@@ -289,15 +304,24 @@ void start(IDXGISwapChain* swapchain) {
     // made the same size.
     const auto width = static_cast<int32_t>(desc.BufferDesc.Width);
     const auto height = static_cast<int32_t>(desc.BufferDesc.Height);
+    std::string blit_error;
+    const bool blitting = g_blitter.create(device, desc.BufferDesc.Width, desc.BufferDesc.Height,
+                                           desc.BufferDesc.Format, blit_error);
+    if (!blitting) {
+        log::warn("xr: no shader copy ({}); trying a plain copy", blit_error);
+    }
     g_session = std::make_unique<xr::Session>();
-    if (!g_session->create(g_system, device, error, desc.BufferDesc.Format, width, height) ||
+    // With the blitter the images can be 8-bit sRGB whatever the back buffer is.
+    const DXGI_FORMAT wanted = blitting ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : desc.BufferDesc.Format;
+    if (!g_session->create(g_system, device, error, wanted, width, height) ||
         !g_session->create_quad(width, height, error)) {
         log::error("xr: {}", error);
         g_session.reset();
         g_failed = true;
         return;
     }
-    if (!copy_compatible(g_session->format(), desc.BufferDesc.Format)) {
+    g_linearize = blitting && blit::is_srgb(g_session->format()) && !blit::is_srgb(desc.BufferDesc.Format);
+    if (!blitting && !copy_compatible(g_session->format(), desc.BufferDesc.Format)) {
         log::error("xr: the runtime offers no swapchain format the game's back buffer (format {}) can be copied into "
                    "(runtime picked {})",
                    static_cast<int>(desc.BufferDesc.Format), static_cast<int>(g_session->format()));
@@ -308,10 +332,11 @@ void start(IDXGISwapChain* swapchain) {
     g_image_width = desc.BufferDesc.Width;
     g_image_height = desc.BufferDesc.Height;
     g_rendered.assign(2, {XR_TYPE_VIEW});
-    log::info("xr: session open on '{}', mode {}: images {}x{} format {} (game back buffer format {}); screen {:.1f} m "
-              "wide at {:.1f} m",
+    log::info("xr: session open on '{}', mode {}: images {}x{} format {} (game back buffer format {}, {}{}); screen "
+              "{:.1f} m wide at {:.1f} m",
               adapter, mode_name(g_mode), width, height, static_cast<int>(g_session->format()),
-              static_cast<int>(desc.BufferDesc.Format), g_screen_width_m, g_screen_distance_m);
+              static_cast<int>(desc.BufferDesc.Format), blitting ? "shader copy" : "plain copy",
+              g_linearize ? ", sRGB-decoded" : "", g_screen_width_m, g_screen_distance_m);
     if (g_mode != Mode::Screen) {
         log::info("xr: head tracking starts when a pose is held (!vr_cam_set here); until then, the screen");
     }
@@ -321,9 +346,18 @@ void start(IDXGISwapChain* swapchain) {
     g_ready = true;
 }
 
-void copy_back_buffer(IDXGISwapChain* swapchain, ID3D11Texture2D* target) {
+void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target) {
     ID3D11Texture2D* back_buffer = nullptr;
     if (FAILED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
+        return;
+    }
+    if (g_blitter.ready()) {
+        D3D11_TEXTURE2D_DESC source{};
+        back_buffer->GetDesc(&source);
+        if (source.Width == g_image_width && source.Height == g_image_height) {
+            g_blitter.draw(back_buffer, {}, target.view, g_image_width, g_image_height, g_linearize);
+        }
+        back_buffer->Release();
         return;
     }
     // The window can be resized after the images were made; copy the overlapping part.
@@ -332,7 +366,7 @@ void copy_back_buffer(IDXGISwapChain* swapchain, ID3D11Texture2D* target) {
     const D3D11_BOX box{0, 0, 0, (std::min)(source.Width, g_image_width), (std::min)(source.Height, g_image_height), 1};
     ID3D11DeviceContext* context = nullptr;
     render::device()->GetImmediateContext(&context);
-    context->CopySubresourceRegion(target, 0, 0, 0, 0, back_buffer, 0, &box);
+    context->CopySubresourceRegion(target.texture, 0, 0, 0, 0, back_buffer, 0, &box);
     context->Release();
     back_buffer->Release();
 }
@@ -340,7 +374,7 @@ void copy_back_buffer(IDXGISwapChain* swapchain, ID3D11Texture2D* target) {
 void submit_screen(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     if (frame.state.shouldRender) {
         const xr::EyeImage image = g_session->acquire_quad();
-        copy_back_buffer(swapchain, image.texture);
+        copy_back_buffer(swapchain, image);
         g_session->release_quad();
     }
     g_session->end_frame_quad(frame, g_screen_width_m, g_screen_distance_m);
@@ -394,7 +428,7 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
             const int last = g_mode == Mode::Mono ? 1 : rendered->head.eye;
             for (int eye = first; eye <= last; ++eye) {
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
-                copy_back_buffer(swapchain, image.texture);
+                copy_back_buffer(swapchain, image);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head);
                 g_has_image[eye] = true;
@@ -438,6 +472,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         camera::set_head(std::nullopt);
         render::set_sync_interval_override(-1);
         g_session.reset();
+        g_blitter.destroy();
         g_failed = true;
         return;
     }

@@ -1,5 +1,6 @@
 // Dependency-free unit tests for the engine-agnostic core utilities.
 
+#include "bg3vr/blit.hpp"
 #include "bg3vr/bridge.hpp"
 #include "bg3vr/pose.hpp"
 #include "bg3vr/config.hpp"
@@ -23,6 +24,7 @@
 #include <cstdio>
 #include <cstring>
 #include <span>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -508,6 +510,91 @@ void test_views_scan() {
     delete controller;
 }
 
+// The headset blit on a WARP device: a gamma-encoded R10G10B10A2 "back buffer" (BG3's format) lands
+// in an 8-bit sRGB image with the same encoded values, a sub-rectangle fills the whole target, and
+// the context's state (here a viewport) is the same afterwards.
+void test_blit() {
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &device,
+                                 nullptr, &context))) {
+        std::printf("skipped blit test (no WARP device)\n");
+        return;
+    }
+    constexpr UINT kWidth = 64, kHeight = 32;
+    const auto pack = [](float gamma) {
+        const auto v = static_cast<std::uint32_t>(gamma * 1023.0f + 0.5f);
+        return v | (v << 10) | (v << 20) | (3u << 30);
+    };
+    std::vector<std::uint32_t> pixels(kWidth * kHeight);
+    for (UINT y = 0; y < kHeight; ++y) {
+        for (UINT x = 0; x < kWidth; ++x) {
+            pixels[y * kWidth + x] = pack(x < kWidth / 2 ? 0.5f : 0.2f);
+        }
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = kWidth;
+    desc.Height = kHeight;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    const D3D11_SUBRESOURCE_DATA data{pixels.data(), kWidth * 4, 0};
+    ID3D11Texture2D* source = nullptr;
+    device->CreateTexture2D(&desc, &data, &source);
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    ID3D11Texture2D* target = nullptr;
+    ID3D11RenderTargetView* target_view = nullptr;
+    device->CreateTexture2D(&desc, nullptr, &target);
+    device->CreateRenderTargetView(target, nullptr, &target_view);
+    desc.BindFlags = 0;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* readback = nullptr;
+    device->CreateTexture2D(&desc, nullptr, &readback);
+
+    const D3D11_VIEWPORT sentinel{7.0f, 7.0f, 10.0f, 10.0f, 0.0f, 1.0f};
+    context->RSSetViewports(1, &sentinel);
+
+    blit::Blitter blitter;
+    std::string error;
+    const bool created = blitter.create(device, kWidth, kHeight, DXGI_FORMAT_R10G10B10A2_UNORM, error);
+    if (!created) {
+        std::printf("blit: %s\n", error.c_str());
+    }
+    CHECK(created);
+    const auto red_at = [&](UINT x, UINT y) {
+        context->CopyResource(readback, target);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        int value = -1;
+        if (SUCCEEDED(context->Map(readback, 0, D3D11_MAP_READ, 0, &mapped))) {
+            value = static_cast<const std::uint8_t*>(mapped.pData)[y * mapped.RowPitch + x * 4];
+            context->Unmap(readback, 0);
+        }
+        return value;
+    };
+    if (created) {
+        blitter.draw(source, {}, target_view, kWidth, kHeight, true);
+        CHECK(std::abs(red_at(8, 8) - 128) <= 2 && std::abs(red_at(56, 8) - 51) <= 2);
+        blitter.draw(source, {kWidth / 2, 0, kWidth / 2, kHeight}, target_view, kWidth, kHeight, true);
+        CHECK(std::abs(red_at(8, 8) - 51) <= 2 && std::abs(red_at(56, 24) - 51) <= 2);
+
+        D3D11_VIEWPORT after{};
+        UINT count = 1;
+        context->RSGetViewports(&count, &after);
+        CHECK(count == 1 && after.TopLeftX == 7.0f && after.Width == 10.0f);
+    }
+    blitter.destroy();
+    readback->Release();
+    target_view->Release();
+    target->Release();
+    source->Release();
+    context->Release();
+    device->Release();
+}
+
 } // namespace
 
 int main() {
@@ -526,6 +613,7 @@ int main() {
     test_memory();
     test_config();
     test_views_scan();
+    test_blit();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

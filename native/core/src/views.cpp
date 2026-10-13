@@ -173,7 +173,19 @@ void log_view(std::uintptr_t read_state) {
               "view index {}",
               view, kReadStateInView, mem::describe(g_module, vtable), read_std_string(write_state + kDebugName),
               split_index, view_index);
-    log_state("ReadState ", read_state);
+    // The Script Extender's offset for ReadState may be off for this build: list the pointers into
+    // the exe's .rdata (vtables) in the 0x2400 bytes before ReadState, nearest last.
+    std::vector<std::uintptr_t> before(0x2400 / sizeof(std::uintptr_t));
+    if (mem::try_copy(before.data(), read_state - 0x2400, 0x2400)) {
+        int listed = 0;
+        for (std::size_t i = 0; i < before.size() && listed < 12; ++i) {
+            if (mem::in_section(g_module, ".rdata", before[i], sizeof(void*))) {
+                log::info("views:   .rdata pointer at ReadState-0x{:X}: {}", 0x2400 - i * sizeof(std::uintptr_t),
+                          mem::describe(g_module, before[i]));
+                ++listed;
+            }
+        }
+    }    log_state("ReadState ", read_state);
     log_state("WriteState", write_state);
     std::uintptr_t controller = 0;
     mem::try_copy(&controller, read_state + state::kController, sizeof(controller));
