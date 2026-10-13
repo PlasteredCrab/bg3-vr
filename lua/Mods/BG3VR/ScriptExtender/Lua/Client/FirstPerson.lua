@@ -6,7 +6,8 @@
 -- Despite the Script Extender's name, VisualCullFlags acts as an inclusion mask: every visible part
 -- has 0x200 and 0x400 set, and every shadow-casting part has the shadow bits (0x04, 0x08, 0x10,
 -- 0x8000) set (seen 2026-10-12: head/hair 0x86FF, armour 0x867F). Hiding therefore CLEARS `mask`
--- (default 0x600) on matching visuals and on their renderables, and leaves the shadow bits alone.
+-- (default 0x600) on matching visuals' renderables (and on the visuals themselves where the Script
+-- Extender allows it), and leaves the shadow bits alone.
 -- While hidden, the flags are re-checked every few ticks and cleared again if the game restores them.
 
 local HEAD_PATTERNS = { "head", "hair", "beard", "horn", "helmet", "hat", "mask", "circlet", "eye" }
@@ -106,10 +107,12 @@ local function Apply(hide)
             return
         end
         matched = matched + 1
+        -- The Script Extender rejects VisualCullFlags values containing bits its enum doesn't name
+        -- (the game uses 0x01, 0x20, 0x40, 0x100 too), so this usually fails; renderables below are
+        -- plain uint16 and always writable.
         local bits = BitsOf(visual.CullFlags)
         local wanted = Adjusted(bits, hide)
-        if wanted ~= bits then
-            visual.CullFlags = wanted
+        if wanted ~= bits and pcall(function() visual.CullFlags = wanted end) then
             changed = changed + 1
         end
         for _, desc in ipairs(visual.ObjectDescs) do
