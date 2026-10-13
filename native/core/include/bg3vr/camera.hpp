@@ -47,6 +47,14 @@ std::uintptr_t controller();
 // The pose to hold the driven camera at; nullopt releases it.
 void set_pose(std::optional<Pose> pose);
 
+// Automatic look-around while a pose is held (overrides mouse look); nullopt stops it and returns the
+// view to where the sweep started.
+void set_sweep(std::optional<Sweep> sweep);
+
+// Desktop stand-in for head rotation: while a pose is held, holding the middle mouse button and
+// dragging turns it ([camera] mouselook / mouselook_sensitivity in bg3vr.ini; on by default).
+void set_mouselook(bool enabled);
+
 // Called on the game thread at the start of every view update (several per frame), before the pose
 // is applied. Used for per-frame work that must run on the game thread.
 using FrameCallback = void (*)();

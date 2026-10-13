@@ -109,6 +109,12 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     } else if (request.pose) {
         camera::set_pose(request.pose);
     }
+    if (request.mouselook) {
+        camera::set_mouselook(*request.mouselook);
+    }
+    if (request.sweep) {
+        camera::set_sweep(*request.sweep);
+    }
     if (request.hide) {
         cull::set_hidden(*request.hide);
     }

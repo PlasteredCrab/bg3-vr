@@ -5,13 +5,18 @@
 #include "bg3vr/signatures.hpp"
 
 #include <safetyhook.hpp>
+#include <windows.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <numbers>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 namespace bg3vr::camera {
 
@@ -29,6 +34,20 @@ std::atomic<std::uint64_t> g_transform_writes{0};
 std::atomic<std::uint64_t> g_view_checks{0};
 std::atomic<float> g_view_max_error{0.0f};
 bool g_force_view = false;
+
+// Mouse look (a desktop stand-in for head rotation): while a pose is held, dragging with the
+// middle mouse button turns it. State touched only on the game thread, under g_mutex.
+bool g_mouselook = true;
+float g_mouselook_sensitivity = 0.15f; // degrees per pixel
+bool g_dragging = false;
+POINT g_last_cursor{};
+
+// Automatic look-around: the view sweeps around the pose it started from (g_sweep_base), as
+// yaw = base + A*sin(2*pi*t/T), pitch = base + B*sin(4*pi*t/T), so a cycle pans left-right once and
+// nods twice. Computed from the base every frame, so it never drifts. Under g_mutex.
+std::optional<Sweep> g_sweep;
+Pose g_sweep_base;
+std::chrono::steady_clock::time_point g_sweep_start;
 
 safetyhook::MidHook g_view_update_hook;
 safetyhook::MidHook g_set_view_hook;
@@ -66,14 +85,41 @@ std::optional<Pose> pose_for(std::uintptr_t controller) {
     return g_pose;
 }
 
+// Called once per view update of the driven camera, under g_mutex: middle-drag turns the held pose.
+void update_mouselook(Pose& pose) {
+    const bool held = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    if (held && g_dragging) {
+        pose.yaw_deg += static_cast<float>(cursor.x - g_last_cursor.x) * g_mouselook_sensitivity;
+        pose.pitch_deg = std::clamp(
+            pose.pitch_deg - static_cast<float>(cursor.y - g_last_cursor.y) * g_mouselook_sensitivity, -89.0f, 89.0f);
+    }
+    g_dragging = held;
+    g_last_cursor = cursor;
+}
+
 // Entry of the view update: rcx = controller. Write the pose into the camera's Transform.
 void on_view_update(safetyhook::Context& ctx) {
     if (const FrameCallback callback = g_frame_callback.load(std::memory_order_acquire)) {
         callback();
     }
-    const auto pose = pose_for(ctx.rcx);
-    if (!pose) {
-        return;
+    std::optional<Pose> pose;
+    {
+        std::scoped_lock lock(g_mutex);
+        if (!g_pose || ctx.rcx != g_controller) {
+            return;
+        }
+        if (g_sweep) {
+            const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_sweep_start).count();
+            const double phase = 2.0 * std::numbers::pi * t / std::max(0.5f, g_sweep->period_s);
+            g_pose->yaw_deg = g_sweep_base.yaw_deg + g_sweep->yaw_deg * static_cast<float>(std::sin(phase));
+            g_pose->pitch_deg = std::clamp(
+                g_sweep_base.pitch_deg + g_sweep->pitch_deg * static_cast<float>(std::sin(2.0 * phase)), -89.0f, 89.0f);
+        } else if (g_mouselook) {
+            update_mouselook(*g_pose);
+        }
+        pose = g_pose;
     }
     using GetTransformFn = float* (*)(std::uintptr_t);
     const auto vtable = mem::read<std::uintptr_t>(ctx.rcx);
@@ -167,6 +213,11 @@ bool looks_like_controller(std::uintptr_t controller) {
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
     g_force_view = config.get_bool("camera", "force_view", false);
+    g_mouselook = config.get_bool("camera", "mouselook", true);
+    const std::string sensitivity = config.get("camera", "mouselook_sensitivity");
+    if (!sensitivity.empty()) {
+        g_mouselook_sensitivity = std::strtof(sensitivity.c_str(), nullptr);
+    }
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
     install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
 }
@@ -186,12 +237,40 @@ std::uintptr_t controller() {
 void set_pose(std::optional<Pose> pose) {
     std::scoped_lock lock(g_mutex);
     g_pose = pose;
+    if (pose) {
+        g_sweep_base = *pose; // a running sweep continues around the new pose
+    }
     if (!pose) {
         log::info("camera: pose override off");
     } else {
         log::info("camera: pose override ({:.2f}, {:.2f}, {:.2f}) yaw {:.1f} pitch {:.1f}{}", pose->x, pose->y,
                   pose->z, pose->yaw_deg, pose->pitch_deg, g_controller ? "" : " (no controller attached yet)");
     }
+}
+
+void set_sweep(std::optional<Sweep> sweep) {
+    std::scoped_lock lock(g_mutex);
+    if (sweep) {
+        // Start from the held pose, or keep the original base if a sweep is already running.
+        if (!g_sweep && g_pose) {
+            g_sweep_base = *g_pose;
+        }
+        g_sweep_start = std::chrono::steady_clock::now();
+        log::info("camera: sweep on (yaw +/-{:.0f} deg, pitch +/-{:.0f} deg, {:.1f} s per cycle){}", sweep->yaw_deg,
+                  sweep->pitch_deg, sweep->period_s, g_pose ? "" : " (starts when a pose is held)");
+    } else if (g_sweep && g_pose) {
+        *g_pose = g_sweep_base; // stop facing where the sweep started
+        log::info("camera: sweep off");
+    }
+    g_sweep = sweep;
+}
+
+void set_mouselook(bool enabled) {
+    std::scoped_lock lock(g_mutex);
+    g_mouselook = enabled;
+    g_dragging = false;
+    log::info("camera: mouse look {} (hold the middle mouse button and drag; {:.2f} deg per pixel)",
+              enabled ? "on" : "off", g_mouselook_sensitivity);
 }
 
 void set_frame_callback(FrameCallback callback) {

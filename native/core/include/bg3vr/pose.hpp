@@ -13,6 +13,14 @@ struct Pose {
     float pitch_deg = 0; // positive looks up
 };
 
+// Automatic look-around around a held pose: yaw swings +/- yaw_deg once per period, pitch nods
+// +/- pitch_deg twice per period.
+struct Sweep {
+    float yaw_deg = 60.0f;
+    float pitch_deg = 20.0f;
+    float period_s = 8.0f;
+};
+
 // Camera-to-world and world-to-camera matrices for `pose`.
 void pose_matrices(const Pose& pose, Mat4& world, Mat4& view);
 

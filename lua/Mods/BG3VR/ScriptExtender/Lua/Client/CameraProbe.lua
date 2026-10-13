@@ -18,6 +18,9 @@
 --                             hold the camera at an explicit pose (yaw 0 looks along +Z)
 --   !vr_cam_set off           release the camera
 --   !vr_cam_probe             count vtable calls and find what writes the camera (bg3vr.log)
+--   !vr_mouselook on|off      while held, middle-mouse drag turns the camera (native; on by default)
+--   !vr_cam_sweep [yaw] [pitch] [seconds] | off
+--                             while held, the camera pans and nods by itself (default 60 20 8)
 --
 -- Matrices are glm mat4: 16 numbers, column-major (translation in elements 13..15).
 
@@ -237,6 +240,35 @@ Ext.RegisterConsoleCommand("vr_cam_set", Safely(function(_, a, b, c, d, e)
         BG3VR.Log("bridge: controller %s, pose %s (see bg3vr.log for the native side)", address, pose)
     else
         BG3VR.Warn("couldn't write %s", BRIDGE_FILE)
+    end
+end))
+
+-- Automatic look-around while the camera is held: pans left-right and nods up-down on its own.
+Ext.RegisterConsoleCommand("vr_cam_sweep", Safely(function(_, a, b, c)
+    local value
+    if a == "off" then
+        value = "off"
+    elseif a == nil then
+        value = "on"
+    elseif tonumber(a) then
+        value = table.concat({ a, b or "", c or "" }, " ")
+    else
+        BG3VR.Warn("usage: !vr_cam_sweep [yaw_degrees] [pitch_degrees] [seconds_per_cycle] | off")
+        return
+    end
+    if BG3VR.WriteBridge({ "sweep=" .. value }) then
+        BG3VR.Log("camera sweep %s", value)
+    end
+end))
+
+-- Mouse look while a pose is held: hold the middle mouse button and drag (native, on by default).
+Ext.RegisterConsoleCommand("vr_mouselook", Safely(function(_, mode)
+    if mode ~= "on" and mode ~= "off" then
+        BG3VR.Warn("usage: !vr_mouselook on|off")
+        return
+    end
+    if BG3VR.WriteBridge({ "mouselook=" .. mode }) then
+        BG3VR.Log("mouse look %s (hold the middle mouse button and drag while the camera is held)", mode)
     end
 end))
 

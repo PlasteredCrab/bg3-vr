@@ -102,6 +102,33 @@ Request parse(std::string_view content) {
                 }
             }
             request.hide = std::move(objects);
+        } else if (key == "sweep") {
+            const std::string flag = text::to_lower(value);
+            if (flag == "off" || flag == "0") {
+                request.sweep = std::optional<camera::Sweep>{};
+            } else {
+                camera::Sweep sweep;
+                const auto words = text::split_whitespace(value);
+                float* fields[] = {&sweep.yaw_deg, &sweep.pitch_deg, &sweep.period_s};
+                bool ok = true;
+                for (std::size_t i = 0; i < words.size() && i < 3 && flag != "on" && flag != "1"; ++i) {
+                    const std::string word(words[i]);
+                    char* end = nullptr;
+                    const float number = std::strtof(word.c_str(), &end);
+                    ok = ok && end == word.c_str() + word.size();
+                    *fields[i] = number;
+                }
+                if (ok) {
+                    request.sweep = sweep;
+                }
+            }
+        } else if (key == "mouselook") {
+            const std::string flag = text::to_lower(value);
+            if (flag == "on" || flag == "1" || flag == "true") {
+                request.mouselook = true;
+            } else if (flag == "off" || flag == "0" || flag == "false") {
+                request.mouselook = false;
+            }
         } else if (key == "probe") {
             const std::string flag = text::to_lower(value);
             request.probe = flag == "1" || flag == "true" || flag == "yes";

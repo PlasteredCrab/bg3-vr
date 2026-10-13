@@ -19,6 +19,8 @@ struct Request {
     std::optional<camera::Pose> pose;                          // pose to hold
     bool pose_off = false;                                     // release the camera
     bool probe = false;                                        // run the RE probes on the controller
+    std::optional<bool> mouselook;                             // middle-drag turns the held pose
+    std::optional<std::optional<camera::Sweep>> sweep;         // present: start (value) or stop (nullopt)
     std::optional<std::vector<std::uintptr_t>> hide;           // visuals to hide; empty = show all again
 };
 
@@ -27,6 +29,8 @@ struct Request {
 //   pose=<x> <y> <z> <yaw> <pitch>   |   pose=off
 //   probe=1
 //   hide=<hex>,<hex>,...             |   hide=off
+//   mouselook=on                     |   mouselook=off
+//   sweep=on | sweep=<yaw> [<pitch> [<seconds>]] | sweep=off
 Request parse(std::string_view content);
 
 // Starts the watcher thread ([camera] bridge / bridge_file in bg3vr.ini). `on_request` runs on that

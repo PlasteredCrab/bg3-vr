@@ -297,6 +297,20 @@ void test_parse_bridge() {
     const auto show = bridge::parse("hide=off\n");
     CHECK(show.hide && show.hide->empty());
     CHECK(!bridge::parse("pose=off\n").hide);
+    CHECK(bridge::parse("mouselook=on\n").mouselook == true);
+    CHECK(bridge::parse("mouselook=0\n").mouselook == false);
+    CHECK(!bridge::parse("mouselook=maybe\n").mouselook);
+
+    const auto sweep_on = bridge::parse("sweep=on\n");
+    CHECK(sweep_on.sweep && *sweep_on.sweep && near_eq((*sweep_on.sweep)->yaw_deg, 60.0f) &&
+          near_eq((*sweep_on.sweep)->period_s, 8.0f));
+    const auto sweep_custom = bridge::parse("sweep=90 10\n");
+    CHECK(sweep_custom.sweep && *sweep_custom.sweep && near_eq((*sweep_custom.sweep)->yaw_deg, 90.0f) &&
+          near_eq((*sweep_custom.sweep)->pitch_deg, 10.0f) && near_eq((*sweep_custom.sweep)->period_s, 8.0f));
+    const auto sweep_off = bridge::parse("sweep=off\n");
+    CHECK(sweep_off.sweep && !*sweep_off.sweep);
+    CHECK(!bridge::parse("sweep=fast\n").sweep);
+    CHECK(!bridge::parse("pose=off\n").sweep);
 
     const auto bad = bridge::parse("pose=1 2 three 4 5\ncontroller=zz\n");
     CHECK(!bad.pose && !bad.controller);
