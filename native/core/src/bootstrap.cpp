@@ -211,6 +211,9 @@ int init(const wchar_t* root_dir) {
         scan_signatures(module);
     }
 
+    if (g_config.get_bool("trace", "startup", false)) {
+        trace::start(module); // catches calls that only happen while the game starts (!vr_trace off reports)
+    }
     camera::install(g_config, module);
     render::install(module);
 #if BG3VR_HAVE_OPENXR

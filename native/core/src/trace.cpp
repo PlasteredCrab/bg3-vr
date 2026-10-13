@@ -22,6 +22,8 @@ struct Call {
     std::uintptr_t caller = 0;
     std::uintptr_t rcx = 0;
     std::uintptr_t rdx = 0;
+    std::uintptr_t r8 = 0;
+    std::uintptr_t r9 = 0;
     std::uint64_t count = 0;
 };
 
@@ -35,7 +37,8 @@ struct Target {
     std::uint64_t dropped = 0; // calls whose combination didn't fit in `seen`
 };
 
-Target g_targets[] = {{"render_view_begin"}, {"render_view_end"}, {"game_pipeline_setup"}, {"render_pipeline_setup"}};
+Target g_targets[] = {{"render_view_begin"},   {"render_view_end"},      {"game_pipeline_setup"},
+                      {"render_pipeline_setup"}, {"pipeline_build_stages"}};
 std::mutex g_install_mutex;
 ModuleInfo g_module;
 
@@ -46,13 +49,13 @@ void record(Target& target, safetyhook::Context& ctx) {
     std::scoped_lock lock(target.mutex);
     for (std::size_t i = 0; i < target.seen_count; ++i) {
         Call& call = target.seen[i];
-        if (call.caller == caller && call.rcx == ctx.rcx && call.rdx == ctx.rdx) {
+        if (call.caller == caller && call.rcx == ctx.rcx && call.rdx == ctx.rdx && call.r8 == ctx.r8 && call.r9 == ctx.r9) {
             ++call.count;
             return;
         }
     }
     if (target.seen_count < target.seen.size()) {
-        target.seen[target.seen_count++] = {caller, ctx.rcx, ctx.rdx, 1};
+        target.seen[target.seen_count++] = {caller, ctx.rcx, ctx.rdx, ctx.r8, ctx.r9, 1};
     } else {
         ++target.dropped;
     }
@@ -64,7 +67,7 @@ void on_call(safetyhook::Context& ctx) {
     record(g_targets[I], ctx);
 }
 
-constexpr safetyhook::MidHookFn kCallbacks[] = {&on_call<0>, &on_call<1>, &on_call<2>, &on_call<3>};
+constexpr safetyhook::MidHookFn kCallbacks[] = {&on_call<0>, &on_call<1>, &on_call<2>, &on_call<3>, &on_call<4>};
 
 } // namespace
 
@@ -114,8 +117,23 @@ void report() {
                   target.dropped ? std::format(" ({} calls didn't fit)", target.dropped) : std::string());
         for (std::size_t i = 0; i < target.seen_count; ++i) {
             const Call& call = target.seen[i];
-            log::info("trace:   {}x from {} rcx 0x{:X} rdx 0x{:X}", call.count, mem::describe(g_module, call.caller),
-                      call.rcx, call.rdx);
+            log::info("trace:   {}x from {} rcx 0x{:X} rdx 0x{:X} r8 0x{:X} r9 0x{:X}", call.count,
+                      mem::describe(g_module, call.caller), call.rcx, call.rdx, call.r8, call.r9);
+            if (target.signature == std::string_view("pipeline_build_stages") && call.r8) {
+                // The stage-id list: a byte array, begin and end pointers at [r8] and [r8+8].
+                std::uintptr_t range[2]{};
+                if (mem::try_copy(range, call.r8, sizeof(range)) && range[1] > range[0] && range[1] - range[0] <= 256) {
+                    std::uint8_t ids[256];
+                    const std::size_t n = range[1] - range[0];
+                    if (mem::try_copy(ids, range[0], n)) {
+                        std::string text;
+                        for (std::size_t k = 0; k < n; ++k) {
+                            text += std::format("{}{:X}", k ? " " : "", ids[k]);
+                        }
+                        log::info("trace:     stage ids ({}): {}", n, text);
+                    }
+                }
+            }
         }
     }
 }

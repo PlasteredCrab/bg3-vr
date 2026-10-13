@@ -8,8 +8,9 @@
 // on (!vr_trace on), and removed again by !vr_trace off. No debug registers.
 namespace bg3vr::trace {
 
-// Installs the hooks (the signatures render_view_begin, render_view_end, game_pipeline_setup and
-// render_pipeline_setup) and clears the records.
+// Installs the hooks (the signatures render_view_begin, render_view_end, game_pipeline_setup,
+// render_pipeline_setup and pipeline_build_stages) and clears the records. [trace] startup = true in
+// bg3vr.ini calls this during start-up, to catch what only runs once.
 void start(const ModuleInfo& module);
 // Removes the hooks; the records stay for report().
 void stop();
