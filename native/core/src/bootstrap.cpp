@@ -6,6 +6,7 @@
 #include "bg3vr/config.hpp"
 #include "bg3vr/cull.hpp"
 #include "bg3vr/probe.hpp"
+#include "bg3vr/render.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
@@ -130,6 +131,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     camera::report();
     cull::report();
+    render::report();
 }
 
 int init(const wchar_t* root_dir) {
@@ -151,6 +153,7 @@ int init(const wchar_t* root_dir) {
     }
 
     camera::install(g_config, module);
+    render::install(module);
     cull::init(module);
     camera::set_frame_callback(&cull::on_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });

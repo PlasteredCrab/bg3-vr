@@ -29,10 +29,14 @@ flowchart LR
 - The game's device must be on the adapter the runtime requires (`xrGetD3D11GraphicsRequirementsKHR`); log and fail clearly if not.
 - Frame loop: `xrWaitFrame` / `xrBeginFrame` before the game starts rendering the frame, `xrEndFrame` after our copy at `Present`. Where to call `xrWaitFrame` (game thread vs a pacing thread) is the first design decision of this step.
 - **Gate:** the game runs with an XR session open; the desktop image is copied into both eyes as a flat screen.
+- Progress 2026-10-13:
+    - `native/xr` (`bg3vr_xr`): instance, headset and session on a caller-supplied device, shared with `bg3vr_xr_test`.
+    - The game's Present call found statically in `rf::dx11::RenderFrame::FlipBuffers` (`dx11_present_call`). `native/core/src/render.cpp` hooks it there, upstream of DXGI and of the Script Extender's own Present detour. It logs the device and back buffer and counts frames; its present callback is where the copy into the eye images will go.
+    - Still to do: open the XR session on `render::device()` (check the adapter LUID matches), and decide where `xrWaitFrame` runs (the present callback is on the game's render thread).
 
 ### 3. Head-tracked mono
 - Each frame: `xrLocateViews` → head pose → convert from OpenXR (right-handed, −Z forward) to the game (left-handed, +Z forward) → write into the camera Transform via the existing `camera_view_update` hook, anchored at the character's eye position.
-- Hook `camera_set_projection_call` and build the asymmetric projection from `XrFovf` in the game's reversed-Z form (see [re-notes/stereo.md](re-notes/stereo.md)).
+- Hook `camera_set_projection_call` and build the asymmetric projection from `XrFovf` in the game's reversed-Z form (see [re-notes/stereo.md](re-notes/stereo.md)). Done 2026-10-13 (untested in game): `vr::projection`, `vr::from_openxr` and `vr::anchor` in `native/core/src/vr_math.cpp` with unit tests, and the projection hook with `!vr_cam_eye left|right|off` for a desktop check.
 - Set the game's render resolution and aspect to the headset's recommended per-eye size.
 - **Gate:** looking around in the headset moves the view with no lag you can see; the horizon stays level.
 
