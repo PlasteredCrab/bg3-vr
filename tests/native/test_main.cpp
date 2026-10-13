@@ -421,6 +421,15 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("sweep=fast\n").sweep);
     CHECK(!bridge::parse("pose=off\n").sweep);
 
+    const auto eye = bridge::parse("fov=-52 44 47 -51\n");
+    CHECK(eye.eye_fov && *eye.eye_fov && near_eq((*eye.eye_fov)->left_deg, -52.0f) &&
+          near_eq((*eye.eye_fov)->down_deg, -51.0f));
+    const auto eye_off = bridge::parse("fov=off\n");
+    CHECK(eye_off.eye_fov && !*eye_off.eye_fov);
+    CHECK(!bridge::parse("fov=10 -10 40 -40\n").eye_fov); // right < left
+    CHECK(!bridge::parse("fov=-45 45 90 -45\n").eye_fov); // 90 deg is not a frustum
+    CHECK(!bridge::parse("fov=-45 45 45\n").eye_fov);
+
     const auto bad = bridge::parse("pose=1 2 three 4 5\ncontroller=zz\n");
     CHECK(!bad.pose && !bad.controller);
 }

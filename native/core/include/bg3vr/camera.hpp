@@ -24,6 +24,7 @@ inline constexpr std::size_t kIsOrthographic = 0x12;  // bool
 inline constexpr std::size_t kOffCenter = 0x13;       // bool; only honoured for orthographic cameras
 inline constexpr std::size_t kFov = 0x14;             // float, vertical, radians
 inline constexpr std::size_t kNearPlane = 0x18;       // float
+inline constexpr std::size_t kFarPlane = 0x1C;        // float
 inline constexpr std::size_t kAspectRatio = 0x20;     // float
 inline constexpr std::size_t kWorldTranslate = 0x34;  // base class: in-object Transform at 0x24 (quat, then vec3)
 inline constexpr std::size_t kViewMatrix = 0x90;      // glm::mat4, column-major
@@ -35,7 +36,8 @@ inline constexpr std::size_t kGetWorldTransformSlot = 13;
 inline constexpr std::size_t kTransformTranslate = 0x10;
 } // namespace layout
 
-// Installs the hooks (signatures camera_view_update and camera_set_view_call). [camera] force_view in
+// Installs the hooks (signatures camera_view_update, camera_set_view_call and, for set_eye_fov,
+// camera_set_projection_call). [camera] force_view in
 // bg3vr.ini also overwrites the built view matrix at the setter (the Phase 0 method).
 void install(const Config& config, const ModuleInfo& module);
 
@@ -46,6 +48,11 @@ std::uintptr_t controller();
 
 // The pose to hold the driven camera at; nullopt releases it.
 void set_pose(std::optional<Pose> pose);
+
+// Replaces the driven camera's projection with an asymmetric per-eye one (in the game's reversed-Z
+// form, using the controller's own near and far planes) at the projection setter call
+// (signature camera_set_projection_call); nullopt goes back to the game's projection.
+void set_eye_fov(std::optional<EyeFov> fov);
 
 // Automatic look-around while a pose is held (overrides mouse look); nullopt stops it and returns the
 // view to where the sweep started.

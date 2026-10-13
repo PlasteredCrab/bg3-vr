@@ -19,6 +19,8 @@
 --   !vr_cam_set off           release the camera
 --   !vr_cam_probe             count vtable calls and find what writes the camera (bg3vr.log)
 --   !vr_mouselook on|off      while held, middle-mouse drag turns the camera (native; on by default)
+--   !vr_cam_eye left|right|off | <l> <r> <u> <d>
+--                             per-eye asymmetric projection on the camera (approximate Quest 2 values)
 --   !vr_cam_sweep [yaw] [pitch] [seconds] | off
 --                             while held, the camera pans and nods by itself (default 60 20 8)
 --
@@ -240,6 +242,36 @@ Ext.RegisterConsoleCommand("vr_cam_set", Safely(function(_, a, b, c, d, e)
         BG3VR.Log("bridge: controller %s, pose %s (see bg3vr.log for the native side)", address, pose)
     else
         BG3VR.Warn("couldn't write %s", BRIDGE_FILE)
+    end
+end))
+
+-- Per-eye projection on the driven camera (the Phase 1 projection hook), for a desktop check.
+-- "left"/"right" use approximate Quest 2 eye frustums (degrees; the real values come from the
+-- headset: bg3vr_xr_test prints them). The image looks off-centre and stretched on a monitor.
+local EYES = {
+    left = { -54, 40, 44, -48 },
+    right = { -40, 54, 44, -48 },
+}
+Ext.RegisterConsoleCommand("vr_cam_eye", Safely(function(_, a, b, c, d)
+    local _, controller = ActiveCamera()
+    local address = controller and ProxyAddress(controller)
+    if not address then
+        BG3VR.Warn("no active camera controller")
+        return
+    end
+    local value
+    if a == "off" then
+        value = "off"
+    elseif EYES[a] then
+        value = table.concat(EYES[a], " ")
+    elseif tonumber(a) and tonumber(b) and tonumber(c) and tonumber(d) then
+        value = string.format("%s %s %s %s", a, b, c, d)
+    else
+        BG3VR.Warn("usage: !vr_cam_eye left|right|off | <left> <right> <up> <down> (degrees)")
+        return
+    end
+    if BG3VR.WriteBridge({ "controller=" .. address, "fov=" .. value }) then
+        BG3VR.Log("eye projection %s on controller %s", value, address)
     end
 end))
 

@@ -3,6 +3,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/vr_math.hpp"
 
 #include <safetyhook.hpp>
 #include <windows.h>
@@ -49,8 +50,16 @@ std::optional<Sweep> g_sweep;
 Pose g_sweep_base;
 std::chrono::steady_clock::time_point g_sweep_start;
 
+// Per-eye projection override. The game rebuilds the projection only when ProjectionDirty is set,
+// so a change sets g_projection_dirty and the next view update of the driven camera marks the
+// controller dirty (on the game thread). Under g_mutex.
+std::optional<EyeFov> g_eye_fov;
+bool g_projection_dirty = false;
+std::atomic<std::uint64_t> g_projection_overrides{0};
+
 safetyhook::MidHook g_view_update_hook;
 safetyhook::MidHook g_set_view_hook;
+safetyhook::MidHook g_set_projection_hook;
 
 ModuleInfo g_module;
 
@@ -107,7 +116,14 @@ void on_view_update(safetyhook::Context& ctx) {
     std::optional<Pose> pose;
     {
         std::scoped_lock lock(g_mutex);
-        if (!g_pose || ctx.rcx != g_controller) {
+        if (ctx.rcx != g_controller) {
+            return;
+        }
+        if (g_projection_dirty) {
+            *reinterpret_cast<std::uint8_t*>(ctx.rcx + layout::kProjectionDirty) = 1;
+            g_projection_dirty = false;
+        }
+        if (!g_pose) {
             return;
         }
         if (g_sweep) {
@@ -157,6 +173,25 @@ void on_set_view(safetyhook::Context& ctx) {
     if (g_force_view) {
         std::memcpy(built, expected.data(), sizeof(expected));
     }
+}
+
+// At the call to the projection setter: rbx = controller, rdx = the projection the game just built.
+void on_set_projection(safetyhook::Context& ctx) {
+    std::optional<EyeFov> fov;
+    {
+        std::scoped_lock lock(g_mutex);
+        if (!g_eye_fov || ctx.rbx != g_controller) {
+            return;
+        }
+        fov = g_eye_fov;
+    }
+    constexpr float kRadians = std::numbers::pi_v<float> / 180.0f;
+    const float near_plane = mem::read<float>(ctx.rbx + layout::kNearPlane);
+    const float far_plane = mem::read<float>(ctx.rbx + layout::kFarPlane);
+    const Mat4 projection = vr::projection(fov->left_deg * kRadians, fov->right_deg * kRadians, fov->up_deg * kRadians,
+                                           fov->down_deg * kRadians, near_plane, far_plane);
+    std::memcpy(reinterpret_cast<void*>(ctx.rdx), projection.data(), sizeof(projection));
+    g_projection_overrides.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool install_mid_hook(const char* signature, safetyhook::MidHookFn callback, safetyhook::MidHook& out) {
@@ -220,6 +255,7 @@ void install(const Config& config, const ModuleInfo& module) {
     }
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
     install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
+    install_mid_hook("camera_set_projection_call", &on_set_projection, g_set_projection_hook);
 }
 
 bool attach(std::uintptr_t controller) {
@@ -245,6 +281,18 @@ void set_pose(std::optional<Pose> pose) {
     } else {
         log::info("camera: pose override ({:.2f}, {:.2f}, {:.2f}) yaw {:.1f} pitch {:.1f}{}", pose->x, pose->y,
                   pose->z, pose->yaw_deg, pose->pitch_deg, g_controller ? "" : " (no controller attached yet)");
+    }
+}
+
+void set_eye_fov(std::optional<EyeFov> fov) {
+    std::scoped_lock lock(g_mutex);
+    g_eye_fov = fov;
+    g_projection_dirty = true;
+    if (fov) {
+        log::info("camera: eye projection left {:.1f} right {:.1f} up {:.1f} down {:.1f} deg{}", fov->left_deg,
+                  fov->right_deg, fov->up_deg, fov->down_deg, g_controller ? "" : " (no controller attached yet)");
+    } else {
+        log::info("camera: eye projection off (game projection)");
     }
 }
 
@@ -280,10 +328,10 @@ void set_frame_callback(FrameCallback callback) {
 void report() {
     const std::uint64_t calls = g_view_calls.load(std::memory_order_relaxed);
     log::info("camera: view set {} times since the last report; transform written {} times; built view checked {} "
-              "times, max error {:.6f}{}",
+              "times, max error {:.6f}{}; projection overridden {} times",
               calls - g_last_reported_calls, g_transform_writes.load(std::memory_order_relaxed),
               g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
-              g_force_view ? " (force_view on)" : "");
+              g_force_view ? " (force_view on)" : "", g_projection_overrides.load(std::memory_order_relaxed));
     g_view_max_error.store(0.0f, std::memory_order_relaxed);
     g_last_reported_calls = calls;
 

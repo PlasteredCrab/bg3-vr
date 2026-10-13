@@ -122,6 +122,26 @@ Request parse(std::string_view content) {
                     request.sweep = sweep;
                 }
             }
+        } else if (key == "fov") {
+            if (text::to_lower(value) == "off") {
+                request.eye_fov = std::optional<camera::EyeFov>{};
+                continue;
+            }
+            const auto words = text::split_whitespace(value);
+            float numbers[4];
+            bool ok = words.size() == 4;
+            for (std::size_t i = 0; i < 4 && ok; ++i) {
+                const std::string word(words[i]);
+                char* end = nullptr;
+                numbers[i] = std::strtof(word.c_str(), &end);
+                ok = end == word.c_str() + word.size();
+            }
+            // Each side must be a real angle and the frustum must have a width and a height.
+            ok = ok && numbers[0] > -89.0f && numbers[1] < 89.0f && numbers[2] < 89.0f && numbers[3] > -89.0f &&
+                 numbers[1] > numbers[0] && numbers[2] > numbers[3];
+            if (ok) {
+                request.eye_fov = camera::EyeFov{numbers[0], numbers[1], numbers[2], numbers[3]};
+            }
         } else if (key == "mouselook") {
             const std::string flag = text::to_lower(value);
             if (flag == "on" || flag == "1" || flag == "true") {

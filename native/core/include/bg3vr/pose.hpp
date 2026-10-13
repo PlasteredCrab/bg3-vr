@@ -21,6 +21,14 @@ struct Sweep {
     float period_s = 8.0f;
 };
 
+// A per-eye field of view, as OpenXR reports it (XrFovf), in degrees: left and down are negative.
+struct EyeFov {
+    float left_deg = -45.0f;
+    float right_deg = 45.0f;
+    float up_deg = 45.0f;
+    float down_deg = -45.0f;
+};
+
 // Camera-to-world and world-to-camera matrices for `pose`.
 void pose_matrices(const Pose& pose, Mat4& world, Mat4& view);
 
