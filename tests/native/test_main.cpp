@@ -225,6 +225,8 @@ void test_memory() {
     CHECK(mem::in_section(module, ".text", function));
     CHECK(!mem::in_section(module, ".rdata", function));
     CHECK(!mem::in_section(module, ".text", address));
+    CHECK(!mem::in_section(module, ".rdata", ~std::uintptr_t{0}, sizeof(void*))); // would wrap around
+    CHECK(!mem::in_section(module, ".text", ~std::uintptr_t{0} - 3, 8));
     CHECK(mem::describe(module, function).starts_with("exe+0x"));
     CHECK(mem::describe(module, reinterpret_cast<std::uintptr_t>(&GetTickCount64)).find("+0x") != std::string::npos);
 

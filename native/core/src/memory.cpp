@@ -33,7 +33,9 @@ bool try_copy(void* destination, std::uintptr_t address, std::size_t size) {
 
 bool in_section(const ModuleInfo& module, const char* name, std::uintptr_t address, std::size_t size) {
     const Section* section = find_section(module, name);
-    return section && address >= section->start && address + size <= section->start + section->size;
+    // Written so that address + size can't wrap (0xFFFFFFFFFFFFFFFF + 8 would pass a naive check).
+    return section && address >= section->start && size <= section->size &&
+           address - section->start <= section->size - size;
 }
 
 std::string describe(const ModuleInfo& module, std::uintptr_t address) {

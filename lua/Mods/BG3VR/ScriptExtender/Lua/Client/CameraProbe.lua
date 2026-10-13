@@ -30,6 +30,7 @@
 --   !vr_follow [height] | off  hold the camera at the character's eyes and keep it there as they move
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
+--   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
 --                             then !vr_cam and !vr_views find to see what split screen created
 --
@@ -382,6 +383,12 @@ end))
 Ext.RegisterConsoleCommand("vr_recenter", Safely(function()
     if BG3VR.WriteBridge({ "recenter=1" }) then
         BG3VR.Log("recentering the headset")
+    end
+end))
+-- Any bridge write makes the core log its reports (frame rate, camera, head hide, headset).
+Ext.RegisterConsoleCommand("vr_fps", Safely(function()
+    if BG3VR.WriteBridge({ "report=1" }) then
+        BG3VR.Log("reports written to bg3vr.log (look for 'render: ... fps')")
     end
 end))
 -- Split screen (Phase 1 step 5): the game's ForceSplitscreen switch. Whether it splits with one
