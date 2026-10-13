@@ -544,6 +544,23 @@ void build(std::size_t index, bool compositing) {
                 *reinterpret_cast<std::uintptr_t*>(target + 0x20) = target;
                 log::info("views:   target's stage group pointed at the special view; now at itself");
             }
+            // The stage group's scene graph (+0x18): the split view has the special view's, which only
+            // composites; scene stages (0x0B first) then hit a null object while being added (fault at
+            // 0x4096593 under 0x407A440, 2026-10-13). Give it the main view's, the world.
+            std::uintptr_t graphs[3]{};
+            mem::try_copy(&graphs[0], main_view + 0x18, sizeof(std::uintptr_t));
+            mem::try_copy(&graphs[1], special_view + 0x18, sizeof(std::uintptr_t));
+            mem::try_copy(&graphs[2], target + 0x18, sizeof(std::uintptr_t));
+            std::uintptr_t owners[2]{};
+            mem::try_copy(&owners[0], main_view + 0x20, sizeof(std::uintptr_t));
+            mem::try_copy(&owners[1], special_view + 0x20, sizeof(std::uintptr_t));
+            log::info("views:   scene graphs: main 0x{:X}, special 0x{:X}, target 0x{:X}; owners: main 0x{:X}, special "
+                      "0x{:X}",
+                      graphs[0], graphs[1], graphs[2], owners[0], owners[1]);
+            if (graphs[0] && graphs[2] != graphs[0]) {
+                *reinterpret_cast<std::uintptr_t*>(target + 0x18) = graphs[0];
+                log::info("views:   target now uses the main view's scene graph");
+            }
             const std::uint32_t before = stage_count(target);
             bool ok = true;
             Fault fault;
