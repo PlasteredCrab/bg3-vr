@@ -27,3 +27,12 @@ add_library(bg3vr_core SHARED
     src/dllmain.cpp
 )
 target_link_libraries(bg3vr_core PRIVATE bg3vr_base bg3vr_warnings)
+
+# The headset (OpenXR) module, when the SDK is present. openxr_loader.dll is delay-loaded so the
+# core still loads, and the game still runs, on machines without it or with [xr] enabled = false.
+if(BG3VR_HAVE_OPENXR)
+    target_sources(bg3vr_core PRIVATE src/headset.cpp)
+    target_compile_definitions(bg3vr_core PRIVATE BG3VR_HAVE_OPENXR=1)
+    target_link_libraries(bg3vr_core PRIVATE bg3vr_xr delayimp)
+    target_link_options(bg3vr_core PRIVATE /DELAYLOAD:openxr_loader.dll)
+endif()

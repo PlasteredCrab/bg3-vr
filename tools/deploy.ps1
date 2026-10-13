@@ -102,7 +102,7 @@ if ($Uninstall) {
         Remove-Item $proxyTarget
         Write-Host "removed $proxyTarget"
     }
-    foreach ($name in "bg3vr_core.dll", "bg3vr_core.pdb", "version.pdb") {
+    foreach ($name in "bg3vr_core.dll", "bg3vr_core.pdb", "version.pdb", "openxr_loader.dll") {
         $path = Join-Path $vrDir $name
         if (Test-Path $path) { Remove-Item $path; Write-Host "removed $path" }
     }
@@ -148,6 +148,9 @@ foreach ($pdb in "bg3vr_core.pdb", "version.pdb") {
     $path = Join-Path $buildBin $pdb
     if (Test-Path $path) { Copy-Item $path $vrDir -Force }
 }
+# The core delay-loads the OpenXR loader from its own folder, only when [xr] enabled = true.
+$loaderSource = Join-Path $buildBin "openxr_loader.dll"
+if (Test-Path $loaderSource) { Copy-Item $loaderSource $vrDir -Force }
 Write-Host "deployed native ($Config) to $gameBin"
 
 # bg3vr.ini is the user's to edit (first deploy only); signatures.txt tracks the repo every time.
@@ -155,6 +158,14 @@ $iniTarget = Join-Path $vrDir "bg3vr.ini"
 if (-not (Test-Path $iniTarget)) {
     Copy-Item (Join-Path $repo "config\bg3vr.ini") $iniTarget
     Write-Host "created $iniTarget"
+} elseif (-not (Select-String -Path $iniTarget -Pattern '^\s*\[xr\]' -Quiet)) {
+    # Sections added since the first deploy: append them (off by default) so they can be edited.
+    $repoIni = Get-Content (Join-Path $repo "config\bg3vr.ini") -Raw
+    $start = $repoIni.IndexOf("[xr]")
+    if ($start -ge 0) {
+        Add-Content $iniTarget ("`r`n" + $repoIni.Substring($start).TrimEnd())
+        Write-Host "added the [xr] section to $iniTarget (disabled)"
+    }
 }
 Copy-Item (Join-Path $repo "config\signatures.txt") (Join-Path $vrDir "signatures.txt") -Force
 Write-Host "updated $(Join-Path $vrDir 'signatures.txt')"

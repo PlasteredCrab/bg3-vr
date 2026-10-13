@@ -6,6 +6,11 @@
 //                                  a checkerboard tinted red (left eye) / blue (right eye), pulsing so
 //                                  dropped frames are visible. Prints each eye's field of view and the
 //                                  eye separation once, then frame rate and head pose every second.
+//   bg3vr_xr_test --quad [--seconds N]
+//                                  the in-game mirror's path without the game: draws the pattern into a
+//                                  1920x1080 R8G8B8A8_UNORM texture (standing in for the back buffer),
+//                                  copies it into a quad swapchain and shows it as a 3 m screen 2.5 m
+//                                  ahead, as headset.cpp does with [xr] enabled = true.
 //
 // Exit codes: 0 ok, 1 OpenXR/D3D11 error, 2 no headset (form factor unavailable).
 
@@ -57,7 +62,12 @@ void draw_pattern(ID3D11DeviceContext* context, ID3D11DeviceContext1* context1, 
     context1->ClearView(rtv, bright, rects.data(), static_cast<UINT>(rects.size()));
 }
 
-int run(bool probe_only, double seconds) {
+// The game's back buffer stand-in for --quad.
+constexpr int32_t kQuadWidth = 1920;
+constexpr int32_t kQuadHeight = 1080;
+constexpr DXGI_FORMAT kQuadFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+int run(bool probe_only, bool quad, double seconds) {
     bg3vr::xr::System system;
     std::string error;
     const auto status = bg3vr::xr::open(system, error);
@@ -116,14 +126,35 @@ int run(bool probe_only, double seconds) {
     ID3D11DeviceContext1* context1 = nullptr;
     context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(&context1));
 
+    ID3D11Texture2D* source = nullptr;
+    ID3D11RenderTargetView* source_view = nullptr;
+    if (quad) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = kQuadWidth;
+        desc.Height = kQuadHeight;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = kQuadFormat;
+        desc.SampleDesc.Count = 1;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        device->CreateTexture2D(&desc, nullptr, &source);
+        if (source) {
+            device->CreateRenderTargetView(source, nullptr, &source_view);
+        }
+    }
+
     int exit_code = 0;
     {
         bg3vr::xr::Session session;
-        if (!session.create(system, device, error)) {
-            std::printf("%s\n", error.c_str());
+        const bool created = quad ? session.create(system, device, error, kQuadFormat) &&
+                                        session.create_quad(kQuadWidth, kQuadHeight, error)
+                                  : session.create(system, device, error);
+        if (!created || (quad && !source_view)) {
+            std::printf("%s\n", created ? "can't create the stand-in back buffer" : error.c_str());
             exit_code = 1;
         } else {
-            std::printf("swapchain format: %d\n", static_cast<int>(session.format()));
+            std::printf("swapchain format: %d%s\n", static_cast<int>(session.format()),
+                        quad ? " (quad mode: copying a 1920x1080 R8G8B8A8_UNORM image)" : "");
             const auto start = std::chrono::steady_clock::now();
             auto last_report = start;
             uint64_t frames = 0, frames_this_second = 0;
@@ -156,14 +187,26 @@ int run(bool probe_only, double seconds) {
                 }
 
                 const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(elapsed * 3.0));
-                if (frame.state.shouldRender) {
+                if (quad) {
+                    if (frame.state.shouldRender) {
+                        draw_pattern(context, context1, source_view, 0, kQuadWidth, kQuadHeight, pulse);
+                        const auto image = session.acquire_quad();
+                        context->CopyResource(image.texture, source);
+                        session.release_quad();
+                    }
+                    if (!session.end_frame_quad(frame, 3.0f, 2.5f)) {
+                        std::printf("xrEndFrame failed\n");
+                        exit_code = 1;
+                        break;
+                    }
+                } else if (frame.state.shouldRender) {
                     for (std::size_t i = 0; i < session.view_count(); ++i) {
                         const auto image = session.acquire(i);
                         draw_pattern(context, context1, image.view, i, session.width(i), session.height(i), pulse);
                         session.release(i);
                     }
                 }
-                if (!session.end_frame(frame)) {
+                if (!quad && !session.end_frame(frame)) {
                     std::printf("xrEndFrame failed\n");
                     exit_code = 1;
                     break;
@@ -188,6 +231,8 @@ int run(bool probe_only, double seconds) {
         }
     }
     bg3vr::xr::close(system);
+    release(source_view);
+    release(source);
     release(context1);
     release(context);
     release(device);
@@ -198,17 +243,20 @@ int run(bool probe_only, double seconds) {
 
 int main(int argc, char** argv) {
     bool probe_only = false;
+    bool quad = false;
     double seconds = 15.0;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--probe") {
             probe_only = true;
+        } else if (arg == "--quad") {
+            quad = true;
         } else if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::atof(argv[++i]);
         } else {
-            std::fprintf(stderr, "usage: bg3vr_xr_test [--probe] [--seconds N]\n");
+            std::fprintf(stderr, "usage: bg3vr_xr_test [--probe] [--quad] [--seconds N]\n");
             return 1;
         }
     }
-    return run(probe_only, seconds);
+    return run(probe_only, quad, seconds);
 }

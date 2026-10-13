@@ -54,9 +54,21 @@ public:
     Session& operator=(const Session&) = delete;
 
     // Opens a session on `device` (which must be on system.adapter), a LOCAL reference space and one
-    // swapchain per view at the recommended size, sRGB where the runtime offers it.
-    bool create(const System& system, ID3D11Device* device, std::string& error);
+    // swapchain per view at the recommended size. The format is the sRGB form of `preferred` when
+    // the runtime offers it (copied game images are gamma-encoded), else `preferred`, else an sRGB
+    // format.
+    bool create(const System& system, ID3D11Device* device, std::string& error,
+                DXGI_FORMAT preferred = DXGI_FORMAT_UNKNOWN);
     void destroy();
+
+    // A flat "screen" swapchain of the given size, shown with end_frame_quad (same format as the
+    // eye swapchains).
+    bool create_quad(int32_t width, int32_t height, std::string& error);
+    EyeImage acquire_quad();
+    void release_quad();
+    // Submits only the quad: a screen `width_m` wide, centred `distance_m` in front of the LOCAL
+    // origin, its height from the quad's aspect ratio.
+    bool end_frame_quad(const Frame& frame, float width_m, float distance_m);
 
     // Handles runtime events (begins and ends the session as the runtime asks). Returns false once
     // the application should stop.
@@ -90,7 +102,11 @@ private:
     XrSession session_ = XR_NULL_HANDLE;
     XrSpace space_ = XR_NULL_HANDLE;
     std::vector<Eye> eyes_;
+    Eye quad_;
+    ID3D11Device* device_ = nullptr;
     DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
+
+    bool create_swapchain(Eye& eye, std::string& error);
     bool running_ = false;
     bool quit_ = false;
 };

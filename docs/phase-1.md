@@ -22,7 +22,7 @@ flowchart LR
 ### 1. OpenXR test app (no game)
 - `tools/xr_test`: create an instance with `XR_KHR_D3D11_enable`, get the HMD system, create a D3D11 device on the adapter OpenXR asks for, a session, a swapchain per eye, and run a frame loop that clears each eye to a test pattern.
 - **Gate:** test pattern visible in the headset on SteamVR.
-- Status 2026-10-12: built (`build\vs2026\bin\RelWithDebInfo\bg3vr_xr_test.exe`, loader fetched and verified by `tools/fetch-openxr.ps1`). `--probe` reaches the runtime (SteamVR/OpenXR 2.17.10) and reports no headset, exit code 2, since none was connected. Next: run `bg3vr_xr_test --probe`, then `bg3vr_xr_test --seconds 30`, with the headset on.
+- Status 2026-10-12: built (`build\vs2026\bin\RelWithDebInfo\bg3vr_xr_test.exe`, loader fetched and verified by `tools/fetch-openxr.ps1`). `--probe` reaches the runtime (SteamVR/OpenXR 2.17.10) and reports no headset, exit code 2, since none was connected. Next, with the headset on: `bg3vr_xr_test --probe`, then `--seconds 30` (eye FOV and IPD printed), then `--quad --seconds 30` (a pulsing red checkerboard on a 3 m screen 2.5 m ahead: the same copy-to-quad path the game uses).
 
 ### 2. OpenXR inside the core
 - Get the game's `ID3D11Device` and swapchain. The Script Extender already Detours-hooks `D3D11CreateDevice`, `CreateSwapChainForHwnd`, `Present` and `ResizeBuffers`, so prefer a vtable hook on the swapchain object (taken from our own `Present` observation) over inline-patching the same functions.
@@ -32,7 +32,9 @@ flowchart LR
 - Progress 2026-10-13:
     - `native/xr` (`bg3vr_xr`): instance, headset and session on a caller-supplied device, shared with `bg3vr_xr_test`.
     - The game's Present call found statically in `rf::dx11::RenderFrame::FlipBuffers` (`dx11_present_call`). `native/core/src/render.cpp` hooks it there, upstream of DXGI and of the Script Extender's own Present detour. It logs the device and back buffer and counts frames; its present callback is where the copy into the eye images will go.
-    - Still to do: open the XR session on `render::device()` (check the adapter LUID matches), and decide where `xrWaitFrame` runs (the present callback is on the game's render thread).
+    - The flat-screen mirror, `native/core/src/headset.cpp`, built and deployed, off by default (`[xr] enabled = false`). On the first present it loads `openxr_loader.dll` from `bin\bg3vr` (delay-loaded, so the core runs without it), opens the instance, checks that the game's adapter LUID matches the runtime's, creates the session on the game's device and a quad swapchain the size of the back buffer, in the sRGB form of its format (the back buffer bytes are gamma-encoded). Every present after that: poll events, `xrWaitFrame`/`xrBeginFrame`, copy the back buffer into the quad image, `xrEndFrame` with one quad layer, 3 m wide and 2.5 m ahead in LOCAL space (`screen_width_m`, `screen_distance_m`).
+    - Decision for the prototype: `xrWaitFrame` runs on the game's render thread, in the present callback. The game is then paced by the headset (72/90 Hz), which is what we want for the mirror. Revisit in step 3, where the pose has to be known before the game builds its view.
+    - Untested with a headset. Test order: `bg3vr_xr_test --quad`, then the game with SteamVR running and `[xr] enabled = true` (log lines start `xr:`).
 
 ### 3. Head-tracked mono
 - Each frame: `xrLocateViews` → head pose → convert from OpenXR (right-handed, −Z forward) to the game (left-handed, +Z forward) → write into the camera Transform via the existing `camera_view_update` hook, anchored at the character's eye position.

@@ -11,6 +11,21 @@ std::string describe(XrInstance instance, const char* what, XrResult result) {
     return std::string(what) + " failed: " + result_name(instance, result);
 }
 
+// The sRGB / linear sibling of an 8-bit colour format (same bits, so copies between them work).
+DXGI_FORMAT sibling(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_UNORM: return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    default: return format;
+    }
+}
+
+bool is_srgb(DXGI_FORMAT format) {
+    return format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+}
+
 } // namespace
 
 const char* result_name(XrInstance instance, XrResult result) {
@@ -113,8 +128,9 @@ Session::~Session() {
     destroy();
 }
 
-bool Session::create(const System& system, ID3D11Device* device, std::string& error) {
+bool Session::create(const System& system, ID3D11Device* device, std::string& error, DXGI_FORMAT preferred) {
     instance_ = system.instance;
+    device_ = device;
     XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
     binding.device = device;
     XrSessionCreateInfo session_info{XR_TYPE_SESSION_CREATE_INFO};
@@ -139,51 +155,113 @@ bool Session::create(const System& system, ID3D11Device* device, std::string& er
     xrEnumerateSwapchainFormats(session_, 0, &format_count, nullptr);
     std::vector<int64_t> formats(format_count);
     xrEnumerateSwapchainFormats(session_, format_count, &format_count, formats.data());
+    const auto offered = [&formats](DXGI_FORMAT format) {
+        for (const int64_t candidate : formats) {
+            if (candidate == static_cast<int64_t>(format)) {
+                return true;
+            }
+        }
+        return false;
+    };
     format_ = formats.empty() ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : static_cast<DXGI_FORMAT>(formats.front());
-    for (const int64_t candidate : formats) {
-        if (candidate == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || candidate == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) {
-            format_ = static_cast<DXGI_FORMAT>(candidate);
-            break;
+    // A copied desktop image holds gamma-encoded bytes whatever its format says, so the runtime must
+    // read them as sRGB: the sRGB form of `preferred` first, then `preferred` itself.
+    const DXGI_FORMAT srgb = is_srgb(preferred) ? preferred : sibling(preferred);
+    if (preferred != DXGI_FORMAT_UNKNOWN && srgb != DXGI_FORMAT_UNKNOWN && offered(srgb)) {
+        format_ = srgb;
+    } else if (preferred != DXGI_FORMAT_UNKNOWN && offered(preferred)) {
+        format_ = preferred;
+    } else {
+        for (const DXGI_FORMAT candidate : {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB}) {
+            if (offered(candidate)) {
+                format_ = candidate;
+                break;
+            }
         }
     }
 
     eyes_.resize(system.views.size());
     for (std::size_t i = 0; i < eyes_.size(); ++i) {
-        Eye& eye = eyes_[i];
-        eye.width = static_cast<int32_t>(system.views[i].recommendedImageRectWidth);
-        eye.height = static_cast<int32_t>(system.views[i].recommendedImageRectHeight);
-        XrSwapchainCreateInfo swapchain_info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-        swapchain_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
-        swapchain_info.format = format_;
-        swapchain_info.sampleCount = 1;
-        swapchain_info.width = static_cast<uint32_t>(eye.width);
-        swapchain_info.height = static_cast<uint32_t>(eye.height);
-        swapchain_info.faceCount = 1;
-        swapchain_info.arraySize = 1;
-        swapchain_info.mipCount = 1;
-        result = xrCreateSwapchain(session_, &swapchain_info, &eye.swapchain);
-        if (XR_FAILED(result)) {
-            error = describe(instance_, "xrCreateSwapchain", result);
+        eyes_[i].width = static_cast<int32_t>(system.views[i].recommendedImageRectWidth);
+        eyes_[i].height = static_cast<int32_t>(system.views[i].recommendedImageRectHeight);
+        if (!create_swapchain(eyes_[i], error)) {
             return false;
-        }
-        uint32_t image_count = 0;
-        xrEnumerateSwapchainImages(eye.swapchain, 0, &image_count, nullptr);
-        std::vector<XrSwapchainImageD3D11KHR> images(image_count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-        xrEnumerateSwapchainImages(eye.swapchain, image_count, &image_count,
-                                   reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
-        for (const auto& image : images) {
-            D3D11_RENDER_TARGET_VIEW_DESC rtv{};
-            rtv.Format = format_;
-            rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-            EyeImage entry{image.texture, nullptr};
-            device->CreateRenderTargetView(image.texture, &rtv, &entry.view);
-            eye.images.push_back(entry);
         }
     }
     return true;
 }
 
+bool Session::create_swapchain(Eye& eye, std::string& error) {
+    XrSwapchainCreateInfo swapchain_info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    swapchain_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+    swapchain_info.format = format_;
+    swapchain_info.sampleCount = 1;
+    swapchain_info.width = static_cast<uint32_t>(eye.width);
+    swapchain_info.height = static_cast<uint32_t>(eye.height);
+    swapchain_info.faceCount = 1;
+    swapchain_info.arraySize = 1;
+    swapchain_info.mipCount = 1;
+    const XrResult result = xrCreateSwapchain(session_, &swapchain_info, &eye.swapchain);
+    if (XR_FAILED(result)) {
+        error = describe(instance_, "xrCreateSwapchain", result);
+        return false;
+    }
+    uint32_t image_count = 0;
+    xrEnumerateSwapchainImages(eye.swapchain, 0, &image_count, nullptr);
+    std::vector<XrSwapchainImageD3D11KHR> images(image_count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+    xrEnumerateSwapchainImages(eye.swapchain, image_count, &image_count,
+                               reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+    for (const auto& image : images) {
+        D3D11_RENDER_TARGET_VIEW_DESC rtv{};
+        rtv.Format = format_;
+        rtv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        EyeImage entry{image.texture, nullptr};
+        device_->CreateRenderTargetView(image.texture, &rtv, &entry.view);
+        eye.images.push_back(entry);
+    }
+    return true;
+}
+
+bool Session::create_quad(int32_t width, int32_t height, std::string& error) {
+    quad_.width = width;
+    quad_.height = height;
+    return create_swapchain(quad_, error);
+}
+
+EyeImage Session::acquire_quad() {
+    xrAcquireSwapchainImage(quad_.swapchain, nullptr, &quad_.acquired);
+    XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    xrWaitSwapchainImage(quad_.swapchain, &wait);
+    return quad_.images[quad_.acquired];
+}
+
+void Session::release_quad() {
+    xrReleaseSwapchainImage(quad_.swapchain, nullptr);
+}
+
+bool Session::end_frame_quad(const Frame& frame, float width_m, float distance_m) {
+    XrCompositionLayerQuad layer{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    layer.space = space_;
+    layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    layer.subImage.swapchain = quad_.swapchain;
+    layer.subImage.imageRect = {{0, 0}, {quad_.width, quad_.height}};
+    layer.pose.orientation.w = 1.0f;
+    layer.pose.position = {0.0f, 0.0f, -distance_m};
+    layer.size = {width_m, width_m * static_cast<float>(quad_.height) / static_cast<float>(quad_.width)};
+    const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
+
+    XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
+    end.displayTime = frame.state.predictedDisplayTime;
+    end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    end.layerCount = frame.state.shouldRender && quad_.swapchain != XR_NULL_HANDLE ? 1 : 0;
+    end.layers = layers;
+    return XR_SUCCEEDED(xrEndFrame(session_, &end));
+}
+
 void Session::destroy() {
+    eyes_.push_back(quad_); // destroyed with the rest
+    quad_ = {};
     for (Eye& eye : eyes_) {
         for (EyeImage& image : eye.images) {
             if (image.view) {

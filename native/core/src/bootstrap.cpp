@@ -5,6 +5,9 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/cull.hpp"
+#if BG3VR_HAVE_OPENXR
+#include "bg3vr/headset.hpp"
+#endif
 #include "bg3vr/probe.hpp"
 #include "bg3vr/render.hpp"
 #include "bg3vr/log.hpp"
@@ -132,6 +135,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     camera::report();
     cull::report();
     render::report();
+#if BG3VR_HAVE_OPENXR
+    headset::report();
+#endif
 }
 
 int init(const wchar_t* root_dir) {
@@ -154,6 +160,9 @@ int init(const wchar_t* root_dir) {
 
     camera::install(g_config, module);
     render::install(module);
+#if BG3VR_HAVE_OPENXR
+    headset::install(g_config);
+#endif
     cull::init(module);
     camera::set_frame_callback(&cull::on_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
