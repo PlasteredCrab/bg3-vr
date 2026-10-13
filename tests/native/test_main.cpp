@@ -261,6 +261,12 @@ void test_parse_bridge() {
     CHECK(off.controller == 0x10u && off.pose_off && !off.pose && !off.probe);
     CHECK(camera::parse_bridge("probe=1\n").probe);
 
+    const auto hide = camera::parse_bridge("hide=0000019AA2C20280, 0x10,zz\n");
+    CHECK(hide.hide && hide.hide->size() == 2 && hide.hide->at(0) == 0x0000019AA2C20280ull && hide.hide->at(1) == 0x10u);
+    const auto show = camera::parse_bridge("hide=off\n");
+    CHECK(show.hide && show.hide->empty());
+    CHECK(!camera::parse_bridge("pose=off\n").hide);
+
     const auto bad = camera::parse_bridge("pose=1 2 three 4 5\ncontroller=zz\n");
     CHECK(!bad.pose && !bad.controller);
 }

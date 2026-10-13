@@ -118,8 +118,50 @@ std::optional<Pose> pose_for(std::uintptr_t controller) {
     return g_pose;
 }
 
+// ---- hiding visuals from the main view (first-person head) ----------------------------------
+// The game's own MoveableObject::ToggleCullFlag600(bool) clears/sets the main-view bits. Calls are
+// made on the game thread (from the view update hook), every frame, so the hide sticks; objects are
+// re-validated each time (readable, same vtable) so a destroyed visual is dropped, not called.
+
+struct CullTarget {
+    std::uintptr_t object = 0;
+    std::uintptr_t vtable = 0;
+};
+std::vector<CullTarget> g_cull_targets; // guarded by g_mutex
+std::vector<CullTarget> g_cull_restore; // shown again once, then dropped
+std::atomic<std::uint64_t> g_cull_frames{0};
+
+using ToggleCullFn = void (*)(std::uintptr_t, bool);
+
+bool still_valid(const CullTarget& target) {
+    return readable(target.object, sizeof(void*)) && read<std::uintptr_t>(target.object) == target.vtable;
+}
+
+void toggle_cull(const CullTarget& target, bool cull) {
+    const auto toggle = read<ToggleCullFn>(target.vtable + layout::kToggleCullFlag600Slot * sizeof(void*));
+    toggle(target.object, cull);
+}
+
+void process_cull() {
+    std::scoped_lock lock(g_mutex);
+    for (const CullTarget& target : g_cull_restore) {
+        if (still_valid(target)) {
+            toggle_cull(target, false);
+        }
+    }
+    g_cull_restore.clear();
+    std::erase_if(g_cull_targets, [](const CullTarget& target) { return !still_valid(target); });
+    for (const CullTarget& target : g_cull_targets) {
+        toggle_cull(target, true);
+    }
+    if (!g_cull_targets.empty()) {
+        g_cull_frames.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 // Entry of the view update: rcx = controller. Write the pose into the camera's Transform.
 void on_view_update(safetyhook::Context& ctx) {
+    process_cull();
     const auto pose = pose_for(ctx.rcx);
     if (!pose) {
         return;
@@ -215,6 +257,39 @@ bool attach(std::uintptr_t controller) {
         return false;
     }
     return true;
+}
+
+std::string describe(std::uintptr_t address);
+
+// Checks `object` before we ever call into it: a vtable in .rdata, slot functions in .text, and a
+// ToggleCullFlag600 whose first bytes contain the 0x600 or 0xF9FF constant it must use.
+std::optional<CullTarget> check_cull_target(std::uintptr_t object) {
+    if (!readable(object, 0x40)) {
+        log::warn("hide: 0x{:X} is not readable", object);
+        return std::nullopt;
+    }
+    const auto vtable = read<std::uintptr_t>(object);
+    if (!in_section(".rdata", vtable, (layout::kToggleCullFlag600Slot + 1) * sizeof(void*))) {
+        log::warn("hide: 0x{:X} has vtable 0x{:X} outside .rdata", object, vtable);
+        return std::nullopt;
+    }
+    const auto toggle = read<std::uintptr_t>(vtable + layout::kToggleCullFlag600Slot * sizeof(void*));
+    const auto get_flags = read<std::uintptr_t>(vtable + layout::kGetCullFlagsSlot * sizeof(void*));
+    if (!in_section(".text", toggle, 64)) {
+        log::warn("hide: slot {} of 0x{:X} is outside .text", layout::kToggleCullFlag600Slot, object);
+        return std::nullopt;
+    }
+    const auto code = read<std::array<std::uint8_t, 64>>(toggle);
+    bool has_constant = false;
+    for (std::size_t i = 0; i + 1 < code.size(); ++i) {
+        has_constant = has_constant || (code[i] == 0x00 && code[i + 1] == 0x06) || (code[i] == 0xFF && code[i + 1] == 0xF9);
+    }
+    log::info("hide: object 0x{:X} vtable {} ToggleCullFlag600 {} GetCullFlags {} check {}", object,
+              describe(vtable), describe(toggle), describe(get_flags), has_constant ? "passed" : "FAILED");
+    if (!has_constant) {
+        return std::nullopt;
+    }
+    return CullTarget{object, vtable};
 }
 
 // "bg3_dx11+0x1234" for the game exe, "module.dll+0x1234" for others.
@@ -328,6 +403,20 @@ DWORD WINAPI watch_bridge(void* param) {
             }
         }
 
+        if (request.hide) {
+            std::vector<CullTarget> validated;
+            for (const std::uintptr_t object : *request.hide) {
+                if (const auto target = check_cull_target(object)) {
+                    validated.push_back(*target);
+                }
+            }
+            std::scoped_lock lock(g_mutex);
+            g_cull_restore.insert(g_cull_restore.end(), g_cull_targets.begin(), g_cull_targets.end());
+            g_cull_targets = std::move(validated);
+            log::info("hide: {} object(s) hidden from the main view, {} to restore", g_cull_targets.size(),
+                      g_cull_restore.size());
+        }
+
         if (request.probe) {
             std::uintptr_t controller = 0;
             {
@@ -343,10 +432,10 @@ DWORD WINAPI watch_bridge(void* param) {
 
         const std::uint64_t calls = g_view_calls.load(std::memory_order_relaxed);
         log::info("camera: view set {} times since the last bridge change; transform written {} times; "
-                  "built view checked {} times, max error {:.6f}{}",
+                  "built view checked {} times, max error {:.6f}{}; hide applied in {} frames",
                   calls - last_reported_calls, g_transform_writes.load(std::memory_order_relaxed),
                   g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
-                  g_force_view ? " (force_view on)" : "");
+                  g_force_view ? " (force_view on)" : "", g_cull_frames.load(std::memory_order_relaxed));
         g_view_max_error.store(0.0f, std::memory_order_relaxed);
         last_reported_calls = calls;
         for (std::size_t i = 0; i < kTrackedControllers; ++i) {
@@ -440,6 +529,23 @@ BridgeRequest parse_bridge(std::string_view content) {
             if (const auto address = text::parse_int(std::string("0x") + std::string(hex))) {
                 request.controller = static_cast<std::uintptr_t>(*address);
             }
+        } else if (key == "hide") {
+            std::vector<std::uintptr_t> objects;
+            if (text::to_lower(value) != "off") {
+                std::string_view rest = value;
+                while (!rest.empty()) {
+                    const auto comma = rest.find(',');
+                    std::string_view item = text::trim(rest.substr(0, comma));
+                    rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+                    if (item.starts_with("0x") || item.starts_with("0X")) {
+                        item.remove_prefix(2);
+                    }
+                    if (const auto address = text::parse_int(std::string("0x") + std::string(item))) {
+                        objects.push_back(static_cast<std::uintptr_t>(*address));
+                    }
+                }
+            }
+            request.hide = std::move(objects);
         } else if (key == "probe") {
             const std::string flag = text::to_lower(value);
             request.probe = flag == "1" || flag == "true" || flag == "yes";

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace bg3vr::camera {
 
@@ -28,6 +29,11 @@ inline constexpr std::size_t kVtableSlots = 24;
 // quat (x, y, z, w) at +0x00, translate at +0x10, scale at +0x1C. The view is built from it.
 inline constexpr std::size_t kGetWorldTransformSlot = 13;
 inline constexpr std::size_t kTransformTranslate = 0x10;
+
+// MoveableObject (base of visuals and renderables), per the Script Extender's Render.h:
+// slot 14 uint16_t GetCullFlags(uint16_t&), slot 16 void ToggleCullFlag600(bool cull).
+inline constexpr std::size_t kGetCullFlagsSlot = 14;
+inline constexpr std::size_t kToggleCullFlag600Slot = 16;
 } // namespace layout
 
 using Mat4 = std::array<float, 16>; // column-major, like glm
@@ -51,12 +57,14 @@ struct BridgeRequest {
     std::optional<Pose> pose; // empty = no override
     bool pose_off = false;
     bool probe = false;       // count vtable calls and find who writes the matrices
+    std::optional<std::vector<std::uintptr_t>> hide; // visuals to hide from the main view; empty = show all
 };
 
 // Parses the bridge file written by Client/CameraProbe.lua:
 //   controller=<hex address>
 //   pose=<x> <y> <z> <yaw> <pitch>   |   pose=off
 //   probe=1
+//   hide=<hex>,<hex>,...             |   hide=off
 BridgeRequest parse_bridge(std::string_view content);
 
 // Starts the bridge watcher thread (Phase 0 camera experiment).

@@ -1,4 +1,5 @@
 Ext.Require("Shared/Log.lua")
+Ext.Require("Shared/Bridge.lua")
 Ext.Require("Client/CameraProbe.lua")
 Ext.Require("Client/FirstPerson.lua")
 

@@ -195,12 +195,8 @@ Ext.RegisterConsoleCommand("vr_cam_fov", Safely(function(_, degrees)
     BG3VR.Log("fov %.1f -> %.1f deg (read back %.1f)", math.deg(before), value, math.deg(controller.FOV))
 end))
 
-local BRIDGE_FILE = "BG3VR/camera_bridge.txt"
-
--- Object proxies print as "rf::CameraController (<hex address>)".
-local function ProxyAddress(proxy)
-    return string.match(tostring(proxy), "%((%x+)")
-end
+local BRIDGE_FILE = BG3VR.BridgeFile
+local ProxyAddress = BG3VR.ProxyAddress
 
 local function YawOf(q)
     return math.deg(2 * math.atan(q[2], q[4]))
