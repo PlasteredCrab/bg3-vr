@@ -48,7 +48,13 @@ DWORD WINAPI watch(void* param) {
     const std::unique_ptr<WatchArgs> args(static_cast<WatchArgs*>(param));
     log::info("bridge: watching {}", to_utf8(args->path.wstring()));
 
-    std::filesystem::file_time_type last_write{};
+    // A file left over from a previous session holds addresses from another process: only act on
+    // writes made after we start.
+    std::error_code ignored;
+    std::filesystem::file_time_type last_write = std::filesystem::last_write_time(args->path, ignored);
+    if (!ignored) {
+        log::info("bridge: ignoring the existing file from a previous session");
+    }
     for (;;) {
         Sleep(250);
         std::error_code ec;

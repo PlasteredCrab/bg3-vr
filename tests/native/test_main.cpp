@@ -173,9 +173,17 @@ void test_watch_probes() {
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(20)); // let the worker start
 
+    // Setting debug registers trips endpoint protection (Sophos Intercept X logs an "HWBGuard"
+    // mitigation each time), so the hardware write watch only runs when asked for.
+    char flag[8] = {};
+    const bool watch_enabled = GetEnvironmentVariableA("BG3VR_TEST_HWBP", flag, sizeof(flag)) > 0 && flag[0] == '1';
     const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(&g_watched_value);
-    const auto hits = watch::watch_writes(std::span(&address, 1), std::chrono::milliseconds(300));
-    CHECK(!hits.empty());
+    const auto hits = watch_enabled ? watch::watch_writes(std::span(&address, 1), std::chrono::milliseconds(300))
+                                    : std::vector<watch::WriteHit>{};
+    if (!watch_enabled) {
+        std::printf("skipped hardware write watch test (set BG3VR_TEST_HWBP=1 to run it)\n");
+    }
+    CHECK(!watch_enabled || !hits.empty());
     if (!hits.empty()) {
         CHECK(hits[0].watch_index == 0 && hits[0].count > 10);
         // The instruction after the write sits inside write_watched (or its incremental-link body).
