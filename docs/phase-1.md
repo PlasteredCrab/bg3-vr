@@ -18,6 +18,7 @@ flowchart LR
 ### 1. OpenXR test app (no game)
 - `tools/xr_test`: create an instance with `XR_KHR_D3D11_enable`, get the HMD system, create a D3D11 device on the adapter OpenXR asks for, a session, a swapchain per eye, and run a frame loop that clears each eye to a test pattern.
 - **Gate:** test pattern visible in the headset on SteamVR.
+- Status 2026-10-12: built (`build\vs2026\bin\RelWithDebInfo\bg3vr_xr_test.exe`, loader fetched and verified by `tools/fetch-openxr.ps1`). `--probe` reaches the runtime (SteamVR/OpenXR 2.17.10) and reports no headset, exit code 2, since none was connected. Next: run `bg3vr_xr_test --probe`, then `bg3vr_xr_test --seconds 30`, with the headset on.
 
 ### 2. OpenXR inside the core
 - Get the game's `ID3D11Device` and swapchain. The Script Extender already Detours-hooks `D3D11CreateDevice`, `CreateSwapChainForHwnd`, `Present` and `ResizeBuffers`, so prefer a vtable hook on the swapchain object (taken from our own `Present` observation) over inline-patching the same functions.
