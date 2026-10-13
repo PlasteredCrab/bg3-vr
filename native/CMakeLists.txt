@@ -1,2 +1,5 @@
 add_subdirectory(core)
 add_subdirectory(proxy)
+if(BG3VR_HAVE_OPENXR)
+    add_subdirectory(xr)
+endif()
