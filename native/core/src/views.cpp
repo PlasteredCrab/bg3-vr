@@ -310,6 +310,63 @@ std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
     return {views.begin(), views.end()};
 }
 
+void refs() {
+    const auto views = found();
+    if (views.empty()) {
+        log::info("views: none found yet (!vr_views find)");
+        return;
+    }
+    std::thread([views] {
+        for (std::size_t v = 0; v < views.size(); ++v) {
+            const std::uintptr_t base = views[v] - kReadStateInView;
+            std::size_t scanned = 0, regions = 0;
+            const auto hits = scan_memory(base, scanned, regions);
+            log::info("views: {} pointer(s) to view {} (0x{:X}):", hits.size(), v, base);
+            for (std::size_t i = 0; i < hits.size() && i < 48; ++i) {
+                // The neighbours show whether it's inside an array (other pointers, a count) or an object.
+                std::uintptr_t around[6]{};
+                mem::try_copy(around, hits[i] - 3 * sizeof(std::uintptr_t), sizeof(around));
+                std::string note;
+                for (std::size_t other = 0; other < views.size(); ++other) {
+                    for (const std::uintptr_t word : around) {
+                        if (other != v && word == views[other] - kReadStateInView) {
+                            note = std::format("  <- next to view {}", other);
+                        }
+                    }
+                }
+                log::info("views:   at 0x{:X}: [-3] {:X} [-2] {:X} [-1] {:X} [0] view [+1] {:X} [+2] {:X}{}", hits[i],
+                          around[0], around[1], around[2], around[4], around[5], note);
+            }
+        }
+        log::info("views: refs done");
+    }).detach();
+}
+
+void diff() {
+    const auto views = found();
+    if (views.size() < 2) {
+        log::info("views: diff needs two views (!vr_split on, wait, !vr_views find)");
+        return;
+    }
+    constexpr std::size_t kBytes = 0x3400;
+    std::vector<std::uint32_t> a(kBytes / 4), b(kBytes / 4);
+    const std::uintptr_t base_a = views[0] - kReadStateInView, base_b = views[1] - kReadStateInView;
+    if (!mem::try_copy(a.data(), base_a, kBytes) || !mem::try_copy(b.data(), base_b, kBytes)) {
+        log::warn("views: can't read the views");
+        return;
+    }
+    // Small values only (flags, counts, indices, sizes): pointers and floats differ everywhere.
+    int shown = 0;
+    for (std::size_t i = 0; i < a.size() && shown < 80; ++i) {
+        if (a[i] != b[i] && a[i] < 0x10000 && b[i] < 0x10000) {
+            log::info("views:   diff at view+0x{:04X}: view 0 = {} (0x{:X}), view 1 = {} (0x{:X})", i * 4, a[i], a[i], b[i],
+                      b[i]);
+            ++shown;
+        }
+    }
+    log::info("views: diff done ({} small differences shown)", shown);
+}
+
 void find(const ModuleInfo& module, std::uintptr_t controller) {
     if (!controller) {
         log::warn("views: no camera controller to look for (attach one first)");

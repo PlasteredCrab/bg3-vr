@@ -176,6 +176,10 @@ Request parse(std::string_view content) {
                 request.views_find = false;
             } else if (action == "sbs") {
                 request.views_layout = views::Layout::SideBySide;
+            } else if (action == "refs") {
+                request.views_refs = true;
+            } else if (action == "diff") {
+                request.views_diff = true;
             } else if (action == "swap") {
                 request.views_layout = views::Layout::SideBySideSwapped;
             } else if (action == "full") {

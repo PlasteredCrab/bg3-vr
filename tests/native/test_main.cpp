@@ -466,6 +466,7 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("views=set 1 0 1 0 0\n").view_set && !bridge::parse("views=set 9 1 1 0 0\n").view_set &&
           !bridge::parse("views=enable 1 2\n").view_set && !bridge::parse("views=set 1 0.5 1 0.5\n").view_set);
     CHECK(!bridge::parse("views=sbs\n").views_find);
+    CHECK(bridge::parse("views=refs\n").views_refs && bridge::parse("views=diff\n").views_diff);
 
     const auto follow = bridge::parse("follow=0000020A1B2C3D40 1.55\n");
     CHECK(follow.follow && *follow.follow && (*follow.follow)->transform == 0x0000020A1B2C3D40ull &&

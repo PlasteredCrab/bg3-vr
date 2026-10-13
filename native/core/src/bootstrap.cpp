@@ -143,6 +143,12 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.hide) {
         cull::set_hidden(*request.hide);
     }
+    if (request.views_refs) {
+        views::refs();
+    }
+    if (request.views_diff) {
+        views::diff();
+    }
     if (request.view_set) {
         views::set_view(request.view_set->index, request.view_set->placement, request.view_set->enabled);
     }

@@ -41,6 +41,12 @@ void set_view(std::size_t index, std::optional<Placement> placement, std::option
 // Per-frame work on the game thread (the camera's frame callback).
 void on_frame();
 
+// What points at each found view (memory scan, background thread): a list that holds view 0 but
+// not view 1 is a candidate for the list of views that get drawn.
+void refs();
+// The small values (flags, counts, indices) that differ between view 0 and view 1.
+void diff();
+
 // Logs the current state of the views found by the last scan (cheap; no scan).
 void dump();
 
