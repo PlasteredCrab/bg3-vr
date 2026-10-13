@@ -155,7 +155,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         }
     }
     if (request.views_build) {
-        views::build(*request.views_build, request.views_build_compositing);
+        views::build(module, camera::controller(), *request.views_build, request.views_build_compositing);
     }
     if (request.views_refs) {
         views::refs();

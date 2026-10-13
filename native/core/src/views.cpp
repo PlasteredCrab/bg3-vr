@@ -438,7 +438,37 @@ std::uint32_t stage_count(std::uintptr_t view) {
 
 } // namespace
 
-void build(std::size_t index, bool compositing) {
+void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t index, bool compositing) {
+    if (controller_in) {
+        g_module = module;
+        g_controller = controller_in;
+    }
+    // Automatic: the split view appears some seconds after a load with ForceSplitscreen on. Scan
+    // until there's a view besides the main and special ones (3 or more), for up to a minute.
+    if (index == kAutomatic && found().size() < 3) {
+        if (g_running.exchange(true)) {
+            log::info("views: a scan is already running; try build again when it's done");
+            return;
+        }
+        const std::uintptr_t controller = g_controller;
+        std::thread([controller, compositing] {
+            for (int attempt = 0; attempt < 12 && controller; ++attempt) {
+                if (scan_now(controller).size() >= 3) {
+                    break;
+                }
+                log::info("views: no split view yet (attempt {} of 12); scanning again in 5 s", attempt + 1);
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
+            g_running.store(false);
+            if (found().size() >= 3) {
+                build(g_module, 0, kAutomatic, compositing);
+            } else {
+                log::warn("views: no split view appeared within a minute (!vr_split on, then reload)");
+            }
+        }).detach();
+        log::info("views: looking for the split view before building");
+        return;
+    }
     const auto views = found();
     if (index != kAutomatic && index >= views.size()) {
         log::warn("views: no view {} ({} found; !vr_views find first)", index, views.size());
