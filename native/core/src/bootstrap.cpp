@@ -1,8 +1,11 @@
 // Core entry point. Phase 0: identify the game build, report graphics modules as they load,
 // and scan signatures.txt so reverse-engineering finds can be checked without recompiling.
 
+#include "bg3vr/bridge.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
+#include "bg3vr/cull.hpp"
+#include "bg3vr/probe.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
@@ -96,6 +99,30 @@ DWORD WINAPI watch_modules(void*) {
     return 0;
 }
 
+// Runs on the bridge thread for every new version of the bridge file; only keys present act.
+void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
+    if (request.controller) {
+        camera::attach(*request.controller);
+    }
+    if (request.pose_off) {
+        camera::set_pose(std::nullopt);
+    } else if (request.pose) {
+        camera::set_pose(request.pose);
+    }
+    if (request.hide) {
+        cull::set_hidden(*request.hide);
+    }
+    if (request.probe) {
+        if (const std::uintptr_t controller = camera::controller()) {
+            probe::run(module, controller);
+        } else {
+            log::warn("probe: no validated controller to probe");
+        }
+    }
+    camera::report();
+    cull::report();
+}
+
 int init(const wchar_t* root_dir) {
     g_root = root_dir;
     const bool have_config = g_config.load_file(g_root / "bg3vr.ini");
@@ -114,7 +141,10 @@ int init(const wchar_t* root_dir) {
         scan_signatures(module);
     }
 
-    camera::start(g_config, module);
+    camera::install(g_config, module);
+    cull::init(module);
+    camera::set_frame_callback(&cull::on_frame);
+    bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 
     if (HANDLE thread = CreateThread(nullptr, 0, watch_modules, nullptr, 0, nullptr)) {
         CloseHandle(thread);

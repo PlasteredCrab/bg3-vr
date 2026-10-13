@@ -4,6 +4,10 @@
 
 Phase 0 gave us full control of the gameplay camera's pose at the source (the camera entity's Transform), a confirmed hook site for the projection, and the head hidden from the main view. Phase 1 turns that into a head-tracked stereo image in an OpenXR headset.
 
+## Test hardware
+
+Meta Quest 2 through SteamVR (Quest Link / Air Link or Steam Link), so the OpenXR runtime is SteamVR's. Expect a recommended per-eye size around 1832×1920 at 100% render scale, refresh 72/80/90/120 Hz (aim for 72 or 90 with reprojection), and Touch controllers (capacitive touch, no finger tracking). The encoder adds latency over a wireless link, so judge comfort on a cable first.
+
 ## Plan
 
 ```mermaid

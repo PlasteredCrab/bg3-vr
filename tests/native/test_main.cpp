@@ -1,12 +1,17 @@
 // Dependency-free unit tests for the engine-agnostic core utilities.
 
-#include "bg3vr/camera.hpp"
+#include "bg3vr/bridge.hpp"
+#include "bg3vr/pose.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/hooks.hpp"
+#include "bg3vr/memory.hpp"
+#include "bg3vr/module_info.hpp"
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/watch.hpp"
+
+#include <windows.h>
 
 #include <atomic>
 #include <chrono>
@@ -191,6 +196,24 @@ void test_watch_probes() {
     CHECK(counted_function(2) == 7); // still works after unhooking
 }
 
+void test_memory() {
+    const int local = 42;
+    const auto address = reinterpret_cast<std::uintptr_t>(&local);
+    CHECK(mem::readable(address, sizeof(local)));
+    CHECK(mem::read<int>(address) == 42);
+    CHECK(!mem::readable(0, 8));
+    CHECK(!mem::readable(0x10, 8));
+
+    // The test exe itself stands in for the game module.
+    const ModuleInfo module = query_main_module();
+    const auto function = reinterpret_cast<std::uintptr_t>(&test_memory);
+    CHECK(mem::in_section(module, ".text", function));
+    CHECK(!mem::in_section(module, ".rdata", function));
+    CHECK(!mem::in_section(module, ".text", address));
+    CHECK(mem::describe(module, function).starts_with("exe+0x"));
+    CHECK(mem::describe(module, reinterpret_cast<std::uintptr_t>(&GetTickCount64)).find("+0x") != std::string::npos);
+}
+
 bool near_eq(float a, float b) {
     return a - b < 1e-4f && b - a < 1e-4f;
 }
@@ -251,23 +274,23 @@ void test_pose_quaternion() {
 }
 
 void test_parse_bridge() {
-    const auto request = camera::parse_bridge("controller=000001F2AB34CD50\r\npose=1.5 -2 3 90 -10\n");
+    const auto request = bridge::parse("controller=000001F2AB34CD50\r\npose=1.5 -2 3 90 -10\n");
     CHECK(request.controller == 0x000001F2AB34CD50ull);
     CHECK(request.pose && near_eq(request.pose->x, 1.5f) && near_eq(request.pose->yaw_deg, 90.0f) &&
           near_eq(request.pose->pitch_deg, -10.0f));
     CHECK(!request.pose_off);
 
-    const auto off = camera::parse_bridge("controller=0x10\npose=off\n");
+    const auto off = bridge::parse("controller=0x10\npose=off\n");
     CHECK(off.controller == 0x10u && off.pose_off && !off.pose && !off.probe);
-    CHECK(camera::parse_bridge("probe=1\n").probe);
+    CHECK(bridge::parse("probe=1\n").probe);
 
-    const auto hide = camera::parse_bridge("hide=0000019AA2C20280, 0x10,zz\n");
+    const auto hide = bridge::parse("hide=0000019AA2C20280, 0x10,zz\n");
     CHECK(hide.hide && hide.hide->size() == 2 && hide.hide->at(0) == 0x0000019AA2C20280ull && hide.hide->at(1) == 0x10u);
-    const auto show = camera::parse_bridge("hide=off\n");
+    const auto show = bridge::parse("hide=off\n");
     CHECK(show.hide && show.hide->empty());
-    CHECK(!camera::parse_bridge("pose=off\n").hide);
+    CHECK(!bridge::parse("pose=off\n").hide);
 
-    const auto bad = camera::parse_bridge("pose=1 2 three 4 5\ncontroller=zz\n");
+    const auto bad = bridge::parse("pose=1 2 three 4 5\ncontroller=zz\n");
     CHECK(!bad.pose && !bad.controller);
 }
 
@@ -295,6 +318,7 @@ int main() {
     test_pose_quaternion();
     test_parse_bridge();
     test_watch_probes();
+    test_memory();
     test_config();
     if (g_failures == 0) {
         std::printf("all tests passed\n");

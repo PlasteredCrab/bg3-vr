@@ -2,82 +2,58 @@
 
 #include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
+#include "bg3vr/pose.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <string_view>
-#include <vector>
 
+// Driving the gameplay camera. The controller's view update (0x4085150 in 4.1.1.7631656) builds the
+// view from GetWorldTransform / GetWorldTranslate, which for the gameplay camera return the camera
+// entity's ECS Transform component; every system that asks the camera where it is reads the same
+// component. At the start of the view update we write the requested pose into that Transform, so
+// the view, its inverse, the frustum, culling and all other readers agree. See
+// docs/re-notes/camera.md.
 namespace bg3vr::camera {
 
-// rf::CameraController field offsets, from the Script Extender's layout
-// (GameDefinitions/Components/Camera.h). Checked against live values before any hook goes in.
+// rf::CameraController layout: the Script Extender's field offsets, confirmed by disassembly.
 namespace layout {
 inline constexpr std::size_t kViewDirty = 0x10;       // bool
 inline constexpr std::size_t kProjectionDirty = 0x11; // bool
 inline constexpr std::size_t kIsOrthographic = 0x12;  // bool
 inline constexpr std::size_t kOffCenter = 0x13;       // bool; only honoured for orthographic cameras
-inline constexpr std::size_t kFov = 0x14;            // float, vertical, radians
-inline constexpr std::size_t kNearPlane = 0x18;      // float
-inline constexpr std::size_t kAspectRatio = 0x20;    // float
-inline constexpr std::size_t kWorldTranslate = 0x34; // Transform at 0x24: quat (16 bytes), then vec3
-inline constexpr std::size_t kViewMatrix = 0x90;     // glm::mat4, column-major
-inline constexpr std::size_t kInvViewMatrix = 0xD0;  // glm::mat4, camera-to-world
-inline constexpr std::size_t kSize = 0x290;          // through FrustumPoints
-inline constexpr std::size_t kUpdateSlot = 5;        // virtual void Update(GameTime const&)
+inline constexpr std::size_t kFov = 0x14;             // float, vertical, radians
+inline constexpr std::size_t kNearPlane = 0x18;       // float
+inline constexpr std::size_t kAspectRatio = 0x20;     // float
+inline constexpr std::size_t kWorldTranslate = 0x34;  // base class: in-object Transform at 0x24 (quat, then vec3)
+inline constexpr std::size_t kViewMatrix = 0x90;      // glm::mat4, column-major
+inline constexpr std::size_t kInvViewMatrix = 0xD0;   // glm::mat4, camera-to-world
+inline constexpr std::size_t kSize = 0x290;           // through FrustumPoints
 inline constexpr std::size_t kVtableSlots = 24;
-// virtual Transform const& GetWorldTransform(): for the gameplay camera this returns the camera
-// entity's ECS Transform component (looked up via the handle at controller+0x318). Layout:
-// quat (x, y, z, w) at +0x00, translate at +0x10, scale at +0x1C. The view is built from it.
+// virtual Transform const& GetWorldTransform(): quat (x, y, z, w) at +0x00, translate at +0x10.
 inline constexpr std::size_t kGetWorldTransformSlot = 13;
 inline constexpr std::size_t kTransformTranslate = 0x10;
-
-// MoveableObject (base of visuals and renderables). Verified in the Visual vtable (exe 0x588CB30,
-// 4.1.1.7631656) by disassembly; the Script Extender's Render.h lists both one slot later.
-// slot 13: uint16_t GetCullFlags(uint16_t&) = movzx eax, word [rcx+0xF4]
-// slot 15: ToggleCullFlag600(bool set): set ? flags |= 0x600 : flags &= ~0x600 (via 0x3C6B810, which
-//          also notifies the scene and recurses into attachments). Visible parts have 0x600 set, so
-//          false hides from the main view; shadow bits are untouched.
-inline constexpr std::size_t kGetCullFlagsSlot = 13;
-inline constexpr std::size_t kToggleCullFlag600Slot = 15;
-inline constexpr std::size_t kCullFlags = 0xF4;
-inline constexpr std::uint16_t kMainViewBits = 0x600;
 } // namespace layout
 
-using Mat4 = std::array<float, 16>; // column-major, like glm
+// Installs the hooks (signatures camera_view_update and camera_set_view_call). [camera] force_view in
+// bg3vr.ini also overwrites the built view matrix at the setter (the Phase 0 method).
+void install(const Config& config, const ModuleInfo& module);
 
-struct Pose {
-    float x = 0, y = 0, z = 0;
-    float yaw_deg = 0;   // about +Y; 0 looks along +Z
-    float pitch_deg = 0; // positive looks up
-};
+// Checks `controller` against the layout. On success it becomes the driven camera; on failure no
+// camera is driven. Logs what it found either way.
+bool attach(std::uintptr_t controller);
+std::uintptr_t controller();
 
-// Camera-to-world and world-to-camera matrices for a camera that looks along +Z with +Y up,
-// matching the game's gameplay camera.
-void pose_matrices(const Pose& pose, Mat4& world, Mat4& view);
+// The pose to hold the driven camera at; nullopt releases it.
+void set_pose(std::optional<Pose> pose);
 
-// The rotation of `pose` as a quaternion (x, y, z, w) that maps +X, +Y, +Z to the camera's right,
-// up and forward axes, as the game's view builder expects.
-std::array<float, 4> pose_quaternion(const Pose& pose);
+// Called on the game thread at the start of every view update (several per frame), before the pose
+// is applied. Used for per-frame work that must run on the game thread.
+using FrameCallback = void (*)();
+void set_frame_callback(FrameCallback callback);
 
-struct BridgeRequest {
-    std::optional<std::uintptr_t> controller;
-    std::optional<Pose> pose; // empty = no override
-    bool pose_off = false;
-    bool probe = false;       // count vtable calls and find who writes the matrices
-    std::optional<std::vector<std::uintptr_t>> hide; // visuals to hide from the main view; empty = show all
-};
-
-// Parses the bridge file written by Client/CameraProbe.lua:
-//   controller=<hex address>
-//   pose=<x> <y> <z> <yaw> <pitch>   |   pose=off
-//   probe=1
-//   hide=<hex>,<hex>,...             |   hide=off
-BridgeRequest parse_bridge(std::string_view content);
-
-// Starts the bridge watcher thread (Phase 0 camera experiment).
-void start(const Config& config, const ModuleInfo& module);
+// Logs the hook counters and every controller seen in the view update, then resets the per-report
+// counters.
+void report();
 
 } // namespace bg3vr::camera

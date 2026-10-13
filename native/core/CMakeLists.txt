@@ -1,11 +1,16 @@
-# bg3vr_base: utilities shared by the core DLL and the unit tests.
+# bg3vr_base: everything except the DLL entry points, so the unit tests can link it.
 add_library(bg3vr_base STATIC
+    src/bridge.cpp
     src/camera.cpp
     src/config.cpp
+    src/cull.cpp
     src/hooks.cpp
     src/log.cpp
+    src/memory.cpp
     src/module_info.cpp
     src/pattern.cpp
+    src/pose.cpp
+    src/probe.cpp
     src/signatures.cpp
     src/watch.cpp
     src/win_util.cpp
