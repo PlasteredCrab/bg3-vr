@@ -29,7 +29,8 @@ struct Request {
     bool recenter = false;                                     // headset: take the current head pose as centre
     std::optional<bool> views_find;
     std::optional<std::string> trace;                          // on | off | dump
-    std::optional<std::size_t> views_build;                    // run the pipeline setup for this view
+    std::optional<std::size_t> views_build;                    // build stage lists for this view
+    bool views_build_compositing = false;                      // ... including 0x45 / 0x07
     bool views_refs = false;                                   // what points at each view
     bool views_diff = false;                                   // small differences between view 0 and 1
     std::optional<views::Layout> views_layout;                 // layout experiment
@@ -52,7 +53,7 @@ struct Request {
 //   fov=<left> <right> <up> <down>   |   fov=off              (degrees; left and down negative)
 //   xr_lag=<0..7>                    |   xr_lag=auto
 //   views=find | views=dump | views=sbs | views=swap | views=full | views=refs | views=diff
-//   views=build <index>
+//   views=build [<index>] [full]
 //   views=set <index> <scale x> <scale y> <offset x> <offset y>   |   views=enable <index> <0|1>
 //   follow=<hex transform> [height]  |   follow=off
 //   recenter=1

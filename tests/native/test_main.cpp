@@ -468,6 +468,9 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("views=sbs\n").views_find);
     CHECK(bridge::parse("views=refs\n").views_refs && bridge::parse("views=diff\n").views_diff);
     CHECK(bridge::parse("views=build 2\n").views_build == 2u && bridge::parse("views=build\n").views_build == views::kAutomatic);
+    const auto full_build = bridge::parse("views=build full\n");
+    CHECK(full_build.views_build == views::kAutomatic && full_build.views_build_compositing);
+    CHECK(!bridge::parse("views=build\n").views_build_compositing && bridge::parse("views=build 1 full\n").views_build == 1u);
     CHECK(bridge::parse("trace=ON\n").trace == "on" && bridge::parse("trace=dump\n").trace == "dump" && !bridge::parse("trace=x\n").trace);
 
     const auto follow = bridge::parse("follow=0000020A1B2C3D40 1.55\n");

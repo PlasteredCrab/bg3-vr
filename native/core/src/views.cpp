@@ -322,13 +322,18 @@ namespace {
 // [[view+0x10]+0x40] is set and otherwise leaves to the special view: the new view must put its own
 // image on screen. RVAs of the lists in 4.1.1.7631656 (.rdata).
 using BuildStagesFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view, const std::uintptr_t* list);
-constexpr std::uint32_t kStageLists[][2] = {
-    {0x5899BE0, 0x5899BE7}, // 47 08 48 35 1E 05 0B
-    {0x5899BE7, 0x5899BE8}, // 45
-    {0x5899BE8, 0x5899BEF}, // 46 36 44 18 17 40 37
-    {0x5899BEF, 0x5899BF0}, // 02
-    {0x5899BF0, 0x5899BF8}, // 41 03 1B 1A 00 21 3E 3F
-    {0x5899BF8, 0x5899BF9}, // 07
+// Building 0x45 and 0x07 too crashed the game the same way (2026-10-13), so they're optional.
+struct StageList {
+    std::uint32_t begin, end;
+    bool compositing; // 0x45 / 0x07: the stages the special view runs for the main view
+};
+constexpr StageList kStageLists[] = {
+    {0x5899BE0, 0x5899BE7, false}, // 47 08 48 35 1E 05 0B
+    {0x5899BE7, 0x5899BE8, true},  // 45
+    {0x5899BE8, 0x5899BEF, false}, // 46 36 44 18 17 40 37
+    {0x5899BEF, 0x5899BF0, false}, // 02
+    {0x5899BF0, 0x5899BF8, false}, // 41 03 1B 1A 00 21 3E 3F
+    {0x5899BF8, 0x5899BF9, true},  // 07
 };
 constexpr std::uint32_t kBuildStagesRva = 0x3AC51C0; // where the lists above are valid
 
@@ -343,6 +348,37 @@ bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintpt
     }
 }
 
+// A stage's id is what its vtable slot 1 returns (the builder matches stages by it).
+using StageIdFn = std::uint8_t (*)(std::uintptr_t stage);
+int stage_id(std::uintptr_t stage) {
+    __try {
+        const auto vtable = *reinterpret_cast<const std::uintptr_t*>(stage);
+        return reinterpret_cast<StageIdFn>(*reinterpret_cast<const std::uintptr_t*>(vtable + 8))(stage);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// Logs a view's stage array: pointer, vtable, id.
+void log_stages(const char* label, std::uintptr_t view) {
+    std::uintptr_t array = 0;
+    std::int32_t count = 0;
+    if (!mem::try_copy(&array, view + 0x28, sizeof(array)) || !mem::try_copy(&count, view + 0x34, sizeof(count)) ||
+        count < 0 || count > 64) {
+        log::info("views:   {} 0x{:X}: stage array unreadable", label, view);
+        return;
+    }
+    std::string text;
+    for (std::int32_t i = 0; i < count; ++i) {
+        std::uintptr_t stage = 0, vtable = 0;
+        mem::try_copy(&stage, array + i * sizeof(void*), sizeof(stage));
+        mem::try_copy(&vtable, stage, sizeof(vtable));
+        const bool valid = mem::in_section(g_module, ".rdata", vtable, sizeof(void*));
+        text += std::format(" {:X}{}", valid ? stage_id(stage) : -1, valid ? "" : "!");
+    }
+    log::info("views:   {} 0x{:X}: {} stage(s) at 0x{:X}, ids:{}", label, view, count, array, text);
+}
+
 std::uint32_t stage_count(std::uintptr_t view) {
     std::uint32_t count = 0;
     mem::try_copy(&count, view + 0x34, sizeof(count));
@@ -351,7 +387,7 @@ std::uint32_t stage_count(std::uintptr_t view) {
 
 } // namespace
 
-void build(std::size_t index) {
+void build(std::size_t index, bool compositing) {
     const auto views = found();
     if (index != kAutomatic && index >= views.size()) {
         log::warn("views: no view {} ({} found; !vr_views find first)", index, views.size());
@@ -362,7 +398,7 @@ void build(std::size_t index) {
         log::warn("views: signature game_pipeline_setup not resolved");
         return;
     }
-    std::thread([views, index, setup = *setup] {
+    std::thread([views, index, compositing, setup = *setup] {
         // The game pipeline holds the main view at +0xA0 and its special 3-stage view at +0xA8; its
         // vtable has the setup (0x588E50 in 4.1.1.7631656) among its slots.
         std::vector<std::uintptr_t> bases;
@@ -435,18 +471,29 @@ void build(std::size_t index) {
                       kBuildStagesRva);
             return;
         }
-        render::run_on_render_thread([pipeline, target, build = *build_stages, driven = g_controller] {
+        render::run_on_render_thread([pipeline, target, main_view, special_view, compositing, build = *build_stages,
+                                      driven = g_controller] {
+            log_stages("before: main   ", main_view);
+            log_stages("before: special", special_view);
+            log_stages("before: target ", target);
             const std::uint32_t before = stage_count(target);
             bool ok = true;
             for (const auto& range : kStageLists) {
-                const std::uintptr_t list[2] = {g_module.base + range[0], g_module.base + range[1]};
+                if (range.compositing && !compositing) {
+                    continue;
+                }
+                const std::uintptr_t list[2] = {g_module.base + range.begin, g_module.base + range.end};
                 ok = call_build_stages(reinterpret_cast<BuildStagesFn>(build), pipeline, target, list);
                 if (!ok) {
                     break;
                 }
             }
-            log::info("views: stage lists for view 0x{:X} {}: {} stage(s) before, {} after", target,
-                      ok ? "built" : "FAULTED (access violation caught)", before, stage_count(target));
+            log::info("views: stage lists{} for view 0x{:X} {}: {} stage(s) before, {} after",
+                      compositing ? " (with 0x45/0x07)" : "", target, ok ? "built" : "FAULTED (access violation caught)",
+                      before, stage_count(target));
+            log_stages("after:  main   ", main_view);
+            log_stages("after:  special", special_view);
+            log_stages("after:  target ", target);
             // A view needs a camera: give it ours if it has none.
             for (const std::size_t state_offset : {kReadStateInView, kReadStateInView + state::kSize}) {
                 std::uintptr_t controller = 0;

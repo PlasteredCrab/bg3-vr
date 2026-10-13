@@ -47,7 +47,8 @@ void on_frame();
 // driven one.
 // kAutomatic picks the first found view that is neither of those.
 inline constexpr std::size_t kAutomatic = static_cast<std::size_t>(-1);
-void build(std::size_t index);
+// compositing also builds stages 0x45 and 0x07 (crashed the game on 2026-10-13).
+void build(std::size_t index, bool compositing);
 
 // What points at each found view (memory scan, background thread): a list that holds view 0 but
 // not view 1 is a candidate for the list of views that get drawn.

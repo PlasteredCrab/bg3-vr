@@ -206,10 +206,22 @@ Request parse(std::string_view content) {
                 const std::string verb = words.empty() ? std::string() : text::to_lower(words[0]);
                 const bool index_ok = !numbers.empty() && numbers[0] >= 0.0f && numbers[0] < 4.0f &&
                                       numbers[0] == std::floor(numbers[0]);
-                if (verb == "build" && words.size() == 1) {
+                const bool full = !words.empty() && text::to_lower(words.back()) == "full";
+                if (full) {
+                    numbers.clear(); // "full" isn't a number; parse what's before it
+                    for (std::size_t i = 1; i + 1 < words.size(); ++i) {
+                        const std::string word(words[i]);
+                        char* end = nullptr;
+                        numbers.push_back(std::strtof(word.c_str(), &end));
+                    }
+                }
+                const bool index_given = !numbers.empty() && numbers[0] >= 0.0f && numbers[0] < 4.0f;
+                if (verb == "build" && numbers.empty() && words.size() == (full ? 2u : 1u)) {
                     request.views_build = views::kAutomatic;
-                } else if (verb == "build" && index_ok && numbers.size() == 1) {
+                    request.views_build_compositing = full;
+                } else if (verb == "build" && index_given && numbers.size() == 1) {
                     request.views_build = static_cast<std::size_t>(numbers[0]);
+                    request.views_build_compositing = full;
                 } else if (verb == "set" && index_ok && numbers.size() == 5 && numbers[1] > 0.0f && numbers[1] <= 1.0f &&
                     numbers[2] > 0.0f && numbers[2] <= 1.0f && numbers[3] >= 0.0f && numbers[3] < 1.0f &&
                     numbers[4] >= 0.0f && numbers[4] < 1.0f) {
