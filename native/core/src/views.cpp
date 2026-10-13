@@ -339,13 +339,55 @@ constexpr std::uint32_t kBuildStagesRva = 0x3AC51C0; // where the lists above ar
 
 // No C++ objects with destructors in here (SEH): an access violation is caught and reported instead
 // of crashing the game (the state afterwards may still be broken).
-bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintptr_t view, const std::uintptr_t* list) {
+struct Fault {
+    std::uintptr_t code_address = 0; // where it faulted
+    std::uintptr_t data_address = 0; // what it tried to read or write
+    std::uintptr_t rcx = 0, rdx = 0, r8 = 0;
+    std::array<std::uintptr_t, 12> stack{}; // return addresses into the exe, innermost first
+};
+
+int record_fault(EXCEPTION_POINTERS* info, Fault& fault) {
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    fault.code_address = reinterpret_cast<std::uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+    fault.data_address = info->ExceptionRecord->NumberParameters >= 2
+                             ? static_cast<std::uintptr_t>(info->ExceptionRecord->ExceptionInformation[1])
+                             : 0;
+    fault.rcx = info->ContextRecord->Rcx;
+    fault.rdx = info->ContextRecord->Rdx;
+    fault.r8 = info->ContextRecord->R8;
+    // The faulting frames still exist while the filter runs (not after unwinding): take the stack now.
+    std::uintptr_t words[512]{};
+    if (mem::try_copy(words, info->ContextRecord->Rsp, sizeof(words))) {
+        std::size_t n = 0;
+        for (const std::uintptr_t word : words) {
+            if (n < fault.stack.size() && mem::in_section(g_module, ".text", word)) {
+                fault.stack[n++] = word;
+            }
+        }
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintptr_t view, const std::uintptr_t* list,
+                       Fault& fault) {
     __try {
         build(pipeline, view, list);
         return true;
-    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+    } __except (record_fault(GetExceptionInformation(), fault)) {
         return false;
     }
+}
+
+std::string stack_trace(const Fault& fault) {
+    std::string text;
+    for (const std::uintptr_t address : fault.stack) {
+        if (address) {
+            text += " " + mem::describe(g_module, address);
+        }
+    }
+    return text;
 }
 
 // A stage's id is what its vtable slot 1 returns (the builder matches stages by it).
@@ -504,12 +546,13 @@ void build(std::size_t index, bool compositing) {
             }
             const std::uint32_t before = stage_count(target);
             bool ok = true;
+            Fault fault;
             for (const auto& range : kStageLists) {
                 if (range.compositing && !compositing) {
                     continue;
                 }
                 const std::uintptr_t list[2] = {g_module.base + range.begin, g_module.base + range.end};
-                ok = call_build_stages(reinterpret_cast<BuildStagesFn>(build), pipeline, target, list);
+                ok = call_build_stages(reinterpret_cast<BuildStagesFn>(build), pipeline, target, list, fault);
                 if (!ok) {
                     break;
                 }
@@ -517,6 +560,11 @@ void build(std::size_t index, bool compositing) {
             log::info("views: stage lists{} for view 0x{:X} {}: {} stage(s) before, {} after",
                       compositing ? " (with 0x45/0x07)" : "", target, ok ? "built" : "FAULTED (access violation caught)",
                       before, stage_count(target));
+            if (!ok) {
+                log::info("views:   fault at {} accessing 0x{:X}; rcx 0x{:X} rdx 0x{:X} r8 0x{:X}; stack:{}",
+                          mem::describe(g_module, fault.code_address), fault.data_address, fault.rcx, fault.rdx,
+                          fault.r8, stack_trace(fault));
+            }
             log_stages("after:  main   ", main_view);
             log_stages("after:  special", special_view);
             log_stages("after:  target ", target);
