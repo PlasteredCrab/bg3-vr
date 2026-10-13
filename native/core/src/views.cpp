@@ -445,7 +445,12 @@ void build(std::size_t index, bool compositing) {
         mem::try_copy(&special_view, pipeline + 0xA8, sizeof(special_view));
         std::uintptr_t target = index == kAutomatic ? 0 : bases[index];
         if (index == kAutomatic) {
-            for (const std::uintptr_t base : bases) {
+            // A scan may have finished while the pipeline was being looked for: use the latest views.
+            std::vector<std::uintptr_t> latest;
+            for (const std::uintptr_t read_state : found()) {
+                latest.push_back(read_state - kReadStateInView);
+            }
+            for (const std::uintptr_t base : latest) {
                 if (base != main_view && base != special_view) {
                     target = base;
                     break;
