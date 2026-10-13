@@ -57,6 +57,20 @@ std::optional<EyeFov> g_eye_fov;
 bool g_projection_dirty = false;
 std::atomic<std::uint64_t> g_projection_overrides{0};
 
+// Head tracking: the latest located view (set every frame by the headset), the pose last written into
+// the Transform (what the setter check compares against), and the history of applied head views.
+// Under g_mutex.
+std::optional<HeadView> g_head;
+float g_world_scale = 1.0f;
+std::optional<vr::RigidPose> g_written;
+std::array<AppliedView, kAppliedHistory> g_applied{};
+std::uint64_t g_applied_serial = 0;
+std::atomic<std::uint64_t> g_head_writes{0};
+
+bool same_fov(const EyeFov& a, const EyeFov& b) {
+    return a.left_deg == b.left_deg && a.right_deg == b.right_deg && a.up_deg == b.up_deg && a.down_deg == b.down_deg;
+}
+
 safetyhook::MidHook g_view_update_hook;
 safetyhook::MidHook g_set_view_hook;
 safetyhook::MidHook g_set_projection_hook;
@@ -86,13 +100,6 @@ void track_controller(std::uintptr_t controller) {
     }
 }
 
-std::optional<Pose> pose_for(std::uintptr_t controller) {
-    std::scoped_lock lock(g_mutex);
-    if (!g_pose || controller != g_controller) {
-        return std::nullopt;
-    }
-    return g_pose;
-}
 
 // Called once per view update of the driven camera, under g_mutex: middle-drag turns the held pose.
 void update_mouselook(Pose& pose) {
@@ -114,10 +121,16 @@ void on_view_update(safetyhook::Context& ctx) {
         callback();
     }
     std::optional<Pose> pose;
+    std::optional<HeadView> head;
     {
         std::scoped_lock lock(g_mutex);
         if (ctx.rcx != g_controller) {
             return;
+        }
+        // The head view's field of view goes into the projection built later in this same update.
+        if (g_pose && g_head && (!g_eye_fov || !same_fov(*g_eye_fov, g_head->fov))) {
+            g_eye_fov = g_head->fov;
+            g_projection_dirty = true;
         }
         if (g_projection_dirty) {
             *reinterpret_cast<std::uint8_t*>(ctx.rcx + layout::kProjectionDirty) = 1;
@@ -136,6 +149,7 @@ void on_view_update(safetyhook::Context& ctx) {
             update_mouselook(*g_pose);
         }
         pose = g_pose;
+        head = g_head;
     }
     using GetTransformFn = float* (*)(std::uintptr_t);
     const auto vtable = mem::read<std::uintptr_t>(ctx.rcx);
@@ -144,23 +158,49 @@ void on_view_update(safetyhook::Context& ctx) {
     if (!transform) {
         return;
     }
-    const auto q = pose_quaternion(*pose);
-    std::memcpy(transform, q.data(), sizeof(q));
-    const float translate[3] = {pose->x, pose->y, pose->z};
-    std::memcpy(reinterpret_cast<std::uint8_t*>(transform) + layout::kTransformTranslate, translate, sizeof(translate));
+    vr::RigidPose world{{pose->x, pose->y, pose->z}, pose_quaternion(*pose)};
+    if (head) {
+        vr::RigidPose local = vr::from_openxr(head->pose);
+        for (float& axis : local.position) {
+            axis *= g_world_scale;
+        }
+        world = vr::anchor(*pose, local);
+    }
+    std::memcpy(transform, world.orientation.data(), sizeof(world.orientation));
+    std::memcpy(reinterpret_cast<std::uint8_t*>(transform) + layout::kTransformTranslate, world.position.data(),
+                sizeof(world.position));
     g_transform_writes.fetch_add(1, std::memory_order_relaxed);
+
+    std::scoped_lock lock(g_mutex);
+    g_written = world;
+    if (head) {
+        std::move_backward(g_applied.begin(), g_applied.end() - 1, g_applied.end());
+        AppliedView& applied = g_applied.front();
+        Mat4 camera_to_world;
+        vr::camera_matrices(world, camera_to_world, applied.view_matrix);
+        applied.head = *head;
+        applied.serial = ++g_applied_serial;
+        g_head_writes.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // At the call to the matrix setter: rbx = controller, rdx = the view matrix the game just built.
 void on_set_view(safetyhook::Context& ctx) {
     g_view_calls.fetch_add(1, std::memory_order_relaxed);
     track_controller(ctx.rbx);
-    const auto pose = pose_for(ctx.rbx);
-    if (!pose) {
+    std::optional<vr::RigidPose> written;
+    {
+        std::scoped_lock lock(g_mutex);
+        if (ctx.rbx != g_controller || !g_pose) {
+            return;
+        }
+        written = g_written;
+    }
+    if (!written) {
         return;
     }
     Mat4 world, expected;
-    pose_matrices(*pose, world, expected);
+    vr::camera_matrices(*written, world, expected);
     float* built = reinterpret_cast<float*>(ctx.rdx);
     float error = 0.0f;
     for (std::size_t i = 0; i < 16; ++i) {
@@ -253,6 +293,10 @@ void install(const Config& config, const ModuleInfo& module) {
     if (!sensitivity.empty()) {
         g_mouselook_sensitivity = std::strtof(sensitivity.c_str(), nullptr);
     }
+    const std::string scale = config.get("xr", "world_scale");
+    if (!scale.empty()) {
+        g_world_scale = std::strtof(scale.c_str(), nullptr);
+    }
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
     install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
     install_mid_hook("camera_set_projection_call", &on_set_projection, g_set_projection_hook);
@@ -273,6 +317,7 @@ std::uintptr_t controller() {
 void set_pose(std::optional<Pose> pose) {
     std::scoped_lock lock(g_mutex);
     g_pose = pose;
+    g_written.reset();
     if (pose) {
         g_sweep_base = *pose; // a running sweep continues around the new pose
     }
@@ -321,6 +366,25 @@ void set_mouselook(bool enabled) {
               enabled ? "on" : "off", g_mouselook_sensitivity);
 }
 
+void set_head(std::optional<HeadView> view) {
+    std::scoped_lock lock(g_mutex);
+    if (view.has_value() != g_head.has_value()) {
+        log::info("camera: head tracking {}{}", view ? "on" : "off",
+                  view && !g_pose ? " (takes effect when a pose is held: !vr_cam_set here)" : "");
+        if (!view) {
+            g_eye_fov.reset(); // back to the game's projection
+            g_projection_dirty = true;
+        }
+    }
+    g_head = view;
+}
+
+std::size_t applied_views(std::array<AppliedView, kAppliedHistory>& out) {
+    std::scoped_lock lock(g_mutex);
+    out = g_applied;
+    return static_cast<std::size_t>(std::min<std::uint64_t>(g_applied_serial, kAppliedHistory));
+}
+
 void set_frame_callback(FrameCallback callback) {
     g_frame_callback.store(callback, std::memory_order_release);
 }
@@ -332,6 +396,8 @@ void report() {
               calls - g_last_reported_calls, g_transform_writes.load(std::memory_order_relaxed),
               g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
               g_force_view ? " (force_view on)" : "", g_projection_overrides.load(std::memory_order_relaxed));
+    log::info("camera: head-tracked writes {} (world scale {:.2f})", g_head_writes.load(std::memory_order_relaxed),
+              g_world_scale);
     g_view_max_error.store(0.0f, std::memory_order_relaxed);
     g_last_reported_calls = calls;
 

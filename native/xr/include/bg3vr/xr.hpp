@@ -57,8 +57,10 @@ public:
     // swapchain per view at the recommended size. The format is the sRGB form of `preferred` when
     // the runtime offers it (copied game images are gamma-encoded), else `preferred`, else an sRGB
     // format.
+    // `eye_width` / `eye_height`, when non-zero, replace the recommended per-eye size (the game's
+    // back buffer is copied whole into an eye image, so they must match it).
     bool create(const System& system, ID3D11Device* device, std::string& error,
-                DXGI_FORMAT preferred = DXGI_FORMAT_UNKNOWN);
+                DXGI_FORMAT preferred = DXGI_FORMAT_UNKNOWN, int32_t eye_width = 0, int32_t eye_height = 0);
     void destroy();
 
     // A flat "screen" swapchain of the given size, shown with end_frame_quad (same format as the
@@ -83,6 +85,13 @@ public:
     void release(std::size_t index);
     // Submits one projection layer built from frame.views (none when the runtime says not to render).
     bool end_frame(const Frame& frame);
+    // Submits one projection layer whose views are `rendered`: the pose and field of view each eye
+    // image was actually rendered with, which may be older than frame.views. Empty: no layer.
+    bool end_frame(const Frame& frame, const std::vector<XrView>& rendered);
+
+    // The views at `time` (e.g. a display time further ahead than the current frame's) in LOCAL
+    // space. False when orientation isn't tracked.
+    bool locate(XrTime time, std::vector<XrView>& views);
 
     std::size_t view_count() const { return eyes_.size(); }
     int32_t width(std::size_t index) const { return eyes_[index].width; }

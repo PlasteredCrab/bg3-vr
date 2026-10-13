@@ -149,6 +149,12 @@ Request parse(std::string_view content) {
             } else if (flag == "off" || flag == "0" || flag == "false") {
                 request.mouselook = false;
             }
+        } else if (key == "xr_lag") {
+            if (text::to_lower(value) == "auto") {
+                request.xr_lag = -1;
+            } else if (const auto lag = text::parse_int(std::string(value)); lag && *lag >= 0 && *lag < 8) {
+                request.xr_lag = static_cast<int>(*lag);
+            }
         } else if (key == "probe") {
             const std::string flag = text::to_lower(value);
             request.probe = flag == "1" || flag == "true" || flag == "yes";

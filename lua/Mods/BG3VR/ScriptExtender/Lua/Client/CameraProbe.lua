@@ -23,6 +23,8 @@
 --                             per-eye asymmetric projection on the camera (approximate Quest 2 values)
 --   !vr_cam_sweep [yaw] [pitch] [seconds] | off
 --                             while held, the camera pans and nods by itself (default 60 20 8)
+--   !vr_xr_lag <0..7>|auto    headset: camera updates between a frame's pose and its display
+--                             (auto finds it; set it by hand if the world swims when you turn)
 --
 -- Matrices are glm mat4: 16 numbers, column-major (translation in elements 13..15).
 
@@ -293,6 +295,17 @@ Ext.RegisterConsoleCommand("vr_cam_sweep", Safely(function(_, a, b, c)
     end
 end))
 
+-- Headset ([xr] mode mono/alternate): how many camera updates a frame's pose leads its Present.
+Ext.RegisterConsoleCommand("vr_xr_lag", Safely(function(_, value)
+    local frames = tonumber(value)
+    if value ~= "auto" and not (frames and frames >= 0 and frames <= 7 and math.floor(frames) == frames) then
+        BG3VR.Warn("usage: !vr_xr_lag 0..7|auto")
+        return
+    end
+    if BG3VR.WriteBridge({ "xr_lag=" .. value }) then
+        BG3VR.Log("headset lag %s", value)
+    end
+end))
 -- Mouse look while a pose is held: hold the middle mouse button and drag (native, on by default).
 Ext.RegisterConsoleCommand("vr_mouselook", Safely(function(_, mode)
     if mode ~= "on" and mode ~= "off" then

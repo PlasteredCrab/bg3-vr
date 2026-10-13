@@ -35,7 +35,7 @@ void describe_swapchain(IDXGISwapChain* swapchain) {
               desc.BufferCount, static_cast<int>(desc.SwapEffect), desc.Windowed, desc.Flags);
 }
 
-// Just before the game's Present call: rcx = the IDXGISwapChain*.
+// Just before the game's Present call: rcx = the IDXGISwapChain*, rdi = the RenderFrame.
 void on_present(safetyhook::Context& ctx) {
     auto* swapchain = reinterpret_cast<IDXGISwapChain*>(ctx.rcx);
     if (!swapchain) {
@@ -46,7 +46,7 @@ void on_present(safetyhook::Context& ctx) {
         describe_swapchain(swapchain); // first frame, or the swapchain was recreated
     }
     if (const PresentCallback callback = g_callback.load(std::memory_order_acquire)) {
-        callback(swapchain);
+        callback(swapchain, ctx.rdi);
     }
 }
 

@@ -128,7 +128,8 @@ Session::~Session() {
     destroy();
 }
 
-bool Session::create(const System& system, ID3D11Device* device, std::string& error, DXGI_FORMAT preferred) {
+bool Session::create(const System& system, ID3D11Device* device, std::string& error, DXGI_FORMAT preferred,
+                     int32_t eye_width, int32_t eye_height) {
     instance_ = system.instance;
     device_ = device;
     XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
@@ -182,8 +183,8 @@ bool Session::create(const System& system, ID3D11Device* device, std::string& er
 
     eyes_.resize(system.views.size());
     for (std::size_t i = 0; i < eyes_.size(); ++i) {
-        eyes_[i].width = static_cast<int32_t>(system.views[i].recommendedImageRectWidth);
-        eyes_[i].height = static_cast<int32_t>(system.views[i].recommendedImageRectHeight);
+        eyes_[i].width = eye_width > 0 ? eye_width : static_cast<int32_t>(system.views[i].recommendedImageRectWidth);
+        eyes_[i].height = eye_height > 0 ? eye_height : static_cast<int32_t>(system.views[i].recommendedImageRectHeight);
         if (!create_swapchain(eyes_[i], error)) {
             return false;
         }
@@ -323,17 +324,21 @@ bool Session::begin_frame(Frame& frame) {
     if (XR_FAILED(xrWaitFrame(session_, nullptr, &frame.state)) || XR_FAILED(xrBeginFrame(session_, nullptr))) {
         return false;
     }
-    XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
-    locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-    locate.displayTime = frame.state.predictedDisplayTime;
-    locate.space = space_;
-    XrViewState view_state{XR_TYPE_VIEW_STATE};
-    frame.views.assign(eyes_.size(), {XR_TYPE_VIEW});
-    uint32_t located = 0;
-    const XrResult result = xrLocateViews(session_, &locate, &view_state, static_cast<uint32_t>(frame.views.size()),
-                                          &located, frame.views.data());
-    frame.views_valid = XR_SUCCEEDED(result) && (view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+    frame.views_valid = locate(frame.state.predictedDisplayTime, frame.views);
     return true;
+}
+
+bool Session::locate(XrTime time, std::vector<XrView>& views) {
+    XrViewLocateInfo info{XR_TYPE_VIEW_LOCATE_INFO};
+    info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    info.displayTime = time;
+    info.space = space_;
+    XrViewState view_state{XR_TYPE_VIEW_STATE};
+    views.assign(eyes_.size(), {XR_TYPE_VIEW});
+    uint32_t located = 0;
+    const XrResult result =
+        xrLocateViews(session_, &info, &view_state, static_cast<uint32_t>(views.size()), &located, views.data());
+    return XR_SUCCEEDED(result) && (view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT);
 }
 
 EyeImage Session::acquire(std::size_t index) {
@@ -350,11 +355,16 @@ void Session::release(std::size_t index) {
 }
 
 bool Session::end_frame(const Frame& frame) {
+    static const std::vector<XrView> kNone;
+    return end_frame(frame, frame.views_valid ? frame.views : kNone);
+}
+
+bool Session::end_frame(const Frame& frame, const std::vector<XrView>& rendered) {
     std::vector<XrCompositionLayerProjectionView> projection_views(eyes_.size(),
                                                                    {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
-    for (std::size_t i = 0; i < eyes_.size() && i < frame.views.size(); ++i) {
-        projection_views[i].pose = frame.views[i].pose;
-        projection_views[i].fov = frame.views[i].fov;
+    for (std::size_t i = 0; i < eyes_.size() && i < rendered.size(); ++i) {
+        projection_views[i].pose = rendered[i].pose;
+        projection_views[i].fov = rendered[i].fov;
         projection_views[i].subImage.swapchain = eyes_[i].swapchain;
         projection_views[i].subImage.imageRect = {{0, 0}, {eyes_[i].width, eyes_[i].height}};
     }
@@ -367,7 +377,7 @@ bool Session::end_frame(const Frame& frame) {
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
     end.displayTime = frame.state.predictedDisplayTime;
     end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    end.layerCount = frame.state.shouldRender && frame.views_valid ? 1 : 0;
+    end.layerCount = frame.state.shouldRender && rendered.size() == eyes_.size() && !eyes_.empty() ? 1 : 0;
     end.layers = layers;
     return XR_SUCCEEDED(xrEndFrame(session_, &end));
 }

@@ -122,6 +122,11 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.eye_fov) {
         camera::set_eye_fov(*request.eye_fov);
     }
+#if BG3VR_HAVE_OPENXR
+    if (request.xr_lag) {
+        headset::set_lag(*request.xr_lag);
+    }
+#endif
     if (request.hide) {
         cull::set_hidden(*request.hide);
     }

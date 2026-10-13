@@ -5,6 +5,8 @@
 #include <dxgi.h>
 #include <d3d11.h>
 
+#include <cstdint>
+
 // The game's D3D11 output (Phase 1 step 2). Hooks the game's own IDXGISwapChain::Present call in
 // rf::dx11::RenderFrame::FlipBuffers (signature dx11_present_call) rather than DXGI itself, which
 // the Script Extender already patches. At that point the back buffer holds the finished frame.
@@ -17,8 +19,9 @@ void install(const ModuleInfo& module);
 IDXGISwapChain* swapchain();
 ID3D11Device* device();
 
-// Called on the presenting thread just before every Present, with the swapchain about to present.
-using PresentCallback = void (*)(IDXGISwapChain* swapchain);
+// Called on the presenting thread just before every Present, with the swapchain about to present
+// and the rf::dx11::RenderFrame presenting it (rdi at the call site).
+using PresentCallback = void (*)(IDXGISwapChain* swapchain, std::uintptr_t render_frame);
 void set_present_callback(PresentCallback callback);
 
 // Logs presented frames and the frame rate since the last report.

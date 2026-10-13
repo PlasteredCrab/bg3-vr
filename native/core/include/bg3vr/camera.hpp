@@ -3,7 +3,9 @@
 #include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/pose.hpp"
+#include "bg3vr/vr_math.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -61,6 +63,29 @@ void set_sweep(std::optional<Sweep> sweep);
 // Desktop stand-in for head rotation: while a pose is held, holding the middle mouse button and
 // dragging turns it ([camera] mouselook / mouselook_sensitivity in bg3vr.ini; on by default).
 void set_mouselook(bool enabled);
+
+// Head tracking (Phase 1 step 3). A view located by OpenXR, in OpenXR's LOCAL space and convention:
+// while a pose is held, the camera is placed at that pose's position and yaw (vr::anchor) plus this
+// view (vr::from_openxr, position times [xr] world_scale), with full head rotation, and the
+// projection becomes `fov`. `eye` is carried through to say which eye image the frame is for.
+struct HeadView {
+    vr::RigidPose pose; // OpenXR convention
+    EyeFov fov;
+    int eye = 0;
+};
+// nullopt stops head tracking (back to the held pose and the game's projection).
+void set_head(std::optional<HeadView> view);
+
+// A head view as the driven camera actually used it: `serial` counts view updates of the driven
+// camera, and `view_matrix` is the world-to-camera matrix written for it, to recognise the frame later.
+struct AppliedView {
+    HeadView head;
+    Mat4 view_matrix{};
+    std::uint64_t serial = 0;
+};
+inline constexpr std::size_t kAppliedHistory = 8;
+// The last `kAppliedHistory` applied head views, newest first; returns how many were written.
+std::size_t applied_views(std::array<AppliedView, kAppliedHistory>& out);
 
 // Called on the game thread at the start of every view update (several per frame), before the pose
 // is applied. Used for per-frame work that must run on the game thread.
