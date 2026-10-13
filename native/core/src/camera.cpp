@@ -62,11 +62,50 @@ std::atomic<std::uint64_t> g_projection_overrides{0};
 // Under g_mutex.
 std::optional<HeadView> g_head;
 float g_world_scale = 1.0f;
+// Recentering origin in game convention: head views are taken relative to it (yaw only).
+vr::Vec3 g_recenter_position{0.0f, 0.0f, 0.0f};
+float g_recenter_yaw_deg = 0.0f;
 std::optional<vr::RigidPose> g_written;
 std::array<AppliedView, kAppliedHistory> g_applied{};
 std::uint64_t g_applied_serial = 0;
 std::atomic<std::uint64_t> g_head_writes{0};
 
+// Following the character (under g_mutex, except the counters).
+std::optional<Follow> g_follow;
+bool g_follow_has_last = false;
+std::array<float, 3> g_follow_last{};
+std::atomic<std::uint64_t> g_follow_reads{0};
+std::atomic<std::uint64_t> g_follow_rejects{0};
+constexpr float kFollowMaxJump = 10.0f;
+
+// Moves the held pose to the followed character, if the read looks sane. Under g_mutex.
+void update_follow() {
+    float translate[3];
+    if (!mem::try_copy(translate, g_follow->transform + layout::kTransformTranslate, sizeof(translate)) ||
+        !std::isfinite(translate[0]) || !std::isfinite(translate[1]) || !std::isfinite(translate[2])) {
+        g_follow_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (g_follow_has_last) {
+        const float dx = translate[0] - g_follow_last[0], dy = translate[1] - g_follow_last[1],
+                    dz = translate[2] - g_follow_last[2];
+        if (dx * dx + dy * dy + dz * dz > kFollowMaxJump * kFollowMaxJump) {
+            g_follow_rejects.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+    g_follow_last = {translate[0], translate[1], translate[2]};
+    g_follow_has_last = true;
+    g_pose->x = translate[0];
+    g_pose->y = translate[1] + g_follow->height;
+    g_pose->z = translate[2];
+    if (g_sweep) {
+        g_sweep_base.x = g_pose->x;
+        g_sweep_base.y = g_pose->y;
+        g_sweep_base.z = g_pose->z;
+    }
+    g_follow_reads.fetch_add(1, std::memory_order_relaxed);
+}
 bool same_fov(const EyeFov& a, const EyeFov& b) {
     return a.left_deg == b.left_deg && a.right_deg == b.right_deg && a.up_deg == b.up_deg && a.down_deg == b.down_deg;
 }
@@ -139,6 +178,9 @@ void on_view_update(safetyhook::Context& ctx) {
         if (!g_pose) {
             return;
         }
+        if (g_follow) {
+            update_follow();
+        }
         if (g_sweep) {
             const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_sweep_start).count();
             const double phase = 2.0 * std::numbers::pi * t / std::max(0.5f, g_sweep->period_s);
@@ -161,6 +203,15 @@ void on_view_update(safetyhook::Context& ctx) {
     vr::RigidPose world{{pose->x, pose->y, pose->z}, pose_quaternion(*pose)};
     if (head) {
         vr::RigidPose local = vr::from_openxr(head->pose);
+        vr::Vec3 position;
+        float recenter_yaw;
+        {
+            std::scoped_lock lock(g_mutex);
+            position = g_recenter_position;
+            recenter_yaw = g_recenter_yaw_deg;
+        }
+        local = vr::recentered(local, position, recenter_yaw);
+
         for (float& axis : local.position) {
             axis *= g_world_scale;
         }
@@ -366,6 +417,21 @@ void set_mouselook(bool enabled) {
               enabled ? "on" : "off", g_mouselook_sensitivity);
 }
 
+void set_follow(std::optional<Follow> follow) {
+    std::scoped_lock lock(g_mutex);
+    const bool changed = follow.has_value() != g_follow.has_value() ||
+                         (follow && (follow->transform != g_follow->transform || follow->height != g_follow->height));
+    if (!follow || !g_follow || follow->transform != g_follow->transform) {
+        g_follow_has_last = false; // a new component: don't compare against the old one's position
+    }
+    g_follow = follow;
+    if (changed && follow) {
+        log::info("camera: following the transform at 0x{:X}, {:.2f} above it{}", follow->transform, follow->height,
+                  g_pose ? "" : " (takes effect when a pose is held)");
+    } else if (changed) {
+        log::info("camera: follow off");
+    }
+}
 void set_head(std::optional<HeadView> view) {
     std::scoped_lock lock(g_mutex);
     if (view.has_value() != g_head.has_value()) {
@@ -379,6 +445,16 @@ void set_head(std::optional<HeadView> view) {
     g_head = view;
 }
 
+void set_recenter(const vr::RigidPose& origin) {
+    const vr::RigidPose game = vr::from_openxr(origin);
+    const float yaw = vr::facing_yaw(game.orientation);
+
+    std::scoped_lock lock(g_mutex);
+    g_recenter_position = game.position;
+    g_recenter_yaw_deg = yaw;
+    log::info("camera: recentered on the head at ({:.2f}, {:.2f}, {:.2f}) facing yaw {:.1f}", game.position[0],
+              game.position[1], game.position[2], yaw);
+}
 std::size_t applied_views(std::array<AppliedView, kAppliedHistory>& out) {
     std::scoped_lock lock(g_mutex);
     out = g_applied;
@@ -398,6 +474,8 @@ void report() {
               g_force_view ? " (force_view on)" : "", g_projection_overrides.load(std::memory_order_relaxed));
     log::info("camera: head-tracked writes {} (world scale {:.2f})", g_head_writes.load(std::memory_order_relaxed),
               g_world_scale);
+    log::info("camera: follow reads {}, rejected {}", g_follow_reads.load(std::memory_order_relaxed),
+              g_follow_rejects.load(std::memory_order_relaxed));
     g_view_max_error.store(0.0f, std::memory_order_relaxed);
     g_last_reported_calls = calls;
 

@@ -32,6 +32,13 @@ void camera_matrices(const RigidPose& pose, camera::Mat4& world, camera::Mat4& v
 // becomes the game's +Z; right and up are unchanged.
 RigidPose from_openxr(const RigidPose& xr);
 
+// The yaw (degrees, as yaw_quat) a game-convention orientation faces: its +Z axis projected on the floor.
+float facing_yaw(const Quat& orientation);
+
+// pose (game convention) relative to origin, counting only the origin's position and yaw: the origin
+// becomes (0, 0, 0) facing +Z, and the horizon stays level.
+RigidPose recentered(const RigidPose& pose, const Vec3& origin_position, float origin_yaw_deg);
+
 // Places a head pose that is relative to the tracking origin (already in game convention) into the
 // game world: rotated by the anchor's yaw and offset from the anchor's position. The anchor's pitch
 // is ignored, so the horizon stays level with the real one.

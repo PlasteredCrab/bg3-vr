@@ -368,6 +368,22 @@ void test_vr_math() {
     CHECK(vec_near(placed.position, {11, 2, -3}));
     CHECK(vec_near(vr::rotate(placed.orientation, {0, 0, 1}), {1, 0, 0}));
 
+    // Recentering: the head at the origin maps to identity; a step along the origin's facing is +Z;
+    // turning 30 deg right of the origin's facing is yaw 30; roll and pitch survive.
+    const vr::Vec3 origin{0.4f, 1.2f, -0.3f};
+    const float origin_yaw = 120.0f;
+    CHECK(near_eq(vr::facing_yaw(vr::yaw_quat(origin_yaw)), origin_yaw));
+    const auto at_origin = vr::recentered({origin, vr::yaw_quat(origin_yaw)}, origin, origin_yaw);
+    CHECK(vec_near(at_origin.position, {0, 0, 0}) && vec_near(vr::rotate(at_origin.orientation, {0, 0, 1}), {0, 0, 1}));
+    const vr::Vec3 step = vr::rotate(vr::yaw_quat(origin_yaw), {0, 0, 0.5f});
+    const auto stepped = vr::recentered({{origin[0] + step[0], origin[1] + step[1], origin[2] + step[2]},
+                                         vr::yaw_quat(origin_yaw + 30.0f)},
+                                        origin, origin_yaw);
+    CHECK(vec_near(stepped.position, {0, 0, 0.5f}) && near_eq(vr::facing_yaw(stepped.orientation), 30.0f));
+    const vr::Quat pitched = vr::multiply(vr::yaw_quat(origin_yaw), {0.258819f, 0, 0, 0.965926f}); // 30 deg about +X
+    const auto tilted = vr::recentered({origin, pitched}, origin, origin_yaw);
+    CHECK(vec_near(vr::rotate(tilted.orientation, {0, 0, 1}), vr::rotate({0.258819f, 0, 0, 0.965926f}, {0, 0, 1})));
+
     // Projection: the symmetric case reproduces the game's own matrix (logged 2026-10-12: vertical
     // FOV 55 deg, aspect 1.6, near 0.1, far 10000 -> [0]=1.201 [5]=1.921 [10]~-1e-5 [11]=1 [14]~0.1).
     const float half_v = 27.5f * std::numbers::pi_v<float> / 180.0f;
@@ -435,6 +451,16 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("pose=off\n").xr_lag);
     CHECK(bridge::parse("views=find\n").views_find == true && bridge::parse("views=DUMP\n").views_find == false);
     CHECK(!bridge::parse("views=x\n").views_find);
+
+    const auto follow = bridge::parse("follow=0000020A1B2C3D40 1.55\n");
+    CHECK(follow.follow && *follow.follow && (*follow.follow)->transform == 0x0000020A1B2C3D40ull &&
+          near_eq((*follow.follow)->height, 1.55f));
+    const auto follow_default = bridge::parse("follow=10\n");
+    CHECK(follow_default.follow && *follow_default.follow && near_eq((*follow_default.follow)->height, 1.7f));
+    const auto follow_off = bridge::parse("follow=off\n");
+    CHECK(follow_off.follow && !*follow_off.follow);
+    CHECK(!bridge::parse("follow=0 1\n").follow && !bridge::parse("follow=10 high\n").follow &&
+          !bridge::parse("follow=10 50\n").follow);
     CHECK(!bridge::parse("fov=-45 45 90 -45\n").eye_fov); // 90 deg is not a frustum
     CHECK(!bridge::parse("fov=-45 45 45\n").eye_fov);
 

@@ -27,6 +27,9 @@
 --                             (auto finds it; set it by hand if the world swims when you turn)
 --   !vr_views [find|dump]     find the render views that draw the camera (memory scan, a few seconds;
 --                             results in bg3vr.log); dump re-logs them
+--   !vr_follow [height] | off  hold the camera at the character's eyes and keep it there as they move
+--                             (native, every frame; your yaw stays put while walking)
+--   !vr_recenter              headset: your current head position and facing become the character's eyes
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
 --                             then !vr_cam and !vr_views find to see what split screen created
 --
@@ -308,6 +311,77 @@ Ext.RegisterConsoleCommand("vr_xr_lag", Safely(function(_, value)
     end
     if BG3VR.WriteBridge({ "xr_lag=" .. value }) then
         BG3VR.Log("headset lag %s", value)
+    end
+end))
+-- Native follow: the core reads the character's TransformComponent every camera update, so the
+-- camera moves with them smoothly. The component can move in memory (e.g. when components are
+-- added), so a tick handler re-sends its address whenever it changes, and when the controlled
+-- character changes.
+local nativeFollow = { handle = nil, height = 1.7, address = nil, ticks = 0 }
+
+local function NativeFollowTick()
+    nativeFollow.ticks = nativeFollow.ticks + 1
+    if nativeFollow.ticks % 15 ~= 0 then
+        return
+    end
+    local character = _C()
+    local address = character and ProxyAddress(character.Transform)
+    if address and address ~= nativeFollow.address then
+        nativeFollow.address = address
+        BG3VR.WriteBridge({ string.format("follow=%s %.2f", address, nativeFollow.height) })
+        BG3VR.Log("follow: character transform now at %s", address)
+    end
+end
+
+Ext.RegisterConsoleCommand("vr_follow", Safely(function(_, a)
+    if a == "off" then
+        if nativeFollow.handle then
+            Ext.Events.Tick:Unsubscribe(nativeFollow.handle)
+            nativeFollow.handle = nil
+        end
+        nativeFollow.address = nil
+        BG3VR.WriteBridge({ "follow=off" })
+        BG3VR.Log("follow off (the camera stays where it is; !vr_cam_set off releases it)")
+        return
+    end
+    local height = tonumber(a or "1.7")
+    if not height then
+        BG3VR.Warn("usage: !vr_follow [height] | off")
+        return
+    end
+    local _, controller = ActiveCamera()
+    local address = controller and ProxyAddress(controller)
+    local t = _C().Transform
+    local transform = ProxyAddress(t)
+    if not address or not transform then
+        BG3VR.Warn("no active camera controller or character transform (%s)", tostring(t))
+        return
+    end
+    local p = t.Transform.Translate
+    local yaw = YawOf(t.Transform.RotationQuat) + 180
+    nativeFollow.height = height
+    nativeFollow.address = transform
+    if BG3VR.WriteBridge({
+            "controller=" .. address,
+            string.format("pose=%.4f %.4f %.4f %.2f 0", p[1], p[2] + height, p[3], yaw),
+            string.format("follow=%s %.2f", transform, height),
+        }) then
+        BG3VR.Log("following the character (transform %s) at %.2f, facing yaw %.1f", transform, height, yaw)
+    end
+    if not nativeFollow.handle then
+        nativeFollow.ticks = 0
+        nativeFollow.handle = Ext.Events.Tick:Subscribe(function()
+            local ok, err = pcall(NativeFollowTick)
+            if not ok then
+                BG3VR.Warn("follow tick: %s", tostring(err))
+            end
+        end)
+    end
+end))
+-- Headset: take the current head pose as the centre (also automatic when head tracking starts).
+Ext.RegisterConsoleCommand("vr_recenter", Safely(function()
+    if BG3VR.WriteBridge({ "recenter=1" }) then
+        BG3VR.Log("recentering the headset")
     end
 end))
 -- Split screen (Phase 1 step 5): the game's ForceSplitscreen switch. Whether it splits with one

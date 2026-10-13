@@ -20,6 +20,10 @@ void install(const Config& config);
 // it by looking for the applied view matrix in the presenting RenderFrame (the default).
 void set_lag(int frames);
 
+// Takes the current head position and facing as the new centre (also done automatically whenever
+// head tracking starts driving the camera).
+void recenter();
+
 void report();
 
 } // namespace bg3vr::headset

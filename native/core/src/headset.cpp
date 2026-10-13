@@ -72,6 +72,8 @@ int g_searches = 0;
 int g_offset_misses = 0;
 std::atomic<int> g_measured_lag{-1};
 std::atomic<bool> g_restart_search{false};
+std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
+bool g_was_driven = false;
 
 std::atomic<std::uint64_t> g_submitted{0};
 std::atomic<std::uint64_t> g_skipped{0};
@@ -357,6 +359,10 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
         ++g_stale_presents;
     }
     const bool driven = count > 0 && g_stale_presents < kStaleLimit;
+    if (driven && !g_was_driven) {
+        g_recenter_request.store(true, std::memory_order_relaxed); // the camera was just taken over
+    }
+    g_was_driven = driven;
 
     // Which applied view the presented image came from.
     const camera::AppliedView* rendered = nullptr;
@@ -404,6 +410,9 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
     std::vector<XrView> views;
     const XrTime when = frame.state.predictedDisplayTime + frame.state.predictedDisplayPeriod * ahead;
     if (g_session->locate(when, views) && views.size() == 2) {
+        if (g_recenter_request.exchange(false, std::memory_order_relaxed)) {
+            camera::set_recenter(centre_view(views).pose);
+        }
         if (g_mode == Mode::Mono) {
             camera::set_head(centre_view(views));
         } else {
@@ -475,6 +484,11 @@ void install(const Config& config) {
     }
     render::set_present_callback(&on_present);
     log::info("xr: enabled, mode {}; the session opens on the first presented frame", mode_name(g_mode));
+}
+
+void recenter() {
+    g_recenter_request.store(true, std::memory_order_relaxed);
+    log::info("xr: recentering on the next frame");
 }
 
 void set_lag(int frames) {

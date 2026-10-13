@@ -61,6 +61,7 @@ flowchart LR
 - TAA: per-eye history, or turn TAA off in VR (check the game's settings first).
 - UI: Phase 1 accepts the game UI baked into the eye image; separating it is Phase 3.
 - Comfort: lock the horizon, recentre on a button, fade on teleports and loading screens.
+- Done 2026-10-13 (untested in a headset): recentring. Head views are taken relative to a centre pose (position and yaw only), set automatically when head tracking takes over the camera and again on `!vr_recenter`; the poses submitted to OpenXR stay raw, so the compositor isn't affected. Following the character: `!vr_follow [height]` holds the camera at the character's eyes and the core moves it with them every camera update, reading their `TransformComponent` (Lua re-sends its address when it moves). Your yaw stays put while walking; turn with your head. Implausible reads are ignored and counted (`camera: follow reads N, rejected M`).
 - RenderDoc capture (carried over from Phase 0 step 7) to map the passes, TAA and the UI pass.
 
 ## Decisions for this phase

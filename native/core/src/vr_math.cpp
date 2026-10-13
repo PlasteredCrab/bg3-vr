@@ -46,6 +46,17 @@ RigidPose from_openxr(const RigidPose& xr) {
             {-xr.orientation[0], -xr.orientation[1], xr.orientation[2], xr.orientation[3]}};
 }
 
+float facing_yaw(const Quat& orientation) {
+    const Vec3 forward = rotate(orientation, {0.0f, 0.0f, 1.0f});
+    return std::atan2(forward[0], forward[2]) * 180.0f / std::numbers::pi_v<float>;
+}
+
+RigidPose recentered(const RigidPose& pose, const Vec3& origin_position, float origin_yaw_deg) {
+    const Quat unturn = yaw_quat(-origin_yaw_deg);
+    return {rotate(unturn, {pose.position[0] - origin_position[0], pose.position[1] - origin_position[1],
+                            pose.position[2] - origin_position[2]}),
+            multiply(unturn, pose.orientation)};
+}
 RigidPose anchor(const camera::Pose& anchor, const RigidPose& local) {
     const Quat yaw = yaw_quat(anchor.yaw_deg);
     const Vec3 offset = rotate(yaw, local.position);

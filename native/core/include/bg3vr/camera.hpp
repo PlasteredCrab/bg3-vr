@@ -64,6 +64,17 @@ void set_sweep(std::optional<Sweep> sweep);
 // dragging turns it ([camera] mouselook / mouselook_sensitivity in bg3vr.ini; on by default).
 void set_mouselook(bool enabled);
 
+// Following the character while a pose is held: every view update reads the character's position
+// from its ls::TransformComponent (rotation quaternion at +0x00, translate at +0x10) and moves the
+// held pose there, `height` above it. The held yaw is kept, so walking doesn't turn the view (the
+// player turns with their head). Implausible reads (not finite, or a jump of more than 10 units
+// in one update) are ignored and counted.
+struct Follow {
+    std::uintptr_t transform = 0;
+    float height = 1.7f;
+};
+// nullopt stops following (the pose stays where it is).
+void set_follow(std::optional<Follow> follow);
 // Head tracking (Phase 1 step 3). A view located by OpenXR, in OpenXR's LOCAL space and convention:
 // while a pose is held, the camera is placed at that pose's position and yaw (vr::anchor) plus this
 // view (vr::from_openxr, position times [xr] world_scale), with full head rotation, and the
@@ -75,6 +86,11 @@ struct HeadView {
 };
 // nullopt stops head tracking (back to the held pose and the game's projection).
 void set_head(std::optional<HeadView> view);
+
+// Recentering: head views are applied relative to origin (OpenXR convention, like HeadView::pose):
+// its position becomes the anchor point and its yaw becomes the held pose's forward. Only the yaw
+// of its orientation is used, so the horizon stays level.
+void set_recenter(const vr::RigidPose& origin);
 
 // A head view as the driven camera actually used it: `serial` counts view updates of the driven
 // camera, and `view_matrix` is the world-to-camera matrix written for it, to recognise the frame later.

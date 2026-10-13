@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -149,7 +150,25 @@ Request parse(std::string_view content) {
             } else if (flag == "off" || flag == "0" || flag == "false") {
                 request.mouselook = false;
             }
-        } else if (key == "views") {
+        } else if (key == "follow") {
+            if (text::to_lower(value) == "off") {
+                request.follow = std::optional<camera::Follow>{};
+                continue;
+            }
+            const auto words = text::split_whitespace(value);
+            const auto transform = words.empty() ? std::nullopt : parse_address(words[0]);
+            camera::Follow follow;
+            bool ok = transform.has_value() && *transform != 0 && words.size() <= 2;
+            if (ok && words.size() == 2) {
+                const std::string word(words[1]);
+                char* end = nullptr;
+                follow.height = std::strtof(word.c_str(), &end);
+                ok = end == word.c_str() + word.size() && std::isfinite(follow.height) && std::abs(follow.height) < 10.0f;
+            }
+            if (ok) {
+                follow.transform = *transform;
+                request.follow = follow;
+            }        } else if (key == "views") {
             const std::string action = text::to_lower(value);
             if (action == "find") {
                 request.views_find = true;
@@ -162,6 +181,9 @@ Request parse(std::string_view content) {
             } else if (const auto lag = text::parse_int(std::string(value)); lag && *lag >= 0 && *lag < 8) {
                 request.xr_lag = static_cast<int>(*lag);
             }
+        } else if (key == "recenter") {
+            const std::string flag = text::to_lower(value);
+            request.recenter = flag == "1" || flag == "true" || flag == "yes";
         } else if (key == "probe") {
             const std::string flag = text::to_lower(value);
             request.probe = flag == "1" || flag == "true" || flag == "yes";

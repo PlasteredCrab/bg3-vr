@@ -114,6 +114,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     } else if (request.pose) {
         camera::set_pose(request.pose);
     }
+    if (request.follow) {
+        camera::set_follow(*request.follow);
+    }
     if (request.mouselook) {
         camera::set_mouselook(*request.mouselook);
     }
@@ -126,6 +129,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
 #if BG3VR_HAVE_OPENXR
     if (request.xr_lag) {
         headset::set_lag(*request.xr_lag);
+    }
+    if (request.recenter) {
+        headset::recenter();
     }
 #endif
     if (request.hide) {
