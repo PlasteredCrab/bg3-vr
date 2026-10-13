@@ -3,6 +3,7 @@
 #include "bg3vr/module_info.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 // Finding the game's render views (rf::RenderView / ecl::GameRenderView) at runtime, for Phase 1
@@ -22,9 +23,21 @@ void find(const ModuleInfo& module, std::uintptr_t controller);
 // The scan itself, synchronously: the ReadState addresses found (also logged and kept for found()).
 std::vector<std::uintptr_t> scan_now(std::uintptr_t controller);
 
-// Step 5 experiment: lay the first two found views side by side (each state's Scale (0.5, 1),
-// Offset (0 / 0.5, 0), written every frame) or back to full screen (written once).
-void set_layout(bool side_by_side);
+// Where a view goes on screen, as fractions of it (RenderViewState Scale and Offset). The game
+// honours it: Scale (0.5, 1) draws the view's whole image into half the screen (2026-10-13).
+struct Placement {
+    float scale_x = 1.0f, scale_y = 1.0f;
+    float offset_x = 0.0f, offset_y = 0.0f;
+};
+
+// Step 5 experiments, written into both states of the views every frame. Views are numbered by
+// their place in found().
+enum class Layout { SideBySide, SideBySideSwapped, Full };
+// SideBySide: view 0 left, view 1 right; Swapped: the other way round; Full: everything back to
+// full screen and enabled (written once).
+void set_layout(Layout layout);
+// One view's placement and/or Enabled flag.
+void set_view(std::size_t index, std::optional<Placement> placement, std::optional<bool> enabled);
 // Per-frame work on the game thread (the camera's frame callback).
 void on_frame();
 

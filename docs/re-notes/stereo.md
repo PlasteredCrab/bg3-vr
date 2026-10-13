@@ -40,6 +40,7 @@ Second session, 2026-10-13:
 - The second view created by `ForceSplitscreen` has the command buffer at the same place but **no exe vtable at ReadState−0x2158**: a different class, or a different layout. `!vr_views` now logs the first word of every view.
 - Slot 6 of the render view's vtable (0x3CC86D0) copies a byte from the big settings object at [0x604B1B8]+0x1BC into view+0x2298 and recomputes tile counts from the view size (+0x2290/+0x2294, tile +0x229C).
 - Next experiment: `!vr_views sbs` writes Scale (0.5, 1) and Offset (0 / 0.5, 0) into both states of the first two views every frame; `!vr_views full` restores (1, 1) / (0, 0). If the game composites both views, the screen splits.
+**Layout result, 2026-10-13:** with two views (after `!vr_split on` and a few seconds), `!vr_views sbs` drew view 0 (the original) into the **left half of the screen: the whole scene, scaled to half width**, with the UI still full screen. The game honours RenderViewState Scale/Offset. The right half, where view 1 should be, was **black**. Either view 1 isn't drawn, or it's drawn and then cleared by view 0's pass. `!vr_views swap` tells them apart; `!vr_views set|enable` place or disable one view.
 ## Making alternate-eye smooth (until step 5 lands)
 
 Alternate-eye is how several commercial-quality VR conversions of flat games work. What decides how smooth it is:

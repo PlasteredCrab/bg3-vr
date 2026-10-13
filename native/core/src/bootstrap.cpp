@@ -143,11 +143,14 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.hide) {
         cull::set_hidden(*request.hide);
     }
-    if (request.views_side_by_side) {
-        views::set_layout(*request.views_side_by_side);
+    if (request.view_set) {
+        views::set_view(request.view_set->index, request.view_set->placement, request.view_set->enabled);
+    }
+    if (request.views_layout) {
+        views::set_layout(*request.views_layout);
         // The split-screen view appears a few seconds after ForceSplitscreen: look again if needed;
         // the layout picks the views up every frame.
-        if (*request.views_side_by_side && views::found().size() < 2) {
+        if (*request.views_layout != views::Layout::Full && views::found().size() < 2) {
             views::find(module, camera::controller());
         }
     }

@@ -175,9 +175,39 @@ Request parse(std::string_view content) {
             } else if (action == "dump") {
                 request.views_find = false;
             } else if (action == "sbs") {
-                request.views_side_by_side = true;
+                request.views_layout = views::Layout::SideBySide;
+            } else if (action == "swap") {
+                request.views_layout = views::Layout::SideBySideSwapped;
             } else if (action == "full") {
-                request.views_side_by_side = false;
+                request.views_layout = views::Layout::Full;
+            } else {
+                // set <index> <sx> <sy> <ox> <oy>  |  enable <index> <0|1>
+                const auto words = text::split_whitespace(value);
+                std::vector<float> numbers;
+                for (std::size_t i = 1; i < words.size(); ++i) {
+                    const std::string word(words[i]);
+                    char* end = nullptr;
+                    const float number = std::strtof(word.c_str(), &end);
+                    if (end != word.c_str() + word.size() || !std::isfinite(number)) {
+                        numbers.clear();
+                        break;
+                    }
+                    numbers.push_back(number);
+                }
+                const std::string verb = words.empty() ? std::string() : text::to_lower(words[0]);
+                const bool index_ok = !numbers.empty() && numbers[0] >= 0.0f && numbers[0] < 4.0f &&
+                                      numbers[0] == std::floor(numbers[0]);
+                if (verb == "set" && index_ok && numbers.size() == 5 && numbers[1] > 0.0f && numbers[1] <= 1.0f &&
+                    numbers[2] > 0.0f && numbers[2] <= 1.0f && numbers[3] >= 0.0f && numbers[3] < 1.0f &&
+                    numbers[4] >= 0.0f && numbers[4] < 1.0f) {
+                    request.view_set = Request::ViewSet{static_cast<std::size_t>(numbers[0]),
+                                                        views::Placement{numbers[1], numbers[2], numbers[3], numbers[4]},
+                                                        std::nullopt};
+                } else if (verb == "enable" && index_ok && numbers.size() == 2 &&
+                           (numbers[1] == 0.0f || numbers[1] == 1.0f)) {
+                    request.view_set =
+                        Request::ViewSet{static_cast<std::size_t>(numbers[0]), std::nullopt, numbers[1] == 1.0f};
+                }
             }
         } else if (key == "xr_lag") {
             if (text::to_lower(value) == "auto") {

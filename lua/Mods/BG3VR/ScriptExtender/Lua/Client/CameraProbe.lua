@@ -27,7 +27,8 @@
 --                             (auto finds it; set it by hand if the world swims when you turn)
 --   !vr_views [find|dump]     find the render views that draw the camera (memory scan, a few seconds;
 --                             results in bg3vr.log); dump re-logs them; sbs puts the first two views
---                             side by side (after !vr_split on), full puts them back
+--                             side by side (after !vr_split on), swap the other way round, full puts them back;
+--                             set <view> <sx> <sy> <ox> <oy> places one view, enable <view> 0|1 turns it off/on
 --   !vr_follow [height] | off  hold the camera at the character's eyes and keep it there as they move
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
@@ -410,10 +411,13 @@ Ext.RegisterConsoleCommand("vr_split", Safely(function(_, mode)
 end))
 -- Render views (Phase 1 step 5): which views draw the camera, their viewports and split-screen
 -- index, and where the camera's matrices sit inside them. Results go to bg3vr.log.
-Ext.RegisterConsoleCommand("vr_views", Safely(function(_, action)
+Ext.RegisterConsoleCommand("vr_views", Safely(function(_, action, ...)
     action = action or "find"
-    if action ~= "find" and action ~= "dump" and action ~= "sbs" and action ~= "full" then
-        BG3VR.Warn("usage: !vr_views [find|dump|sbs|full]")
+    local args = { ... }
+    if action == "set" or action == "enable" then
+        action = action .. " " .. table.concat(args, " ")
+    elseif action ~= "find" and action ~= "dump" and action ~= "sbs" and action ~= "swap" and action ~= "full" then
+        BG3VR.Warn("usage: !vr_views [find|dump|sbs|swap|full] | set <view> <scale x> <scale y> <offset x> <offset y> | enable <view> <0|1>")
         return
     end
     local _, controller = ActiveCamera()

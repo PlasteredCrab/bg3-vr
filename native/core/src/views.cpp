@@ -7,12 +7,14 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -49,20 +51,28 @@ std::mutex g_mutex;
 std::vector<std::uintptr_t> g_found; // ReadState addresses
 std::uintptr_t g_controller = 0;
 
-// Screen layout override (step 5 experiment), applied every frame on the game thread.
-enum class Layout { None, SideBySide, Restore };
-std::atomic<Layout> g_layout{Layout::None};
-std::atomic<std::uint64_t> g_layout_writes{0};
+// Per-view overrides (step 5 experiments), written into both states of the view every frame on the
+// game thread. A view's index is its place in found() (by address). Under g_mutex.
+struct Override {
+    bool active = false;
+    bool once = false; // write one frame, then stop (restoring the defaults)
+    Placement placement;
+    std::optional<bool> enabled;
+};
+std::array<Override, 4> g_overrides{};
 
-void write_scale_offset(std::uintptr_t state_address, float scale_x, float offset_x) {
-    const float scale[2] = {scale_x, 1.0f};
-    const float offset[2] = {offset_x, 0.0f};
+void write_state(std::uintptr_t state_address, const Override& o) {
     std::uint8_t probe = 0;
     if (!mem::try_copy(&probe, state_address, 1)) {
         return; // the view is gone
     }
+    const float scale[2] = {o.placement.scale_x, o.placement.scale_y};
+    const float offset[2] = {o.placement.offset_x, o.placement.offset_y};
     std::memcpy(reinterpret_cast<void*>(state_address + state::kScale), scale, sizeof(scale));
     std::memcpy(reinterpret_cast<void*>(state_address + state::kOffset), offset, sizeof(offset));
+    if (o.enabled) {
+        *reinterpret_cast<std::uint8_t*>(state_address + state::kEnabled) = *o.enabled ? 1 : 0;
+    }
 }
 ModuleInfo g_module;
 
@@ -296,28 +306,75 @@ void find(const ModuleInfo& module, std::uintptr_t controller) {
     }).detach();
 }
 
-void set_layout(bool side_by_side) {
-    g_layout.store(side_by_side ? Layout::SideBySide : Layout::Restore, std::memory_order_relaxed);
+void set_layout(Layout layout) {
     const auto views = found();
-    log::info("views: layout {} for {} view(s){}", side_by_side ? "side by side" : "full screen", views.size(),
-              views.size() < 2 && side_by_side ? " (needs 2: !vr_split on, wait a few seconds; scanning again now)" : "");
+    {
+        std::scoped_lock lock(g_mutex);
+        if (layout == Layout::Full) {
+            for (Override& o : g_overrides) {
+                if (o.active) {
+                    o = {true, true, Placement{}, true}; // scale 1, offset 0, enabled, for one frame
+                }
+            }
+        } else {
+            const bool swap = layout == Layout::SideBySideSwapped;
+            g_overrides[swap ? 1 : 0] = {true, false, {0.5f, 1.0f, 0.0f, 0.0f}, std::nullopt};
+            g_overrides[swap ? 0 : 1] = {true, false, {0.5f, 1.0f, 0.5f, 0.0f}, std::nullopt};
+        }
+    }
+    log::info("views: layout {} for {} view(s){}",
+              layout == Layout::Full ? "full screen" : layout == Layout::SideBySide ? "side by side" : "side by side, swapped",
+              views.size(),
+              views.size() < 2 && layout != Layout::Full ? " (needs 2: !vr_split on, wait a few seconds; scanning again now)"
+                                                         : "");
+}
+
+void set_view(std::size_t index, std::optional<Placement> placement, std::optional<bool> enabled) {
+    if (index >= std::size(g_overrides)) {
+        log::warn("views: no view {} (0..{})", index, std::size(g_overrides) - 1);
+        return;
+    }
+    std::scoped_lock lock(g_mutex);
+    Override& o = g_overrides[index];
+    if (!o.active) {
+        o = {true, false, Placement{}, std::nullopt};
+    }
+    if (placement) {
+        o.placement = *placement;
+    }
+    if (enabled) {
+        o.enabled = enabled;
+    }
+    log::info("views: view {} -> scale ({:.3f}, {:.3f}) offset ({:.3f}, {:.3f}){}", index, o.placement.scale_x,
+              o.placement.scale_y, o.placement.offset_x, o.placement.offset_y,
+              o.enabled ? (*o.enabled ? ", enabled" : ", disabled") : "");
 }
 
 void on_frame() {
-    const Layout layout = g_layout.load(std::memory_order_relaxed);
-    if (layout == Layout::None) {
-        return;
-    }
-    const auto views = found();
-    for (std::size_t i = 0; i < views.size() && i < 2; ++i) {
-        const bool split = layout == Layout::SideBySide && views.size() >= 2;
-        for (const std::uintptr_t state_address : {views[i], views[i] + state::kSize}) {
-            write_scale_offset(state_address, split ? 0.5f : 1.0f, split ? 0.5f * static_cast<float>(i) : 0.0f);
+    std::vector<std::uintptr_t> views;
+    std::array<Override, std::size(g_overrides)> overrides;
+    {
+        std::scoped_lock lock(g_mutex);
+        bool any = false;
+        for (const Override& o : g_overrides) {
+            any = any || o.active;
+        }
+        if (!any) {
+            return;
+        }
+        views = g_found;
+        overrides = g_overrides;
+        for (Override& o : g_overrides) {
+            if (o.once) {
+                o = {};
+            }
         }
     }
-    g_layout_writes.fetch_add(1, std::memory_order_relaxed);
-    if (layout == Layout::Restore) {
-        g_layout.store(Layout::None, std::memory_order_relaxed); // written once
+    for (std::size_t i = 0; i < views.size() && i < overrides.size(); ++i) {
+        if (overrides[i].active) {
+            write_state(views[i], overrides[i]);
+            write_state(views[i] + state::kSize, overrides[i]);
+        }
     }
 }
 

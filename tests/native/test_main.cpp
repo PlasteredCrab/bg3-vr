@@ -455,7 +455,16 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("pose=off\n").xr_lag);
     CHECK(bridge::parse("views=find\n").views_find == true && bridge::parse("views=DUMP\n").views_find == false);
     CHECK(!bridge::parse("views=x\n").views_find);
-    CHECK(bridge::parse("views=sbs\n").views_side_by_side == true && bridge::parse("views=full\n").views_side_by_side == false);
+    CHECK(bridge::parse("views=sbs\n").views_layout == views::Layout::SideBySide &&
+          bridge::parse("views=swap\n").views_layout == views::Layout::SideBySideSwapped &&
+          bridge::parse("views=full\n").views_layout == views::Layout::Full);
+    const auto set = bridge::parse("views=set 1 0.5 1 0.5 0\n");
+    CHECK(set.view_set && set.view_set->index == 1 && set.view_set->placement &&
+          near_eq(set.view_set->placement->offset_x, 0.5f) && !set.view_set->enabled);
+    const auto enable = bridge::parse("views=enable 0 0\n");
+    CHECK(enable.view_set && enable.view_set->index == 0 && enable.view_set->enabled == false && !enable.view_set->placement);
+    CHECK(!bridge::parse("views=set 1 0 1 0 0\n").view_set && !bridge::parse("views=set 9 1 1 0 0\n").view_set &&
+          !bridge::parse("views=enable 1 2\n").view_set && !bridge::parse("views=set 1 0.5 1 0.5\n").view_set);
     CHECK(!bridge::parse("views=sbs\n").views_find);
 
     const auto follow = bridge::parse("follow=0000020A1B2C3D40 1.55\n");

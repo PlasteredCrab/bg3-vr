@@ -2,6 +2,7 @@
 
 #include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
+#include "bg3vr/views.hpp"
 #include "bg3vr/pose.hpp"
 
 #include <cstdint>
@@ -27,7 +28,13 @@ struct Request {
     std::optional<std::optional<camera::Follow>> follow;       // present: follow (value) or stop (nullopt)
     bool recenter = false;                                     // headset: take the current head pose as centre
     std::optional<bool> views_find;
-    std::optional<bool> views_side_by_side;                    // layout experiment: true = side by side, false = full                            // render views: true = scan, false = dump
+    std::optional<views::Layout> views_layout;                 // layout experiment
+    struct ViewSet {
+        std::size_t index = 0;
+        std::optional<views::Placement> placement;
+        std::optional<bool> enabled;
+    };
+    std::optional<ViewSet> view_set;                           // one view's placement or Enabled flag                            // render views: true = scan, false = dump
     std::optional<int> xr_lag;                                 // frames between camera update and present; -1 = auto
 };
 
@@ -40,7 +47,8 @@ struct Request {
 //   sweep=on | sweep=<yaw> [<pitch> [<seconds>]] | sweep=off
 //   fov=<left> <right> <up> <down>   |   fov=off              (degrees; left and down negative)
 //   xr_lag=<0..7>                    |   xr_lag=auto
-//   views=find | views=dump | views=sbs | views=full
+//   views=find | views=dump | views=sbs | views=swap | views=full
+//   views=set <index> <scale x> <scale y> <offset x> <offset y>   |   views=enable <index> <0|1>
 //   follow=<hex transform> [height]  |   follow=off
 //   recenter=1
 Request parse(std::string_view content);
