@@ -360,15 +360,21 @@ int record_fault(EXCEPTION_POINTERS* info, Fault& fault) {
     fault.rcx = info->ContextRecord->Rcx;
     fault.rdx = info->ContextRecord->Rdx;
     fault.r8 = info->ContextRecord->R8;
-    // The faulting frames still exist while the filter runs (not after unwinding): take the stack now.
-    std::uintptr_t words[512]{};
-    if (mem::try_copy(words, info->ContextRecord->Rsp, sizeof(words))) {
-        std::size_t n = 0;
-        for (const std::uintptr_t word : words) {
-            if (n < fault.stack.size() && mem::in_section(g_module, ".text", word)) {
-                fault.stack[n++] = word;
-            }
+    // The faulting frames still exist while the filter runs (not after unwinding): walk them now,
+    // exactly, with the exe's unwind data (RtlVirtualUnwind), innermost first.
+    CONTEXT context = *info->ContextRecord;
+    std::size_t n = 0;
+    while (n < fault.stack.size() && context.Rip) {
+        fault.stack[n++] = context.Rip;
+        DWORD64 image_base = 0;
+        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+        if (!function) {
+            break; // a leaf function or no unwind data: stop rather than guess
         }
+        void* handler_data = nullptr;
+        DWORD64 establisher = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context, &handler_data, &establisher,
+                         nullptr);
     }
     return EXCEPTION_EXECUTE_HANDLER;
 }
