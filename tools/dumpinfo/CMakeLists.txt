@@ -1,0 +1,3 @@
+add_executable(bg3vr_dumpinfo dumpinfo.cpp)
+target_compile_definitions(bg3vr_dumpinfo PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(bg3vr_dumpinfo PRIVATE dbghelp bg3vr_warnings)

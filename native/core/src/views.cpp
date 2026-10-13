@@ -314,12 +314,29 @@ std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
 
 namespace {
 
-// Calls the game pipeline's setup for a view, catching an access violation instead of crashing the
-// game (the state afterwards may still be broken). No C++ objects with destructors in here (SEH).
-using SetupFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view);
-bool call_setup(SetupFn setup, std::uintptr_t pipeline, std::uintptr_t view) {
+// The game pipeline's stage-list builder (vtable slot 87, 0x3AC51C0): builds the stages whose ids are
+// the bytes in [list[0], list[1]) into `view`. Calling the full setup (slot 88) for an extra view
+// crashed the game on the next frame: its tail rewires the special view's output to the view being
+// set up, freeing a stage the special view still runs. So only the stage lists are built, the ones
+// 0x3AC4EA0 builds for a normal view, including the two (ids 0x45, 0x07) it builds only when
+// [[view+0x10]+0x40] is set and otherwise leaves to the special view: the new view must put its own
+// image on screen. RVAs of the lists in 4.1.1.7631656 (.rdata).
+using BuildStagesFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view, const std::uintptr_t* list);
+constexpr std::uint32_t kStageLists[][2] = {
+    {0x5899BE0, 0x5899BE7}, // 47 08 48 35 1E 05 0B
+    {0x5899BE7, 0x5899BE8}, // 45
+    {0x5899BE8, 0x5899BEF}, // 46 36 44 18 17 40 37
+    {0x5899BEF, 0x5899BF0}, // 02
+    {0x5899BF0, 0x5899BF8}, // 41 03 1B 1A 00 21 3E 3F
+    {0x5899BF8, 0x5899BF9}, // 07
+};
+constexpr std::uint32_t kBuildStagesRva = 0x3AC51C0; // where the lists above are valid
+
+// No C++ objects with destructors in here (SEH): an access violation is caught and reported instead
+// of crashing the game (the state afterwards may still be broken).
+bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintptr_t view, const std::uintptr_t* list) {
     __try {
-        setup(pipeline, view);
+        build(pipeline, view, list);
         return true;
     } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
         return false;
@@ -411,11 +428,25 @@ void build(std::size_t index) {
                       target == main_view ? "main" : "special");
             return;
         }
-        render::run_on_render_thread([pipeline, target, setup, driven = g_controller] {
+        const auto build_stages = sig::lookup("pipeline_build_stages");
+        if (!build_stages || *build_stages - g_module.base != kBuildStagesRva) {
+            log::warn("views: pipeline_build_stages isn't at exe+0x{:X} (another game build?); the stage lists would be "
+                      "wrong, not building",
+                      kBuildStagesRva);
+            return;
+        }
+        render::run_on_render_thread([pipeline, target, build = *build_stages, driven = g_controller] {
             const std::uint32_t before = stage_count(target);
-            const bool ok = call_setup(reinterpret_cast<SetupFn>(setup), pipeline, target);
-            log::info("views: setup for view 0x{:X} {}: {} stage(s) before, {} after", target,
-                      ok ? "returned" : "FAULTED (access violation caught)", before, stage_count(target));
+            bool ok = true;
+            for (const auto& range : kStageLists) {
+                const std::uintptr_t list[2] = {g_module.base + range[0], g_module.base + range[1]};
+                ok = call_build_stages(reinterpret_cast<BuildStagesFn>(build), pipeline, target, list);
+                if (!ok) {
+                    break;
+                }
+            }
+            log::info("views: stage lists for view 0x{:X} {}: {} stage(s) before, {} after", target,
+                      ok ? "built" : "FAULTED (access violation caught)", before, stage_count(target));
             // A view needs a camera: give it ours if it has none.
             for (const std::size_t state_offset : {kReadStateInView, kReadStateInView + state::kSize}) {
                 std::uintptr_t controller = 0;

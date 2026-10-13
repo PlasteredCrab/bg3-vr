@@ -50,6 +50,7 @@ endif()
 
 add_subdirectory(native)
 add_subdirectory(tools/disasm)
+add_subdirectory(tools/dumpinfo)
 if(BG3VR_HAVE_OPENXR)
     add_subdirectory(tools/xr_test)
 endif()
