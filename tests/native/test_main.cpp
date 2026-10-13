@@ -9,6 +9,7 @@
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/views.hpp"
 #include "bg3vr/vr_math.hpp"
 #include "bg3vr/watch.hpp"
 
@@ -432,6 +433,8 @@ void test_parse_bridge() {
     CHECK(bridge::parse("xr_lag=AUTO\n").xr_lag == -1);
     CHECK(!bridge::parse("xr_lag=8\n").xr_lag && !bridge::parse("xr_lag=-3\n").xr_lag && !bridge::parse("xr_lag=x\n").xr_lag);
     CHECK(!bridge::parse("pose=off\n").xr_lag);
+    CHECK(bridge::parse("views=find\n").views_find == true && bridge::parse("views=DUMP\n").views_find == false);
+    CHECK(!bridge::parse("views=x\n").views_find);
     CHECK(!bridge::parse("fov=-45 45 90 -45\n").eye_fov); // 90 deg is not a frustum
     CHECK(!bridge::parse("fov=-45 45 45\n").eye_fov);
 
@@ -447,6 +450,36 @@ void test_config() {
     CHECK(config.get_int("scan", "limit", 0) == 32);
     CHECK(config.get("scan", "missing", "fallback") == "fallback");
     CHECK(!config.get_bool("scan", "limit", false));
+}
+
+// The render-view scan finds a planted ReadState/WriteState pair pointing at a "controller" exactly
+// once (not again in its own copy buffer), and ignores a lone pointer that isn't in a state.
+void test_views_scan() {
+    auto* controller = new std::uint64_t(0);
+    const auto controller_address = reinterpret_cast<std::uintptr_t>(controller);
+    auto* view = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 0x3000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    CHECK(view != nullptr);
+    if (!view) {
+        return;
+    }
+    const auto plant_state = [&](std::size_t at) {
+        view[at] = 1;                                     // Enabled
+        const float scale[2] = {1.0f, 1.0f};
+        std::memcpy(view + at + 0x08, scale, sizeof(scale));
+        const int viewport[4] = {1920, 1080, 0, 0};       // Width, Height, OffsetX, OffsetY
+        for (const std::size_t viewport_at : {0x18u, 0x38u, 0x58u}) {
+            std::memcpy(view + at + viewport_at + 0x10, viewport, sizeof(viewport));
+        }
+        std::memcpy(view + at + 0x80, &controller_address, sizeof(controller_address));
+    };
+    plant_state(0x2148);
+    plant_state(0x2148 + 0x88);
+    std::memcpy(view + 0x100, &controller_address, sizeof(controller_address)); // a stray reference
+
+    const auto found = views::scan_now(controller_address);
+    CHECK(found.size() == 1 && found[0] == reinterpret_cast<std::uintptr_t>(view) + 0x2148);
+    VirtualFree(view, 0, MEM_RELEASE);
+    delete controller;
 }
 
 } // namespace
@@ -466,6 +499,7 @@ int main() {
     test_watch_probes();
     test_memory();
     test_config();
+    test_views_scan();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

@@ -23,6 +23,7 @@ struct Request {
     std::optional<std::optional<camera::Sweep>> sweep;         // present: start (value) or stop (nullopt)
     std::optional<std::optional<camera::EyeFov>> eye_fov;      // present: per-eye projection or game's (nullopt)
     std::optional<std::vector<std::uintptr_t>> hide;           // visuals to hide; empty = show all again
+    std::optional<bool> views_find;                            // render views: true = scan, false = dump
     std::optional<int> xr_lag;                                 // frames between camera update and present; -1 = auto
 };
 
@@ -35,6 +36,7 @@ struct Request {
 //   sweep=on | sweep=<yaw> [<pitch> [<seconds>]] | sweep=off
 //   fov=<left> <right> <up> <down>   |   fov=off              (degrees; left and down negative)
 //   xr_lag=<0..7>                    |   xr_lag=auto
+//   views=find                       |   views=dump
 Request parse(std::string_view content);
 
 // Starts the watcher thread ([camera] bridge / bridge_file in bg3vr.ini). `on_request` runs on that

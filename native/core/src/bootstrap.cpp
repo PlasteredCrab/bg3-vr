@@ -14,6 +14,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/views.hpp"
 #include "bg3vr/win_util.hpp"
 
 #include <windows.h>
@@ -129,6 +130,13 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
 #endif
     if (request.hide) {
         cull::set_hidden(*request.hide);
+    }
+    if (request.views_find) {
+        if (*request.views_find) {
+            views::find(module, camera::controller());
+        } else {
+            views::dump();
+        }
     }
     if (request.probe) {
         if (const std::uintptr_t controller = camera::controller()) {

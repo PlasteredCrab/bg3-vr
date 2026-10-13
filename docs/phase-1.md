@@ -55,6 +55,7 @@ flowchart LR
 - The PC build contains the full split-screen pipeline (`ecl::splitscreen::*`, two render views with `PerCamera` blocks). Try the input event `ToggleForceSplitscreen` and the global `ForceSplitscreen`; find out whether a second view needs a second player entity.
 - If two views render in one frame, drive each view's camera to one eye: that is synchronized stereo with no ghosting.
 - **Gate:** a decision: split screen as the stereo path, or stay with alternate-eye plus mitigations.
+- Prepared 2026-10-13 (static only; see [re-notes/stereo.md](re-notes/stereo.md)): `!vr_split on|off` flips the `ForceSplitscreen` global switch; `!vr_views find|dump` finds the render views of the driven camera by memory scan and logs their viewports, split-screen index, debug name and where the view matrix sits in them. Split screen most likely needs a second local player; the first in-game run of these two commands should settle it.
 
 ### 6. TAA, UI and comfort → exit gate
 - TAA: per-eye history, or turn TAA off in VR (check the game's settings first).

@@ -7,6 +7,7 @@
 //   bg3vr_disasm <exe> --vtable <rva> [n] list n vtable slots (default 24) with their first instructions
 //   bg3vr_disasm <exe> --xref <rva>      instructions that call, jump to, or RIP-address rva
 //   bg3vr_disasm <exe> --str <text>      ASCII and UTF-16 occurrences of text, as RVAs
+//   bg3vr_disasm <exe> --ptr <rva>       8-byte absolute pointers to rva outside .text (vtable slots, tables)
 //
 // RVAs are hex (with or without 0x). Signatures wildcard relative branch targets and RIP-relative
 // displacements, the parts that change between game builds.
@@ -324,6 +325,28 @@ int find_xrefs(const Image& image, std::uint32_t target) {
     return hits ? 0 : 2;
 }
 
+// Every aligned 8-byte absolute pointer to `target` in the data sections: vtable slots and function
+// tables. For a vtable hit, --vtable on (hit - 8 * slot) lists the rest.
+int find_pointers(const Image& image, std::uint32_t target) {
+    const std::uint64_t absolute = image.nt->OptionalHeader.ImageBase + target;
+    int hits = 0;
+    for (const auto& s : image.sections) {
+        if (std::strncmp(reinterpret_cast<const char*>(s.Name), ".text", IMAGE_SIZEOF_SHORT_NAME) == 0) {
+            continue;
+        }
+        for (std::size_t at = 0; at + 8 <= s.SizeOfRawData; at += 8) {
+            std::uint64_t value = 0;
+            std::memcpy(&value, image.file.data() + s.PointerToRawData + at, sizeof(value));
+            if (value == absolute) {
+                std::printf("%08zX  in %.8s\n", s.VirtualAddress + at, reinterpret_cast<const char*>(s.Name));
+                ++hits;
+            }
+        }
+    }
+    std::printf("%d pointer(s)\n", hits);
+    return hits ? 0 : 2;
+}
+
 std::optional<std::uint32_t> parse_rva(const char* text) {
     std::string s(text);
     if (s.starts_with("0x") || s.starts_with("0X")) {
@@ -365,6 +388,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         return find_xrefs(image, *rva);
+    }
+    if (mode == "--ptr") {
+        const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;
+        if (!rva) {
+            std::fprintf(stderr, "bad rva\n");
+            return 1;
+        }
+        return find_pointers(image, *rva);
     }
     if (mode == "--vtable") {
         const auto rva = argc > 3 ? parse_rva(argv[3]) : std::nullopt;

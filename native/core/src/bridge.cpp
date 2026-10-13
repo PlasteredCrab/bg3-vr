@@ -149,6 +149,13 @@ Request parse(std::string_view content) {
             } else if (flag == "off" || flag == "0" || flag == "false") {
                 request.mouselook = false;
             }
+        } else if (key == "views") {
+            const std::string action = text::to_lower(value);
+            if (action == "find") {
+                request.views_find = true;
+            } else if (action == "dump") {
+                request.views_find = false;
+            }
         } else if (key == "xr_lag") {
             if (text::to_lower(value) == "auto") {
                 request.xr_lag = -1;

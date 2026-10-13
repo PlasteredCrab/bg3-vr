@@ -5,6 +5,7 @@
 #include "bg3vr/memory.hpp"
 #include "bg3vr/render.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/views.hpp"
 #include "bg3vr/win_util.hpp"
 #include "bg3vr/xr.hpp"
 
@@ -40,6 +41,7 @@ Mode g_mode = Mode::Screen;
 float g_screen_width_m = 3.0f;
 float g_screen_distance_m = 2.5f;
 std::atomic<int> g_lag{-1}; // -1: find it in the RenderFrame
+bool g_desktop_vsync = false; // false: Present doesn't wait for the monitor while the headset runs
 
 // Everything below runs on the game's presenting thread, except install(), set_lag() and report().
 bool g_failed = false;
@@ -64,9 +66,12 @@ constexpr std::size_t kSearchBytes = 0x8000;
 constexpr int kSearchEvery = 30;
 constexpr int kSearchAttempts = 300;
 std::optional<std::size_t> g_frame_offset;
+std::size_t g_frame_source = 0; // 0: the RenderFrame, then each render view
+constexpr std::size_t kRenderViewReadState = 0x2148; // see views.cpp
 int g_searches = 0;
 int g_offset_misses = 0;
 std::atomic<int> g_measured_lag{-1};
+std::atomic<bool> g_restart_search{false};
 
 std::atomic<std::uint64_t> g_submitted{0};
 std::atomic<std::uint64_t> g_skipped{0};
@@ -167,17 +172,31 @@ bool matrix_matches(const float* candidate, const camera::Mat4& expected) {
     return true;
 }
 
-// Which applied view the RenderFrame being presented was built from: look for one of their view
-// matrices inside it (at the offset found earlier, or by searching now and then).
+// Which applied view the frame being presented was built from: look for one of their view matrices
+// in the presenting RenderFrame or, once !vr_views has found them, in the render views (at the
+// place found earlier, or by searching now and then). The RenderFrame looks like the per-window
+// output object, so the render views are the likelier place.
 std::optional<std::size_t> match_in_frame(std::uintptr_t render_frame,
                                           const std::array<camera::AppliedView, camera::kAppliedHistory>& applied,
                                           std::size_t count) {
-    if (!render_frame || count == 0) {
+    if (count == 0) {
         return std::nullopt;
+    }
+    std::vector<std::uintptr_t> sources;
+    if (render_frame) {
+        sources.push_back(render_frame);
+    }
+    for (const std::uintptr_t read_state : views::found()) {
+        sources.push_back(read_state - kRenderViewReadState);
+    }
+    if (g_restart_search.exchange(false, std::memory_order_relaxed)) {
+        g_frame_offset.reset();
+        g_searches = 0;
     }
     if (g_frame_offset) {
         float matrix[16];
-        if (mem::try_copy(matrix, render_frame + *g_frame_offset, sizeof(matrix))) {
+        if (g_frame_source < sources.size() &&
+            mem::try_copy(matrix, sources[g_frame_source] + *g_frame_offset, sizeof(matrix))) {
             for (std::size_t i = 0; i < count; ++i) {
                 if (matrix_matches(matrix, applied[i].view_matrix)) {
                     g_offset_misses = 0;
@@ -196,29 +215,33 @@ std::optional<std::size_t> match_in_frame(std::uintptr_t render_frame,
         return std::nullopt;
     }
     static std::vector<float> buffer(kSearchBytes / sizeof(float));
-    std::size_t readable = kSearchBytes;
-    while (readable >= 0x1000 && !mem::try_copy(buffer.data(), render_frame, readable)) {
-        readable /= 2;
-    }
-    if (readable < 0x1000) {
-        return std::nullopt;
-    }
-    const std::size_t floats = readable / sizeof(float);
-    for (std::size_t at = 0; at + 16 <= floats; ++at) {
-        for (std::size_t i = 0; i < count; ++i) {
-            if (matrix_matches(&buffer[at], applied[i].view_matrix)) {
-                g_frame_offset = at * sizeof(float);
-                log::info("xr: found the rendered view matrix at RenderFrame+0x{:X} (frame 0x{:X}); it was applied "
-                          "{} camera update(s) before this Present",
-                          *g_frame_offset, render_frame, i);
-                return i;
+    for (std::size_t source = 0; source < sources.size(); ++source) {
+        std::size_t readable = kSearchBytes;
+        while (readable >= 0x1000 && !mem::try_copy(buffer.data(), sources[source], readable)) {
+            readable /= 2;
+        }
+        if (readable < 0x1000) {
+            continue;
+        }
+        const std::size_t floats = readable / sizeof(float);
+        for (std::size_t at = 0; at + 16 <= floats; ++at) {
+            for (std::size_t i = 0; i < count; ++i) {
+                if (matrix_matches(&buffer[at], applied[i].view_matrix)) {
+                    g_frame_source = source;
+                    g_frame_offset = at * sizeof(float);
+                    log::info("xr: found the rendered view matrix at {}+0x{:X} (0x{:X}); it was applied {} camera "
+                              "update(s) before this Present",
+                              source == 0 && render_frame ? "RenderFrame" : "render view", *g_frame_offset,
+                              sources[source], i);
+                    return i;
+                }
             }
         }
     }
     if (g_searches >= kSearchAttempts) {
-        log::warn("xr: no applied view matrix found in the first 0x{:X} bytes of the RenderFrame; assuming a lag of 1 "
-                  "(adjust with !vr_xr_lag)",
-                  readable);
+        log::warn("xr: no applied view matrix found in the RenderFrame or the {} known render view(s); assuming a lag "
+                  "of 1 (adjust with !vr_xr_lag; !vr_views find, then !vr_xr_lag auto to search again)",
+                  sources.size() - (render_frame ? 1 : 0));
     }
     return std::nullopt;
 }
@@ -289,6 +312,9 @@ void start(IDXGISwapChain* swapchain) {
               static_cast<int>(desc.BufferDesc.Format), g_screen_width_m, g_screen_distance_m);
     if (g_mode != Mode::Screen) {
         log::info("xr: head tracking starts when a pose is held (!vr_cam_set here); until then, the screen");
+    }
+    if (!g_desktop_vsync) {
+        render::set_sync_interval_override(0); // the headset paces the game, not the monitor
     }
     g_ready = true;
 }
@@ -401,6 +427,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     if (!g_session->poll()) {
         log::info("xr: the runtime ended the session");
         camera::set_head(std::nullopt);
+        render::set_sync_interval_override(-1);
         g_session.reset();
         g_failed = true;
         return;
@@ -441,6 +468,7 @@ void install(const Config& config) {
     if (!distance.empty()) {
         g_screen_distance_m = std::strtof(distance.c_str(), nullptr);
     }
+    g_desktop_vsync = config.get_bool("xr", "desktop_vsync", false);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));
@@ -451,6 +479,9 @@ void install(const Config& config) {
 
 void set_lag(int frames) {
     g_lag.store(std::clamp(frames, -1, static_cast<int>(camera::kAppliedHistory) - 1), std::memory_order_relaxed);
+    if (frames < 0) {
+        g_restart_search.store(true, std::memory_order_relaxed);
+    }
     if (frames < 0) {
         log::info("xr: lag auto (find the rendered view in the RenderFrame)");
     } else {

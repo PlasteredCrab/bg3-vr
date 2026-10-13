@@ -25,6 +25,10 @@
 --                             while held, the camera pans and nods by itself (default 60 20 8)
 --   !vr_xr_lag <0..7>|auto    headset: camera updates between a frame's pose and its display
 --                             (auto finds it; set it by hand if the world swims when you turn)
+--   !vr_views [find|dump]     find the render views that draw the camera (memory scan, a few seconds;
+--                             results in bg3vr.log); dump re-logs them
+--   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
+--                             then !vr_cam and !vr_views find to see what split screen created
 --
 -- Matrices are glm mat4: 16 numbers, column-major (translation in elements 13..15).
 
@@ -304,6 +308,40 @@ Ext.RegisterConsoleCommand("vr_xr_lag", Safely(function(_, value)
     end
     if BG3VR.WriteBridge({ "xr_lag=" .. value }) then
         BG3VR.Log("headset lag %s", value)
+    end
+end))
+-- Split screen (Phase 1 step 5): the game's ForceSplitscreen switch. Whether it splits with one
+-- local player is what we want to find out.
+Ext.RegisterConsoleCommand("vr_split", Safely(function(_, mode)
+    local switches = Ext.Utils.GetGlobalSwitches()
+    if not switches then
+        BG3VR.Warn("no global switches")
+        return
+    end
+    if mode == "on" or mode == "off" then
+        switches.ForceSplitscreen = mode == "on"
+    elseif mode ~= nil then
+        BG3VR.Warn("usage: !vr_split [on|off]")
+        return
+    end
+    BG3VR.Log("ForceSplitscreen = %s", tostring(switches.ForceSplitscreen))
+end))
+-- Render views (Phase 1 step 5): which views draw the camera, their viewports and split-screen
+-- index, and where the camera's matrices sit inside them. Results go to bg3vr.log.
+Ext.RegisterConsoleCommand("vr_views", Safely(function(_, action)
+    action = action or "find"
+    if action ~= "find" and action ~= "dump" then
+        BG3VR.Warn("usage: !vr_views [find|dump]")
+        return
+    end
+    local _, controller = ActiveCamera()
+    local address = controller and ProxyAddress(controller)
+    if not address then
+        BG3VR.Warn("no active camera controller")
+        return
+    end
+    if BG3VR.WriteBridge({ "controller=" .. address, "views=" .. action }) then
+        BG3VR.Log("render views %s for controller %s (see bg3vr.log)", action, address)
     end
 end))
 -- Mouse look while a pose is held: hold the middle mouse button and drag (native, on by default).

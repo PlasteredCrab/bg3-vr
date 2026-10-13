@@ -24,6 +24,10 @@ ID3D11Device* device();
 using PresentCallback = void (*)(IDXGISwapChain* swapchain, std::uintptr_t render_frame);
 void set_present_callback(PresentCallback callback);
 
+// While set, every Present uses this sync interval instead of the game's (0: don't wait for the
+// monitor's vblank, so a headset session paces the game instead of the desktop refresh rate).
+void set_sync_interval_override(int interval); // -1 clears it
+
 // Logs presented frames and the frame rate since the last report.
 void report();
 

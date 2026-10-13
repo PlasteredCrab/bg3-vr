@@ -16,6 +16,8 @@ safetyhook::MidHook g_present_hook;
 std::atomic<IDXGISwapChain*> g_swapchain{nullptr};
 std::atomic<ID3D11Device*> g_device{nullptr};
 std::atomic<PresentCallback> g_callback{nullptr};
+std::atomic<int> g_sync_override{-1};
+std::atomic<std::uint64_t> g_sync_overrides{0};
 std::atomic<std::uint64_t> g_frames{0};
 std::uint64_t g_last_frames = 0;
 std::chrono::steady_clock::time_point g_last_report = std::chrono::steady_clock::now();
@@ -47,6 +49,14 @@ void on_present(safetyhook::Context& ctx) {
     }
     if (const PresentCallback callback = g_callback.load(std::memory_order_acquire)) {
         callback(swapchain, ctx.rdi);
+    }
+    // Present(SyncInterval = edx, Flags = r8d). The tearing flag is only valid with interval 0 and the
+    // game sets it itself when it may, so only the interval is replaced.
+    if (const int interval = g_sync_override.load(std::memory_order_relaxed); interval >= 0) {
+        if (static_cast<int>(ctx.rdx & 0xFFFFFFFF) != interval) {
+            g_sync_overrides.fetch_add(1, std::memory_order_relaxed);
+        }
+        ctx.rdx = static_cast<std::uintptr_t>(interval);
     }
 }
 
@@ -81,12 +91,24 @@ void set_present_callback(PresentCallback callback) {
     g_callback.store(callback, std::memory_order_release);
 }
 
+void set_sync_interval_override(int interval) {
+    g_sync_override.store(interval, std::memory_order_relaxed);
+    if (interval >= 0) {
+        log::info("render: Present sync interval forced to {}", interval);
+    } else {
+        log::info("render: Present sync interval back to the game's");
+    }
+}
+
 void report() {
     const auto now = std::chrono::steady_clock::now();
     const std::uint64_t frames = g_frames.load(std::memory_order_relaxed);
     const double seconds = std::chrono::duration<double>(now - g_last_report).count();
     log::info("render: {} frames presented since the last report ({:.1f} fps over {:.0f} s)", frames - g_last_frames,
               seconds > 0 ? static_cast<double>(frames - g_last_frames) / seconds : 0.0, seconds);
+    if (g_sync_override.load(std::memory_order_relaxed) >= 0) {
+        log::info("render: sync interval overridden on {} presents in total", g_sync_overrides.load(std::memory_order_relaxed));
+    }
     g_last_frames = frames;
     g_last_report = now;
 }
