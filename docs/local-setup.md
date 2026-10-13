@@ -50,3 +50,5 @@ This machine runs Sophos Intercept X; Windows Defender is off. Its HitmanPro.Ale
 ## Launching the game directly
 
 Starting `bin\bg3_dx11.exe` outside Steam makes the game exit and ask Steam to relaunch it; with arguments (`--skip-launcher`) Steam then shows a confirmation dialog. So an unattended launch needs either Steam's own launch (`steam://run/1086940`) with the launch options set in Steam, or a `steam_appid.txt` (containing `1086940`) in `bin\`, which skips the restart check. The latter is not set up; ask before adding it.
+
+That handover also counts as a crash: the next session ran with BG3 VR disabled even though `modsettings.lsx` still listed it (`Ext.Mod.IsModLoaded("434bc015-dcba-4e13-a8a5-ff2eeee08d8e")` returned false, and the reset printed no `Loading bootstrap script` line). Fix: main menu → Mod Manager → enable BG3 VR (toggle it off and on), then load. So don't start the game outside Steam.
