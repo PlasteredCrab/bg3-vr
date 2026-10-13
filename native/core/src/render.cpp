@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
+#include <vector>
 
 namespace bg3vr::render {
 
@@ -17,6 +19,9 @@ safetyhook::MidHook g_present_hook;
 std::atomic<IDXGISwapChain*> g_swapchain{nullptr};
 std::atomic<ID3D11Device*> g_device{nullptr};
 std::atomic<PresentCallback> g_callback{nullptr};
+std::mutex g_tasks_mutex;
+std::vector<std::function<void()>> g_tasks;
+std::atomic<bool> g_have_tasks{false};
 std::atomic<int> g_sync_override{-1};
 // The game's own Present arguments (before any override), for the report.
 std::atomic<std::uint32_t> g_game_sync_interval{0};
@@ -69,6 +74,17 @@ void on_present(safetyhook::Context& ctx) {
     if (g_swapchain.exchange(swapchain, std::memory_order_acq_rel) != swapchain) {
         describe_swapchain(swapchain); // first frame, or the swapchain was recreated
     }
+    if (g_have_tasks.load(std::memory_order_acquire)) {
+        std::vector<std::function<void()>> tasks;
+        {
+            std::scoped_lock lock(g_tasks_mutex);
+            tasks.swap(g_tasks);
+            g_have_tasks.store(false, std::memory_order_release);
+        }
+        for (auto& task : tasks) {
+            task();
+        }
+    }
     if (const PresentCallback callback = g_callback.load(std::memory_order_acquire)) {
         callback(swapchain, ctx.rdi);
     }
@@ -107,6 +123,12 @@ IDXGISwapChain* swapchain() {
 
 ID3D11Device* device() {
     return g_device.load(std::memory_order_acquire);
+}
+
+void run_on_render_thread(std::function<void()> task) {
+    std::scoped_lock lock(g_tasks_mutex);
+    g_tasks.push_back(std::move(task));
+    g_have_tasks.store(true, std::memory_order_release);
 }
 
 void set_present_callback(PresentCallback callback) {

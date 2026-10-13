@@ -154,6 +154,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
             trace::report();
         }
     }
+    if (request.views_build) {
+        views::build(*request.views_build);
+    }
     if (request.views_refs) {
         views::refs();
     }

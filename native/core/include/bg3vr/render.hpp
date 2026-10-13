@@ -6,6 +6,7 @@
 #include <d3d11.h>
 
 #include <cstdint>
+#include <functional>
 
 // The game's D3D11 output (Phase 1 step 2). Hooks the game's own IDXGISwapChain::Present call in
 // rf::dx11::RenderFrame::FlipBuffers (signature dx11_present_call) rather than DXGI itself, which
@@ -27,6 +28,9 @@ void set_present_callback(PresentCallback callback);
 // While set, every Present uses this sync interval instead of the game's (0: don't wait for the
 // monitor's vblank, so a headset session paces the game instead of the desktop refresh rate).
 void set_sync_interval_override(int interval); // -1 clears it
+
+// Runs 	ask on the presenting (render) thread just before the next Present, between frames.
+void run_on_render_thread(std::function<void()> task);
 
 // Logs presented frames and the frame rate since the last report.
 void report();

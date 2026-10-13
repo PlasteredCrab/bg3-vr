@@ -41,6 +41,13 @@ void set_view(std::size_t index, std::optional<Placement> placement, std::option
 // Per-frame work on the game thread (the camera's frame callback).
 void on_frame();
 
+// Step 5 experiment: finds the game pipeline (the object holding the main view at +0xA0 and the
+// special 3-stage view at +0xA8) and calls its setup for found view index on the render thread,
+// which should give that view the full stage pipeline; a view without a camera gets the driven one.
+// kAutomatic picks the first found view that is neither of those.
+inline constexpr std::size_t kAutomatic = static_cast<std::size_t>(-1);
+void build(std::size_t index);
+
 // What points at each found view (memory scan, background thread): a list that holds view 0 but
 // not view 1 is a candidate for the list of views that get drawn.
 void refs();

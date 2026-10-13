@@ -206,7 +206,11 @@ Request parse(std::string_view content) {
                 const std::string verb = words.empty() ? std::string() : text::to_lower(words[0]);
                 const bool index_ok = !numbers.empty() && numbers[0] >= 0.0f && numbers[0] < 4.0f &&
                                       numbers[0] == std::floor(numbers[0]);
-                if (verb == "set" && index_ok && numbers.size() == 5 && numbers[1] > 0.0f && numbers[1] <= 1.0f &&
+                if (verb == "build" && words.size() == 1) {
+                    request.views_build = views::kAutomatic;
+                } else if (verb == "build" && index_ok && numbers.size() == 1) {
+                    request.views_build = static_cast<std::size_t>(numbers[0]);
+                } else if (verb == "set" && index_ok && numbers.size() == 5 && numbers[1] > 0.0f && numbers[1] <= 1.0f &&
                     numbers[2] > 0.0f && numbers[2] <= 1.0f && numbers[3] >= 0.0f && numbers[3] < 1.0f &&
                     numbers[4] >= 0.0f && numbers[4] < 1.0f) {
                     request.view_set = Request::ViewSet{static_cast<std::size_t>(numbers[0]),

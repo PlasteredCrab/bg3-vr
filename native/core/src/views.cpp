@@ -3,6 +3,8 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
+#include "bg3vr/render.hpp"
+#include "bg3vr/signatures.hpp"
 
 #include <windows.h>
 
@@ -310,6 +312,122 @@ std::vector<std::uintptr_t> scan_now(std::uintptr_t controller) {
     return {views.begin(), views.end()};
 }
 
+namespace {
+
+// Calls the game pipeline's setup for a view, catching an access violation instead of crashing the
+// game (the state afterwards may still be broken). No C++ objects with destructors in here (SEH).
+using SetupFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view);
+bool call_setup(SetupFn setup, std::uintptr_t pipeline, std::uintptr_t view) {
+    __try {
+        setup(pipeline, view);
+        return true;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
+std::uint32_t stage_count(std::uintptr_t view) {
+    std::uint32_t count = 0;
+    mem::try_copy(&count, view + 0x34, sizeof(count));
+    return count;
+}
+
+} // namespace
+
+void build(std::size_t index) {
+    const auto views = found();
+    if (index != kAutomatic && index >= views.size()) {
+        log::warn("views: no view {} ({} found; !vr_views find first)", index, views.size());
+        return;
+    }
+    const auto setup = sig::lookup("game_pipeline_setup");
+    if (!setup) {
+        log::warn("views: signature game_pipeline_setup not resolved");
+        return;
+    }
+    std::thread([views, index, setup = *setup] {
+        // The game pipeline holds the main view at +0xA0 and its special 3-stage view at +0xA8; its
+        // vtable has the setup (0x588E50 in 4.1.1.7631656) among its slots.
+        std::vector<std::uintptr_t> bases;
+        for (const std::uintptr_t read_state : views) {
+            bases.push_back(read_state - kReadStateInView);
+        }
+        std::uintptr_t pipeline = 0;
+        std::size_t slot = 0;
+        for (const std::uintptr_t base : bases) {
+            std::size_t scanned = 0, regions = 0;
+            for (const std::uintptr_t hit : scan_memory(base, scanned, regions)) {
+                std::uintptr_t pair[2]{};
+                std::uintptr_t vtable = 0;
+                if (!mem::try_copy(pair, hit, sizeof(pair)) || !mem::try_copy(&vtable, hit - 0xA0, sizeof(vtable)) ||
+                    std::find(bases.begin(), bases.end(), pair[1]) == bases.end() ||
+                    !mem::in_section(g_module, ".rdata", vtable, sizeof(void*))) {
+                    continue;
+                }
+                std::uintptr_t slots[128]{};
+                if (!mem::try_copy(slots, vtable, sizeof(slots))) {
+                    continue;
+                }
+                for (std::size_t s = 0; s < std::size(slots); ++s) {
+                    if (slots[s] == setup) {
+                        pipeline = hit - 0xA0;
+                        slot = s;
+                    }
+                }
+                if (pipeline) {
+                    break;
+                }
+            }
+            if (pipeline) {
+                break;
+            }
+        }
+        if (!pipeline) {
+            log::warn("views: game pipeline not found (no object holding two views at +0xA0/+0xA8 with the setup in "
+                      "its vtable)");
+            return;
+        }
+        std::uintptr_t main_view = 0, special_view = 0;
+        mem::try_copy(&main_view, pipeline + 0xA0, sizeof(main_view));
+        mem::try_copy(&special_view, pipeline + 0xA8, sizeof(special_view));
+        std::uintptr_t target = index == kAutomatic ? 0 : bases[index];
+        if (index == kAutomatic) {
+            for (const std::uintptr_t base : bases) {
+                if (base != main_view && base != special_view) {
+                    target = base;
+                    break;
+                }
+            }
+            if (!target) {
+                log::warn("views: every found view is the pipeline's main or special view (!vr_split on, wait, "
+                          "!vr_views find)");
+                return;
+            }
+        }
+        log::info("views: game pipeline 0x{:X} (setup is vtable slot {}): main view 0x{:X}, special view 0x{:X}",
+                  pipeline, slot, main_view, special_view);
+        if (target == main_view || target == special_view) {
+            log::warn("views: view 0x{:X} is the pipeline's {} view; pick another", target,
+                      target == main_view ? "main" : "special");
+            return;
+        }
+        render::run_on_render_thread([pipeline, target, setup, driven = g_controller] {
+            const std::uint32_t before = stage_count(target);
+            const bool ok = call_setup(reinterpret_cast<SetupFn>(setup), pipeline, target);
+            log::info("views: setup for view 0x{:X} {}: {} stage(s) before, {} after", target,
+                      ok ? "returned" : "FAULTED (access violation caught)", before, stage_count(target));
+            // A view needs a camera: give it ours if it has none.
+            for (const std::size_t state_offset : {kReadStateInView, kReadStateInView + state::kSize}) {
+                std::uintptr_t controller = 0;
+                if (driven && mem::try_copy(&controller, target + state_offset + state::kController, sizeof(controller)) &&
+                    controller == 0) {
+                    *reinterpret_cast<std::uintptr_t*>(target + state_offset + state::kController) = driven;
+                }
+            }
+        });
+        log::info("views: pipeline setup for view 0x{:X} queued for the render thread", target);
+    }).detach();
+}
 void refs() {
     const auto views = found();
     if (views.empty()) {

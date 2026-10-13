@@ -51,6 +51,10 @@ Second session, 2026-10-13:
 - Most pointers to view 0 are its stage objects: `{exe vtable, view, view+0x18}`. Their constructors are called from two **pipeline builders**, both virtual (no direct callers): **0x588E50** (game side; pointer at .rdata 0x549A218, next to 0x3AC51C0 at 0x549A210) and **0x3B21E10** (renderer side; pointer at 0x58A11B8). 0x588E50(this, view) returns at once if `view == this+0xA8` (the view it was last set up for), then gets or creates stages by id through 0x407AE00(view+0x18, id) (ids 5, 0x46, 0x17, 0x21, 8 …). So **a pipeline is built for one view at a time**.
 - Two lists hold `[view 0, view 1]` side by side (all render views); the draw loop that picks only view 0 is not found yet.
 - Next: find the render loop over views (calls view vtable slots 1 and 4) and what makes it skip view 1; then whether calling the builders for view 1 gives it a working pipeline.
+**Start-up trace, 2026-10-13:** the game pipeline (one object; vtable has setup 0x588E50 and the stage-list builder 0x3AC51C0 called through slot +0x2B8) runs its setup once per view at start-up, from 0x3AC1CDF (view 0) and 0x3AC1CF2 (view 1). The setup first calls **0x3AC4EA0(pipeline, view)**, which decides the stages:
+- `view == pipeline+0xA8` (the **special view**): one stage list, [0x5899BDC, 0x5899BDF): 3 stages. That's view 1, so view 1 isn't a split-screen view at all.
+- otherwise: lists [0x5899BE0,+7), [0x5899BE7,+1) (only if [view+0x10]+0x40 != 0), [0x5899BE8,+7), [0x5899BEF,+1), [0x5899BF0,+8), the full pipeline; and if `view == pipeline+0xA0` (the **main view**), extra main-view setup.
+The view that appears with ForceSplitscreen after a load never gets the setup (nothing calls it without a second player). `!vr_views build` finds the pipeline at runtime (the object holding two found views at +0xA0/+0xA8 with the setup in its vtable) and calls the setup for a view that is neither, on the render thread, under an access-violation guard; a view without a camera gets ours.
 ## Making alternate-eye smooth (until step 5 lands)
 
 Alternate-eye is how several commercial-quality VR conversions of flat games work. What decides how smooth it is:
