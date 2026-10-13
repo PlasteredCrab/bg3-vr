@@ -476,6 +476,27 @@ void build(std::size_t index, bool compositing) {
             log_stages("before: main   ", main_view);
             log_stages("before: special", special_view);
             log_stages("before: target ", target);
+            // The split view starts as a shallow copy of the special view: same stage array buffer
+            // (StageGroup at view+0x18: scene graph +0x18, owning view +0x20, stages +0x28, capacity
+            // +0x30, count +0x34). Growing it reallocated the shared buffer and left the special view
+            // pointing at freed memory (crash, 2026-10-13). Give it its own, empty array first; the
+            // game allocates a fresh one on the first stage added.
+            std::uintptr_t target_stages = 0, special_stages = 0, owner = 0;
+            mem::try_copy(&target_stages, target + 0x28, sizeof(target_stages));
+            mem::try_copy(&special_stages, special_view + 0x28, sizeof(special_stages));
+            mem::try_copy(&owner, target + 0x20, sizeof(owner));
+            log::info("views:   target stage group: owner view 0x{:X}, stages 0x{:X} (special's 0x{:X})", owner,
+                      target_stages, special_stages);
+            if (target_stages && target_stages == special_stages) {
+                *reinterpret_cast<std::uintptr_t*>(target + 0x28) = 0;
+                *reinterpret_cast<std::uint32_t*>(target + 0x30) = 0;
+                *reinterpret_cast<std::uint32_t*>(target + 0x34) = 0;
+                log::info("views:   detached the target's stage array from the special view's");
+            }
+            if (owner == special_view) {
+                *reinterpret_cast<std::uintptr_t*>(target + 0x20) = target;
+                log::info("views:   target's stage group pointed at the special view; now at itself");
+            }
             const std::uint32_t before = stage_count(target);
             bool ok = true;
             for (const auto& range : kStageLists) {
