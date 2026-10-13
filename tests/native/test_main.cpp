@@ -9,12 +9,16 @@
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/vr_math.hpp"
 #include "bg3vr/watch.hpp"
 
 #include <windows.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <numbers>
 #include <cstdio>
 #include <cstring>
 #include <span>
@@ -305,6 +309,87 @@ void test_pose_quaternion() {
     }
 }
 
+std::array<float, 4> transform(const camera::Mat4& m, const std::array<float, 4>& v) {
+    std::array<float, 4> out{};
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            out[row] += m[col * 4 + row] * v[col];
+        }
+    }
+    return out;
+}
+
+bool vec_near(const vr::Vec3& a, const vr::Vec3& b) {
+    return near_eq(a[0], b[0]) && near_eq(a[1], b[1]) && near_eq(a[2], b[2]);
+}
+
+void test_vr_math() {
+    // yaw_quat agrees with the yaw/pitch pose math, and quaternion matrices with pose_matrices.
+    for (const float yaw : {0.0f, 45.0f, 180.0f, -120.0f}) {
+        const auto q = camera::pose_quaternion({0, 0, 0, yaw, 0});
+        const auto y = vr::yaw_quat(yaw);
+        CHECK(near_eq(std::abs(q[0] * y[0] + q[1] * y[1] + q[2] * y[2] + q[3] * y[3]), 1.0f));
+    }
+    for (const camera::Pose pose : {camera::Pose{1, 2, 3, 30, -20}, camera::Pose{-5, 0.5f, 9, 250, 60}}) {
+        camera::Mat4 world_a, view_a, world_b, view_b;
+        camera::pose_matrices(pose, world_a, view_a);
+        vr::camera_matrices({{pose.x, pose.y, pose.z}, camera::pose_quaternion(pose)}, world_b, view_b);
+        bool same = true;
+        for (std::size_t i = 0; i < 16; ++i) {
+            same = same && near_eq(world_a[i], world_b[i]) && near_eq(view_a[i], view_b[i]);
+        }
+        CHECK(same);
+    }
+
+    // from_openxr is the Z mirror: mirror(rotate(q, v)) == rotate(from_openxr(q), mirror(v)).
+    const auto mirror = [](const vr::Vec3& v) { return vr::Vec3{v[0], v[1], -v[2]}; };
+    const vr::Quat xr_rotations[] = {
+        {0, 0, 0, 1},
+        {0, 0.258819f, 0, 0.965926f},                // 30 deg yaw
+        {0.130526f, 0, 0, 0.991445f},                // 15 deg pitch
+        {0, 0, 0.173648f, 0.984808f},                // 20 deg roll
+        {0.2f, -0.3f, 0.1f, 0.926013f},              // mixed (normalised)
+    };
+    for (const auto& q : xr_rotations) {
+        const auto game = vr::from_openxr({{0.1f, 1.6f, -0.2f}, q});
+        CHECK(vec_near(game.position, {0.1f, 1.6f, 0.2f}));
+        for (const vr::Vec3& v : {vr::Vec3{1, 0, 0}, vr::Vec3{0, 1, 0}, vr::Vec3{0, 0, 1}, vr::Vec3{0.3f, -0.4f, 0.8f}}) {
+            CHECK(vec_near(mirror(vr::rotate(q, v)), vr::rotate(game.orientation, mirror(v))));
+        }
+    }
+    // Turning the head left in OpenXR (+30 deg about +Y) looks toward -X in the game.
+    const auto left = vr::from_openxr({{0, 0, 0}, {0, 0.258819f, 0, 0.965926f}});
+    const auto forward = vr::rotate(left.orientation, {0, 0, 1});
+    CHECK(forward[0] < -0.49f && forward[2] > 0.86f);
+
+    // Anchoring: the local forward offset follows the anchor's yaw; the anchor's pitch is ignored.
+    const auto placed = vr::anchor({10, 2, -3, 90, 45}, {{0, 0, 1}, {0, 0, 0, 1}});
+    CHECK(vec_near(placed.position, {11, 2, -3}));
+    CHECK(vec_near(vr::rotate(placed.orientation, {0, 0, 1}), {1, 0, 0}));
+
+    // Projection: the symmetric case reproduces the game's own matrix (logged 2026-10-12: vertical
+    // FOV 55 deg, aspect 1.6, near 0.1, far 10000 -> [0]=1.201 [5]=1.921 [10]~-1e-5 [11]=1 [14]~0.1).
+    const float half_v = 27.5f * std::numbers::pi_v<float> / 180.0f;
+    const float half_h = std::atan(std::tan(half_v) * 1.6f);
+    const auto p = vr::projection(-half_h, half_h, half_v, -half_v, 0.1f, 10000.0f);
+    CHECK(std::abs(p[0] - 1.2006f) < 1e-3f && std::abs(p[5] - 1.9210f) < 1e-3f);
+    CHECK(std::abs(p[10]) < 1e-4f && near_eq(p[11], 1.0f) && std::abs(p[14] - 0.1f) < 1e-4f);
+    CHECK(near_eq(p[8], 0.0f) && near_eq(p[9], 0.0f));
+
+    // An asymmetric eye frustum (Quest-2-like left eye): its edges map to NDC -1/+1, the near plane
+    // to depth 1 and the far plane to depth 0 (reversed Z).
+    const float l = -0.942478f, r = 0.698132f, u = 0.733038f, d = -0.837758f; // -54, 40, 42, -48 deg
+    const auto eye = vr::projection(l, r, u, d, 0.1f, 10000.0f);
+    const auto ndc = [&](float x, float y, float z) {
+        const auto c = transform(eye, {x, y, z, 1.0f});
+        return std::array<float, 3>{c[0] / c[3], c[1] / c[3], c[2] / c[3]};
+    };
+    const float z = 5.0f;
+    CHECK(near_eq(ndc(std::tan(r) * z, 0, z)[0], 1.0f) && near_eq(ndc(std::tan(l) * z, 0, z)[0], -1.0f));
+    CHECK(near_eq(ndc(0, std::tan(u) * z, z)[1], 1.0f) && near_eq(ndc(0, std::tan(d) * z, z)[1], -1.0f));
+    CHECK(near_eq(ndc(0, 0, 0.1f)[2], 1.0f) && std::abs(ndc(0, 0, 10000.0f)[2]) < 1e-4f);
+}
+
 void test_parse_bridge() {
     const auto request = bridge::parse("controller=000001F2AB34CD50\r\npose=1.5 -2 3 90 -10\n");
     CHECK(request.controller == 0x000001F2AB34CD50ull);
@@ -362,6 +447,7 @@ int main() {
     test_inline_hook();
     test_pose_matrices();
     test_pose_quaternion();
+    test_vr_math();
     test_parse_bridge();
     test_watch_probes();
     test_memory();
