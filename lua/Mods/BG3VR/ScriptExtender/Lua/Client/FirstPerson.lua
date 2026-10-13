@@ -1,11 +1,13 @@
 -- First-person helpers (client context; type "client" in the Script Extender console first).
---   !vr_vis                      list the controlled character's visual parts (slot, template, flags)
+--   !vr_vis                       list the controlled character's visual parts (slot, template, flags)
 --   !vr_head hide [mask] [match]  hide head parts from the main view, keeping their shadows
---   !vr_head show                restore them
+--   !vr_head show                 restore them
 --
--- Hiding sets VisualCullFlags bits on the matching attachment visuals. Defaults: mask 0x600
--- (CullRenderView1 | CullRenderView2), match = slot/template containing any of HEAD_PATTERNS.
--- While hidden, the flags are re-checked every few ticks and re-applied if the game cleared them.
+-- Despite the Script Extender's name, VisualCullFlags acts as an inclusion mask: every visible part
+-- has 0x200 and 0x400 set, and every shadow-casting part has the shadow bits (0x04, 0x08, 0x10,
+-- 0x8000) set (seen 2026-10-12: head/hair 0x86FF, armour 0x867F). Hiding therefore CLEARS `mask`
+-- (default 0x600) on matching visuals and on their renderables, and leaves the shadow bits alone.
+-- While hidden, the flags are re-checked every few ticks and cleared again if the game restores them.
 
 local HEAD_PATTERNS = { "head", "hair", "beard", "horn", "helmet", "hat", "mask", "circlet", "eye" }
 local DEFAULT_MASK = 0x600
@@ -19,6 +21,9 @@ local function ResourceName(visual)
 end
 
 local function BitsOf(value)
+    if type(value) == "number" then
+        return value
+    end
     local ok, bits = pcall(function() return value.__Value end)
     return ok and bits or 0
 end
@@ -55,6 +60,16 @@ local function MatchesHead(visual, patterns)
     return false
 end
 
+local function RenderableFlags(visual)
+    local parts = {}
+    for _, desc in ipairs(visual.ObjectDescs) do
+        if desc.Renderable then
+            parts[#parts + 1] = string.format("0x%X", BitsOf(desc.Renderable.CullFlags))
+        end
+    end
+    return table.concat(parts, ",")
+end
+
 local function Dump()
     local root = RootVisual()
     if not root then
@@ -65,15 +80,21 @@ local function Dump()
     ForEachVisual(root, function(visual, depth, attachment)
         count = count + 1
         local slot, template = ResourceName(visual)
-        BG3VR.Log("%s[%d] slot=%s template=%s cull=0x%X visual=0x%X attach=0x%X%s", string.rep("  ", depth), count,
-            slot, template, BitsOf(visual.CullFlags), BitsOf(visual.VisualFlags),
-            attachment and BitsOf(attachment.Flags) or 0, MatchesHead(visual, HEAD_PATTERNS) and "  <- head part" or "")
+        BG3VR.Log("%s[%d] slot=%s template=%s cull=0x%X renderables=[%s] visual=0x%X attach=0x%X%s",
+            string.rep("  ", depth), count, slot, template, BitsOf(visual.CullFlags), RenderableFlags(visual),
+            BitsOf(visual.VisualFlags), attachment and BitsOf(attachment.Flags) or 0,
+            MatchesHead(visual, HEAD_PATTERNS) and "  <- head part" or "")
     end)
 end
 
-local hidden = { handle = nil, mask = DEFAULT_MASK, patterns = HEAD_PATTERNS, character = nil, ticks = 0, reapplied = 0 }
+local hidden = { handle = nil, mask = DEFAULT_MASK, patterns = HEAD_PATTERNS, ticks = 0, reapplied = 0 }
 
--- Sets (or clears) `mask` on matching visuals; returns how many visuals had to change.
+-- Returns the flags with `mask` cleared (hide) or set (show).
+local function Adjusted(bits, hide)
+    return hide and (bits & ~hidden.mask) or (bits | hidden.mask)
+end
+
+-- Applies hide/show to matching visuals and their renderables; returns (parts matched, values changed).
 local function Apply(hide)
     local root = RootVisual()
     if not root then
@@ -86,10 +107,21 @@ local function Apply(hide)
         end
         matched = matched + 1
         local bits = BitsOf(visual.CullFlags)
-        local wanted = hide and (bits | hidden.mask) or (bits & ~hidden.mask)
+        local wanted = Adjusted(bits, hide)
         if wanted ~= bits then
             visual.CullFlags = wanted
             changed = changed + 1
+        end
+        for _, desc in ipairs(visual.ObjectDescs) do
+            local renderable = desc.Renderable
+            if renderable then
+                local rbits = BitsOf(renderable.CullFlags)
+                local rwanted = Adjusted(rbits, hide)
+                if rwanted ~= rbits then
+                    renderable.CullFlags = rwanted
+                    changed = changed + 1
+                end
+            end
         end
     end)
     return matched, changed
@@ -108,7 +140,7 @@ local function Hide(mask, match)
     hidden.patterns = match and { string.lower(match) } or HEAD_PATTERNS
     hidden.ticks, hidden.reapplied = 0, 0
     local matched, changed = Apply(true)
-    BG3VR.Log("head hide: %d parts matched, %d changed (mask 0x%X)", matched, changed, hidden.mask)
+    BG3VR.Log("head hide: %d parts matched, %d flag values cleared (mask 0x%X)", matched, changed, hidden.mask)
     hidden.handle = Ext.Events.Tick:Subscribe(function()
         hidden.ticks = hidden.ticks + 1
         if hidden.ticks % 10 ~= 0 then
@@ -118,7 +150,8 @@ local function Hide(mask, match)
         if ok and reapplied > 0 then
             hidden.reapplied = hidden.reapplied + 1
             if hidden.reapplied <= 5 then
-                BG3VR.Log("head hide: game cleared the flags; re-applied to %d parts (tick %d)", reapplied, hidden.ticks)
+                BG3VR.Log("head hide: game restored the flags; cleared %d values again (tick %d)", reapplied,
+                    hidden.ticks)
             end
         end
     end)
@@ -127,8 +160,8 @@ end
 local function Show()
     StopWatching()
     local matched, changed = Apply(false)
-    BG3VR.Log("head show: %d parts matched, %d restored (flags were re-applied %d times while hidden)", matched,
-        changed, hidden.reapplied)
+    BG3VR.Log("head show: %d parts matched, %d flag values restored (game restored them %d times while hidden)",
+        matched, changed, hidden.reapplied)
 end
 
 local function Safely(fn)
