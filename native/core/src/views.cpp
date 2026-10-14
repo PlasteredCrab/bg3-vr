@@ -683,10 +683,13 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                 *reinterpret_cast<std::uint32_t*>(target + 0x34) = 0;
                 log::info("views:   detached the target's stage array from the special view's");
             }
-            if (owner == special_view) {
-                *reinterpret_cast<std::uintptr_t*>(target + 0x20) = target;
-                log::info("views:   target's stage group pointed at the special view; now at itself");
-            }
+            // The stage group's owner (+0x20) stays the special view. Adding a stage registers it with
+            // the manager under the owner's record (0x409A4C0: the manager's list at +0x58 holds one
+            // record per view; no record for the owner -> the stage isn't registered), and stage
+            // 0x0B's key registrations (0x40956C0) fail for unregistered stages, clearing its ok flag
+            // and leaving +0x2168 null (the crash at 0x4096593). The split view has no record of its
+            // own, so pointing the owner at it broke that (attempts 4-6, 2026-10-13). Giving it its own
+            // record needs the function that creates them (not found yet).
             // The stage group's scene graph (+0x18): the split view has the special view's, which only
             // composites; scene stages (0x0B first) then hit a null object while being added (fault at
             // 0x4096593 under 0x407A440, 2026-10-13). Give it the main view's, the world.
