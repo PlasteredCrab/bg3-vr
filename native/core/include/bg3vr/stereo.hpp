@@ -20,6 +20,12 @@
 // matrix moved to the eye, the projection's x/y terms set to the eye's field of view (keeping the
 // game's depth terms and its TAA/DLSS jitter), and the derived matrix and position recomputed the way
 // the game computes them. See docs/re-notes/stereo.md.
+//
+// The same hook serves the one-view head-tracked modes (mono, alternate): block [1], what the frame is
+// drawn with, carries a symmetric projection rebuilt from the controller's FOV and aspect, so the
+// projection override at the controller never reached it. A view showing the driven camera gets the
+// field of view of the head view it was built from (found by its view matrix in
+// camera::applied_views), with no eye offset.
 namespace bg3vr::stereo {
 
 // GameRenderView::PerCamera, as 0x3CC7490 fills it (4.1.1.7631656; confirmed from the decompile,

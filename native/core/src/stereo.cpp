@@ -1,11 +1,13 @@
 #include "bg3vr/stereo.hpp"
 
+#include "bg3vr/camera.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
 
 #include <safetyhook.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -52,6 +54,31 @@ std::array<std::atomic<std::uint64_t>, 2> g_rewrites{};
 std::atomic<std::uint64_t> g_without_eyes{0};
 std::atomic<std::uint64_t> g_without_camera{0};
 std::atomic<std::uint64_t> g_orthographic{0};
+std::atomic<std::uint64_t> g_single_rewrites{0};
+std::atomic<std::uint64_t> g_unmatched{0};
+
+bool matrix_matches(const float* candidate, const camera::Mat4& expected) {
+    for (std::size_t i = 0; i < 16; ++i) {
+        if (std::abs(candidate[i] - expected[i]) > 1e-3f * (std::max)(1.0f, std::abs(expected[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The head view the camera module applied for the view matrix this block was built from (the render
+// thread works a frame or two behind the game thread, so it's looked up, not assumed).
+std::optional<camera::HeadView> applied_head(const std::uint8_t* block) {
+    std::array<camera::AppliedView, camera::kAppliedHistory> applied;
+    const std::size_t count = camera::applied_views(applied);
+    const auto* view_matrix = reinterpret_cast<const float*>(block + layout::kView);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (matrix_matches(view_matrix, applied[i].view_matrix)) {
+            return applied[i].head;
+        }
+    }
+    return std::nullopt;
+}
 
 // Right after a render view built its PerCamera blocks in begin-recording, before the upload:
 // rdi = the view.
@@ -66,19 +93,17 @@ void on_camera_built(safetyhook::Context& ctx) {
             eye = 0;
         } else if (view == g_views[1]) {
             eye = 1;
-        } else {
-            return;
         }
         eyes = g_eyes;
         scale = g_world_scale;
     }
-    if (!eyes) {
-        g_without_eyes.fetch_add(1, std::memory_order_relaxed);
+    // The builder skips both blocks for a view without a camera; an orthographic camera's projection
+    // isn't the perspective form rewritten here. Unassigned views are only touched when they show the
+    // camera this mod drives.
+    const auto controller = mem::read<std::uintptr_t>(view + layout::kReadStateController);
+    if (eye < 0 && (!controller || controller != camera::controller())) {
         return;
     }
-    // The builder skips both blocks for a view without a camera; an orthographic camera's projection
-    // isn't the perspective form rewritten here.
-    const auto controller = mem::read<std::uintptr_t>(view + layout::kReadStateController);
     if (!controller) {
         g_without_camera.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -87,9 +112,38 @@ void on_camera_built(safetyhook::Context& ctx) {
         g_orthographic.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    const vr::RigidPose offset = eye_in_head(eyes->centre_xr, eyes->eye_xr[eye], scale);
-    rewrite_block(reinterpret_cast<std::uint8_t*>(view + layout::kPerCamera0), offset, eyes->fov[eye], false);
-    rewrite_block(reinterpret_cast<std::uint8_t*>(view + layout::kPerCamera1), offset, eyes->fov[eye], true);
+    auto* block0 = reinterpret_cast<std::uint8_t*>(view + layout::kPerCamera0);
+    auto* block1 = reinterpret_cast<std::uint8_t*>(view + layout::kPerCamera1);
+    const std::optional<camera::HeadView> head = applied_head(block0);
+    if (eye < 0) {
+        // Mono or alternate eye (one view): the game draws block [1] with a symmetric projection from the
+        // controller's own FOV and aspect, so the head view's field of view goes in here.
+        if (!head) {
+            g_unmatched.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        rewrite_block(block0, vr::RigidPose{}, head->fov, false);
+        rewrite_block(block1, vr::RigidPose{}, head->fov, true);
+        g_single_rewrites.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // Same-frame stereo: this view draws one eye of the head view it was built from (or, if that isn't
+    // found, of the latest located eyes).
+    vr::RigidPose offset;
+    camera::EyeFov fov;
+    if (head) {
+        offset = eye_in_head(head->pose, head->eye_pose[eye], scale);
+        fov = head->eye_fov[eye];
+    } else if (eyes) {
+        offset = eye_in_head(eyes->centre_xr, eyes->eye_xr[eye], scale);
+        fov = eyes->fov[eye];
+        g_unmatched.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_without_eyes.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    rewrite_block(block0, offset, fov, false);
+    rewrite_block(block1, offset, fov, true);
     g_rewrites[eye].fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -214,10 +268,11 @@ void report() {
         std::scoped_lock lock(g_mutex);
         views = g_views;
     }
-    log::info("stereo: views left 0x{:X} right 0x{:X}; rewrites left {} right {}; skipped: no eyes {}, no camera {}, "
-              "orthographic {}",
+    log::info("stereo: views left 0x{:X} right 0x{:X}; rewrites left {} right {}, single view {}; head view not "
+              "matched {}; skipped: no eyes {}, no camera {}, orthographic {}",
               views[0], views[1], g_rewrites[0].load(std::memory_order_relaxed),
-              g_rewrites[1].load(std::memory_order_relaxed), g_without_eyes.load(std::memory_order_relaxed),
+              g_rewrites[1].load(std::memory_order_relaxed), g_single_rewrites.load(std::memory_order_relaxed),
+              g_unmatched.load(std::memory_order_relaxed), g_without_eyes.load(std::memory_order_relaxed),
               g_without_camera.load(std::memory_order_relaxed), g_orthographic.load(std::memory_order_relaxed));
 }
 
