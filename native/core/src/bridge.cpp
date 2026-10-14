@@ -243,6 +243,11 @@ Request parse(std::string_view content) {
         } else if (key == "recenter") {
             const std::string flag = text::to_lower(value);
             request.recenter = flag == "1" || flag == "true" || flag == "yes";
+        } else if (key == "stereo") {
+            const std::string word = text::to_lower(value);
+            if (word == "on" || word == "off" || word == "report") {
+                request.stereo = word;
+            }
         } else if (key == "probe") {
             const std::string flag = text::to_lower(value);
             request.probe = flag == "1" || flag == "true" || flag == "yes";

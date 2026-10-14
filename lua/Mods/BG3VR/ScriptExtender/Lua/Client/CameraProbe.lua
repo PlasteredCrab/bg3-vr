@@ -32,6 +32,7 @@
 --   !vr_follow [height] | off  hold the camera at the character's eyes and keep it there as they move
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
+--   !vr_stereo on|off|report  same-frame stereo on the built split view (after !vr_views build)
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
@@ -386,6 +387,17 @@ end))
 Ext.RegisterConsoleCommand("vr_recenter", Safely(function()
     if BG3VR.WriteBridge({ "recenter=1" }) then
         BG3VR.Log("recentering the headset")
+    end
+end))
+-- Same-frame stereo: the main view draws the left eye, the built split view the right (needs !vr_views build).
+Ext.RegisterConsoleCommand("vr_stereo", Safely(function(_, mode)
+    mode = mode or "report"
+    if mode ~= "on" and mode ~= "off" and mode ~= "report" then
+        BG3VR.Log("usage: !vr_stereo on|off|report")
+        return
+    end
+    if BG3VR.WriteBridge({ "stereo=" .. mode }) then
+        BG3VR.Log("stereo " .. mode .. " (see bg3vr.log)")
     end
 end))
 -- Any bridge write makes the core log its reports (frame rate, camera, head hide, headset).

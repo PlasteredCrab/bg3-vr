@@ -59,3 +59,12 @@ Related functions in bg3_dx11.exe 4.1.1.7631656 (not hooked; for orientation):
 | 0x40CE0 / 0x2137110 | Registers / looks up the named global `ForceSplitscreen` |
 | 0x588CB30 | `rf::Visual` vtable: slot 0 GetRTTI (returns 0x1001), 2-11 transform setters, **13 GetCullFlags** (`word [rcx+0xF4]`), 14 SetSomeCullFlag, **15 ToggleCullFlag600(bool set)**. The Script Extender lists 13/15 one slot later. |
 | 0x3C6B810 | Visual cull-flag setter (this, mask, set): ORs the mask into the flags at +0xF4 when `set`, otherwise clears it; notifies the scene and recurses into attachments (array at +0xB8, stride 0x30, count +0xC4) |
+
+### Added 2026-10-14 (static)
+
+| Name | Purpose | RVA | Found by |
+| --- | --- | --- | --- |
+| `render_view_camera_built` | In begin-recording 0x3CC6C00, after both PerCamera blocks are built and before the upload; rdi = view. Same-frame stereo hook. | DX11 0x3CC6CB9 | Decompile of 0x3CC6C00 / 0x3CC7490, 2026-10-14 |
+| (vtable slot) | Game render view vtable exe+0x55F42F8 slot 10 = SetCamera(view, controller, keep), 0x17F2B30 → 0x3CC90B0 | 0x17F2B30 | Vtable dump + decompile, 2026-10-14 |
+| (function) | 0x3CCCFD0: block [1]'s jittered projection, symmetric, from the controller's FOV, aspect, near, far + jitter | 0x3CCCFD0 | Decompile, 2026-10-14 |
+| (function) | 0x4072CB0: frame sync, copies each view's WriteState into ReadState | 0x4072CB0 | Decompile, 2026-10-14 |

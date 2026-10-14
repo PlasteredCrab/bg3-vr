@@ -13,6 +13,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/trace.hpp"
 #include "bg3vr/views.hpp"
@@ -142,6 +143,27 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         headset::recenter();
     }
 #endif
+    if (request.stereo) {
+        if (*request.stereo == "on") {
+            if (const auto eyes = views::eye_views()) {
+                stereo::assign((*eyes)[0], 0);
+                stereo::assign((*eyes)[1], 1);
+                views::set_stereo_layout(true);
+#if BG3VR_HAVE_OPENXR
+                headset::set_stereo(true);
+#endif
+            } else {
+                log::warn("stereo: no built split view yet (!vr_split on, reload, !vr_views build)");
+            }
+        } else if (*request.stereo == "off") {
+#if BG3VR_HAVE_OPENXR
+            headset::set_stereo(false);
+#endif
+            stereo::clear();
+            views::set_stereo_layout(false);
+        }
+        stereo::report();
+    }
     if (request.hide) {
         cull::set_hidden(*request.hide);
     }
@@ -219,6 +241,7 @@ int init(const wchar_t* root_dir) {
         trace::start(module); // catches calls that only happen while the game starts (!vr_trace off reports)
     }
     camera::install(g_config, module);
+    stereo::install(g_config, module);
     render::install(module);
     watchdog::start(module);
 #if BG3VR_HAVE_OPENXR

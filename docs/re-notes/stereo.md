@@ -102,3 +102,49 @@ Four plain `rf::CameraController` objects (base vtable 0x58EDC60, transform stor
 ## The Script Extender's own hooks
 
 It patches `D3D11CreateDevice`, `CreateDXGIFactory1`, `CreateSwapChainForHwnd`, `Present` (pre-hook) and `ResizeBuffers` with Detours (ImGui overlay). For OpenXR submission we need the finished frame: prefer hooking later in the frame (the swapchain's vtable `Present` after it, or the game's own post-processing end) over inline-patching the same functions.
+
+## Per-view camera blocks and the split view's camera (static, 2026-10-14)
+
+All from decompiles of 4.1.1.7631656 (`re-local\ghidra\percamera.c`, `jitterproj.c`, `setcamera*.c`,
+`controller_enter.c`) and an instruction scan for the displacements 0x21D8 / 0x2260
+(`tools\ghidra\FindDisplacement.java`, `re-local\ghidra\disp_controller.txt`).
+
+- **Begin-recording:** vtable slot 1 (0x17F21E0) tail-jumps to 0x3CC6C00. That calls
+  `0x3CC7490(view, view+0x2340, view+0x2660, 0)` and `0x3CC7490(view, view+0x24D0, view+0x2740, 1)`,
+  optionally `0x3CC70B0(view+0x2290, ...)`, then uploads copies of the four blocks (0x3CC5830 / 0x3CCDD00
+  for the PerView blocks, 0x3B915D0 / 0x3B97160 for the PerCamera blocks).
+- **0x3CC7490 reads everything camera-related from ReadState's controller (view+0x21D8).** With no
+  controller it writes neither PerCamera block. The split view's controller was null in the last build log
+  (it is a copy of the compositing-only special view).
+- **PerCamera layout:**
+  - +0x00 view matrix: the controller's ViewMatrix, +0x90..+0xCF.
+  - +0x40 projection:
+    - block [0]: the controller's projection (+0x110);
+    - block [1]: rebuilt by 0x3CCCFD0 from the controller's FOV (+0x14), near (+0x18), far (+0x1C) and
+      aspect (+0x20), plus the frame's jitter sample (0x3F11710 on view+0x2180/+0x2184/+0x21A0). It is
+      always symmetric for perspective cameras, so [8] and [9] are the jitter alone; for orthographic
+      cameras it copies the controller's matrix.
+  - +0x80: projection × the view matrix's rotation (translation dropped); column 3 = the projection's.
+  - +0xC0 near; +0xC4 far.
+  - +0xD0 world position, from controller vtable slot 9 (GetWorldTranslate); +0xDC = -1.
+- **Consequence for the existing per-eye projection:** the projection override at the controller's setter
+  (camera module, set_eye_fov) only reaches block [0]. Block [1], what the frame is drawn with, keeps the
+  symmetric FOV/aspect projection. The stereo hook writes both blocks.
+- **Assigning a camera:**
+  - The game render view's vtable (exe+0x55F42F8) slot 10 (0x17F2B30) is SetCamera(view, controller,
+    keep). Unless view+0x2C98 is set, it calls 0x3CC90B0, which:
+    - calls the old controller's Exit (vtable +0x10) and the new one's Enter (+0x08);
+    - writes WriteState's controller (+0x2260);
+    - updates the controller's aspect from the view's size (0x407BE10);
+    - passes the camera to the view's listeners.
+  - The base RenderView (vtable 0x58EDB30) has 0x407BD90 in the same slot.
+  - The frame sync 0x4072CB0 copies WriteState (+0x21E0..+0x2267) into ReadState (+0x2158..+0x21DF) for
+    every view in the RenderFrame's list.
+  - Game-side callers such as 0x17F7CD0 call SetCamera directly when the view exists, or else queue a
+    command under a lock.
+- **One controller can serve several views.** The gameplay controller (vtable 0x58B6750):
+  - Enter (0x3CF0080) appends an entry for the view to a per-camera list, if view+0x48 is set;
+  - Exit (0x3CF0210) removes it.
+- **What changed:** !vr_views build now calls SetCamera on the game thread instead of writing both states'
+  controller pointers directly, and the stereo hook sits at 0x3CC6CB9 (signature
+  `render_view_camera_built`).

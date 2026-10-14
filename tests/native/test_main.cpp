@@ -9,6 +9,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
 #include "bg3vr/vr_math.hpp"
@@ -614,6 +615,98 @@ void test_blit() {
     device->Release();
 }
 
+bool near_equal(float a, float b, float tolerance = 1e-4f) {
+    return std::abs(a - b) <= tolerance * (std::max)(1.0f, std::abs(b));
+}
+
+void test_stereo() {
+    constexpr float kPi = std::numbers::pi_v<float>;
+    // An eye 32 mm left of the head centre, both in OpenXR space; the head turned 90 degrees (about +Y).
+    const vr::Quat turned{0.0f, std::sin(kPi / 4), 0.0f, std::cos(kPi / 4)};
+    vr::RigidPose centre{{1.0f, 1.6f, -2.0f}, turned};
+    vr::RigidPose eye = centre;
+    const vr::Vec3 left = vr::rotate(turned, {-0.032f, 0.0f, 0.0f});
+    for (int i = 0; i < 3; ++i) {
+        eye.position[i] += left[i];
+    }
+    const vr::RigidPose offset = stereo::eye_in_head(centre, eye, 2.0f);
+    CHECK(near_equal(offset.position[0], -0.064f) && near_equal(offset.position[1], 0.0f) &&
+          near_equal(offset.position[2], 0.0f));
+    CHECK(near_equal(offset.orientation[3], 1.0f));
+
+    // eye_view equals the view of the composed pose; camera_position recovers it.
+    const vr::RigidPose head{{10.0f, 2.0f, -5.0f}, vr::multiply(vr::yaw_quat(30.0f), vr::Quat{0.1f, 0.0f, 0.0f, 0.995f})};
+    const vr::RigidPose eye_offset{{0.03f, 0.01f, -0.02f}, vr::yaw_quat(2.0f)};
+    camera::Mat4 world, head_view, eye_world, expected_view;
+    vr::camera_matrices(head, world, head_view);
+    vr::RigidPose composed{{}, vr::multiply(head.orientation, eye_offset.orientation)};
+    const vr::Vec3 moved = vr::rotate(head.orientation, eye_offset.position);
+    for (int i = 0; i < 3; ++i) {
+        composed.position[i] = head.position[i] + moved[i];
+    }
+    vr::camera_matrices(composed, eye_world, expected_view);
+    const camera::Mat4 view = stereo::eye_view(head_view, eye_offset);
+    bool same = true;
+    for (int i = 0; i < 16; ++i) {
+        same = same && near_equal(view[i], expected_view[i]);
+    }
+    CHECK(same);
+    const vr::Vec3 position = stereo::camera_position(view);
+    CHECK(near_equal(position[0], composed.position[0]) && near_equal(position[1], composed.position[1]) &&
+          near_equal(position[2], composed.position[2]));
+
+    // eye_projection: the eye's x/y terms (as vr::projection), the game's depth terms, jitter added.
+    const camera::EyeFov fov{-50.0f, 40.0f, 45.0f, -48.0f};
+    camera::Mat4 game{};
+    game[0] = 1.2f;
+    game[5] = 1.9f;
+    game[8] = 0.0007f; // jitter
+    game[9] = -0.0004f;
+    game[10] = 0.0f; // infinite far, reversed Z
+    game[11] = 1.0f;
+    game[14] = 0.1f;
+    const camera::Mat4 eye_projection = stereo::eye_projection(game, fov, game[8], game[9]);
+    const float r = kPi / 180.0f;
+    const camera::Mat4 reference =
+        vr::projection(fov.left_deg * r, fov.right_deg * r, fov.up_deg * r, fov.down_deg * r, 0.1f, 1000.0f);
+    CHECK(near_equal(eye_projection[0], reference[0]) && near_equal(eye_projection[5], reference[5]));
+    CHECK(near_equal(eye_projection[8], reference[8] + 0.0007f) && near_equal(eye_projection[9], reference[9] - 0.0004f));
+    CHECK(eye_projection[10] == 0.0f && eye_projection[11] == 1.0f && eye_projection[14] == 0.1f);
+
+    // rotation_view_projection follows 0x3CC7490: column j = sum_k P column k * V[4j+k] for j < 3, column 3 = P's.
+    const camera::Mat4 vp = stereo::rotation_view_projection(eye_projection, view);
+    for (int j = 0; j < 3; ++j) {
+        for (int i = 0; i < 4; ++i) {
+            const float expected = eye_projection[i] * view[4 * j] + eye_projection[4 + i] * view[4 * j + 1] +
+                                   eye_projection[8 + i] * view[4 * j + 2];
+            CHECK(near_equal(vp[4 * j + i], expected));
+        }
+    }
+    for (int i = 0; i < 4; ++i) {
+        CHECK(vp[12 + i] == eye_projection[12 + i]);
+    }
+
+    // rewrite_block on a PerCamera block: view, projection, derived matrix and position rewritten; near,
+    // far and the bytes after the position left alone.
+    alignas(16) std::uint8_t block[0xE0];
+    std::memset(block, 0xAB, sizeof(block));
+    std::memcpy(block + stereo::layout::kView, head_view.data(), sizeof(head_view));
+    std::memcpy(block + stereo::layout::kProjection, game.data(), sizeof(game));
+    std::uint8_t untouched[0xE0];
+    std::memcpy(untouched, block, sizeof(block));
+    stereo::rewrite_block(block, eye_offset, fov, true);
+    camera::Mat4 written;
+    std::memcpy(written.data(), block + stereo::layout::kView, sizeof(written));
+    CHECK(near_equal(written[12], expected_view[12]) && near_equal(written[0], expected_view[0]));
+    std::memcpy(written.data(), block + stereo::layout::kProjection, sizeof(written));
+    CHECK(near_equal(written[8], reference[8] + 0.0007f));
+    float written_position[3];
+    std::memcpy(written_position, block + stereo::layout::kPosition, sizeof(written_position));
+    CHECK(near_equal(written_position[0], composed.position[0]) && near_equal(written_position[2], composed.position[2]));
+    CHECK(std::memcmp(block + stereo::layout::kNear, untouched + stereo::layout::kNear, 0x10) == 0);
+    CHECK(std::memcmp(block + stereo::layout::kPosition + 12, untouched + stereo::layout::kPosition + 12, 4) == 0);
+}
+
 } // namespace
 
 int main() {
@@ -633,6 +726,7 @@ int main() {
     test_config();
     test_views_scan();
     test_blit();
+    test_stereo();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

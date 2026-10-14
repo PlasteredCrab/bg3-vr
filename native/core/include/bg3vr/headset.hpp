@@ -24,6 +24,11 @@ void set_lag(int frames);
 // head tracking starts driving the camera).
 void recenter();
 
+// Same-frame stereo (stereo.hpp) in a head-tracked mode: the camera holds the head centre, the two
+// eye views draw the back buffer's halves, and each half goes to its eye with that eye's pose. Takes
+// effect while stereo::active() (both eye views assigned). False if the mode is screen.
+bool set_stereo(bool on);
+
 void report();
 
 } // namespace bg3vr::headset

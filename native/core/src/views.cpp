@@ -20,6 +20,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace bg3vr::views {
 
@@ -52,6 +53,7 @@ std::atomic<bool> g_running{false};
 std::mutex g_mutex;
 std::vector<std::uintptr_t> g_found; // ReadState addresses
 std::uintptr_t g_controller = 0;
+ModuleInfo g_module;
 
 // Per-view overrides (step 5 experiments), written into both states of the view every frame on the
 // game thread. A view's index is its place in found() (by address). Under g_mutex.
@@ -62,6 +64,62 @@ struct Override {
     std::optional<bool> enabled;
 };
 std::array<Override, 4> g_overrides{};
+
+// Giving a view a camera the game's way: GameRenderView vtable slot 10 (0x17F2B30 in 4.1.1.7631656,
+// SetCamera(view, controller, keep)) calls 0x3CC90B0, which detaches the old controller (its Exit),
+// attaches the new one (its Enter: the gameplay controller keeps a list of its views), writes
+// WriteState's controller (+0x2260; the frame sync 0x4072CB0 copies WriteState into ReadState on every
+// view of the frame) and updates the controller's aspect from the view. The game calls it from game-side
+// code (0x17F7CD0 runs it directly when the view exists, otherwise queues it), so it's done on the game
+// thread (on_frame). Under g_mutex.
+inline constexpr std::size_t kSetCameraSlot = 10;
+inline constexpr std::uintptr_t kSetCameraRva = 0x17F2B30;
+using SetCameraFn = void (*)(std::uintptr_t view, std::uintptr_t controller, bool keep);
+std::uintptr_t g_pending_camera_view = 0;
+std::uintptr_t g_pending_camera = 0;
+// The pair a completed build leaves: main view, split view.
+std::optional<std::array<std::uintptr_t, 2>> g_eye_views;
+
+bool call_set_camera(SetCameraFn fn, std::uintptr_t view, std::uintptr_t controller) {
+    __try {
+        fn(view, controller, false);
+        return true;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                  : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
+// On the game thread: the pending SetCamera, if the view's vtable has the expected function there.
+void apply_pending_camera() {
+    std::uintptr_t view = 0, controller = 0;
+    {
+        std::scoped_lock lock(g_mutex);
+        view = std::exchange(g_pending_camera_view, 0);
+        controller = std::exchange(g_pending_camera, 0);
+    }
+    if (!view) {
+        return;
+    }
+    std::uintptr_t vtable = 0, fn = 0, current = 0;
+    mem::try_copy(&vtable, view, sizeof(vtable));
+    mem::try_copy(&fn, vtable + kSetCameraSlot * sizeof(void*), sizeof(fn));
+    mem::try_copy(&current, view + kReadStateInView + state::kSize + state::kController, sizeof(current));
+    if (fn != g_module.base + kSetCameraRva) {
+        log::warn("views: view 0x{:X} vtable slot {} is {} (expected exe+0x{:X}); not setting its camera", view,
+                  kSetCameraSlot, mem::describe(g_module, fn), kSetCameraRva);
+        return;
+    }
+    if (current == controller) {
+        log::info("views: view 0x{:X} already has camera 0x{:X}", view, controller);
+        return;
+    }
+    const bool ok = call_set_camera(reinterpret_cast<SetCameraFn>(fn), view, controller);
+    std::uintptr_t after = 0;
+    mem::try_copy(&after, view + kReadStateInView + state::kSize + state::kController, sizeof(after));
+    log::info("views: SetCamera(view 0x{:X}, camera 0x{:X}) {}; WriteState camera now 0x{:X} (was 0x{:X})", view,
+              controller, ok ? "returned" : "FAULTED (caught)", after, current);
+}
 
 void write_state(std::uintptr_t state_address, const Override& o) {
     std::uint8_t probe = 0;
@@ -76,7 +134,6 @@ void write_state(std::uintptr_t state_address, const Override& o) {
         *reinterpret_cast<std::uint8_t*>(state_address + state::kEnabled) = *o.enabled ? 1 : 0;
     }
 }
-ModuleInfo g_module;
 
 struct Viewport {
     float f[4];
@@ -827,13 +884,17 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
             log_stages("after:  main   ", main_view);
             log_stages("after:  special", special_view);
             log_stages("after:  target ", target);
-            // A view needs a camera: give it ours if it has none.
-            for (const std::size_t state_offset : {kReadStateInView, kReadStateInView + state::kSize}) {
-                std::uintptr_t controller = 0;
-                if (driven && mem::try_copy(&controller, target + state_offset + state::kController, sizeof(controller)) &&
-                    controller == 0) {
-                    *reinterpret_cast<std::uintptr_t*>(target + state_offset + state::kController) = driven;
-                }
+            // A view needs a camera: without one the begin-recording camera builder (0x3CC7490) skips the
+            // PerCamera blocks. Give it ours, the game's way, on the game thread (apply_pending_camera).
+            // Until 2026-10-14 both states' pointers were written directly, which skipped the
+            // controller's Enter.
+            std::scoped_lock lock(g_mutex);
+            if (ok) {
+                g_eye_views = std::array<std::uintptr_t, 2>{main_view, target};
+            }
+            if (driven) {
+                g_pending_camera_view = target;
+                g_pending_camera = driven;
             }
         });
         log::info("views: pipeline setup for view 0x{:X} queued for the render thread", target);
@@ -958,7 +1019,40 @@ void set_view(std::size_t index, std::optional<Placement> placement, std::option
               o.enabled ? (*o.enabled ? ", enabled" : ", disabled") : "");
 }
 
+std::optional<std::array<std::uintptr_t, 2>> eye_views() {
+    std::scoped_lock lock(g_mutex);
+    return g_eye_views;
+}
+
+bool set_stereo_layout(bool on) {
+    std::scoped_lock lock(g_mutex);
+    if (!g_eye_views) {
+        log::warn("views: no built split view yet (!vr_split on, reload, !vr_views build)");
+        return false;
+    }
+    // Overrides are indexed by place in found(), which holds ReadStates.
+    std::array<std::optional<std::size_t>, 2> index;
+    for (std::size_t eye = 0; eye < 2; ++eye) {
+        const auto at = std::find(g_found.begin(), g_found.end(), (*g_eye_views)[eye] + kReadStateInView);
+        if (at != g_found.end() && static_cast<std::size_t>(at - g_found.begin()) < g_overrides.size()) {
+            index[eye] = static_cast<std::size_t>(at - g_found.begin());
+        }
+    }
+    if (!index[0] || !index[1]) {
+        log::warn("views: the main or split view isn't among the found views (!vr_views find)");
+        return false;
+    }
+    for (std::size_t eye = 0; eye < 2; ++eye) {
+        g_overrides[*index[eye]] = on ? Override{true, false, {0.5f, 1.0f, eye == 0 ? 0.0f : 0.5f, 0.0f}, true}
+                                      : Override{true, true, Placement{}, true};
+    }
+    log::info("views: stereo layout {} (main view {} {}, split view {} {})", on ? "on" : "off", *index[0],
+              on ? "left" : "full", *index[1], on ? "right" : "full");
+    return true;
+}
+
 void on_frame() {
+    apply_pending_camera();
     std::vector<std::uintptr_t> views;
     std::array<Override, std::size(g_overrides)> overrides;
     {

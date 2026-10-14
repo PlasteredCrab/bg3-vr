@@ -47,3 +47,10 @@ pipeline_build_stages = 48 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54 41 55 41
 # frame's view list (+0x42E0, count +0x42EC; before the special view at +0x4388 when there is one) and gives it
 # a record in the stage resource manager ([frame+0x4250], list +0x58) via 0x4094920. Used by !vr_views build.
 render_frame_add_view = 48 89 5C 24 08 48 89 6C 24 10 56 57 41 56 48 83 EC 30 48 8B FA
+
+# Same-frame stereo (stereo.cpp; 2026-10-14). In render view begin-recording 0x3CC6C00 (reached from vtable
+# slot 1 0x17F21E0 by a tail jump), right after both GameRenderView::PerCamera blocks are built (0x3CC7490
+# into view+0x2660 and +0x2740) and the optional 0x3CC70B0 call, before the upload copies (0x3CC5830 /
+# 0x3CCDD00); both branches reach it. rdi = the view. lea rdx,[rdi+2340h] ; lea rcx,[rsp+20h] ; call ... ;
+# mov r8,rax ; lea rdx,[rdi+2820h]
+render_view_camera_built = 48 8D 97 40 23 00 00 48 8D 4C 24 20 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 97 20 28 00 00

@@ -83,6 +83,10 @@ struct HeadView {
     vr::RigidPose pose; // OpenXR convention
     EyeFov fov;
     int eye = 0;
+    // Both eyes as located with this view (OpenXR convention, same space), for same-frame stereo: the
+    // poses each eye's image is submitted with.
+    std::array<vr::RigidPose, 2> eye_pose{};
+    std::array<EyeFov, 2> eye_fov{};
 };
 // nullopt stops head tracking (back to the held pose and the game's projection).
 void set_head(std::optional<HeadView> view);

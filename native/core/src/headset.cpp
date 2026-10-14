@@ -5,6 +5,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/render.hpp"
+#include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
 #include "bg3vr/win_util.hpp"
@@ -80,6 +81,10 @@ std::atomic<bool> g_restart_search{false};
 std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 bool g_was_driven = false;
 
+// Same-frame stereo (stereo.hpp), switched at runtime; needs a head-tracked mode.
+std::atomic<bool> g_stereo{false};
+std::atomic<std::uint64_t> g_stereo_frames{0};
+
 std::atomic<std::uint64_t> g_submitted{0};
 std::atomic<std::uint64_t> g_skipped{0};
 std::atomic<std::uint64_t> g_screen_frames{0};
@@ -136,28 +141,41 @@ bool copy_compatible(DXGI_FORMAT a, DXGI_FORMAT b) {
     return group(a) == group(b);
 }
 
-camera::HeadView head_view(const XrView& view, int eye) {
+vr::RigidPose rigid_pose(const XrPosef& pose) {
+    return {{pose.position.x, pose.position.y, pose.position.z},
+            {pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w}};
+}
+
+camera::EyeFov eye_fov(const XrFovf& fov) {
+    return {fov.angleLeft * kDegrees, fov.angleRight * kDegrees, fov.angleUp * kDegrees, fov.angleDown * kDegrees};
+}
+
+XrView xr_view(const vr::RigidPose& pose, const camera::EyeFov& fov) {
+    XrView view{XR_TYPE_VIEW};
+    view.pose.position = {pose.position[0], pose.position[1], pose.position[2]};
+    view.pose.orientation = {pose.orientation[0], pose.orientation[1], pose.orientation[2], pose.orientation[3]};
+    view.fov = {fov.left_deg / kDegrees, fov.right_deg / kDegrees, fov.up_deg / kDegrees, fov.down_deg / kDegrees};
+    return view;
+}
+
+// `view` as the camera's head view; `views` (both eyes, located with it) are kept alongside.
+camera::HeadView head_view(const XrView& view, int eye, const std::vector<XrView>& views) {
     camera::HeadView head;
-    head.pose.position = {view.pose.position.x, view.pose.position.y, view.pose.position.z};
-    head.pose.orientation = {view.pose.orientation.x, view.pose.orientation.y, view.pose.orientation.z,
-                             view.pose.orientation.w};
-    head.fov = {view.fov.angleLeft * kDegrees, view.fov.angleRight * kDegrees, view.fov.angleUp * kDegrees,
-                view.fov.angleDown * kDegrees};
+    head.pose = rigid_pose(view.pose);
+    head.fov = eye_fov(view.fov);
     head.eye = eye;
+    for (std::size_t i = 0; i < 2 && i < views.size(); ++i) {
+        head.eye_pose[i] = rigid_pose(views[i].pose);
+        head.eye_fov[i] = eye_fov(views[i].fov);
+    }
     return head;
 }
 
 XrView xr_view(const camera::HeadView& head) {
-    XrView view{XR_TYPE_VIEW};
-    view.pose.position = {head.pose.position[0], head.pose.position[1], head.pose.position[2]};
-    view.pose.orientation = {head.pose.orientation[0], head.pose.orientation[1], head.pose.orientation[2],
-                             head.pose.orientation[3]};
-    view.fov = {head.fov.left_deg / kDegrees, head.fov.right_deg / kDegrees, head.fov.up_deg / kDegrees,
-                head.fov.down_deg / kDegrees};
-    return view;
+    return xr_view(head.pose, head.fov);
 }
 
-// Mono: one view between the eyes that covers both eyes' fields of view.
+// Mono and same-frame stereo: one view between the eyes that covers both eyes' fields of view.
 camera::HeadView centre_view(const std::vector<XrView>& views) {
     XrView centre = views[0];
     centre.pose.position = {(views[0].pose.position.x + views[1].pose.position.x) * 0.5f,
@@ -167,7 +185,7 @@ camera::HeadView centre_view(const std::vector<XrView>& views) {
     centre.fov.angleRight = (std::max)(views[0].fov.angleRight, views[1].fov.angleRight);
     centre.fov.angleUp = (std::max)(views[0].fov.angleUp, views[1].fov.angleUp);
     centre.fov.angleDown = (std::min)(views[0].fov.angleDown, views[1].fov.angleDown);
-    return head_view(centre, 0);
+    return head_view(centre, 0, views);
 }
 
 bool matrix_matches(const float* candidate, const camera::Mat4& expected) {
@@ -346,7 +364,8 @@ void start(IDXGISwapChain* swapchain) {
     g_ready = true;
 }
 
-void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target) {
+// `rect` (back buffer pixels; width 0 = all of it) into the whole image.
+void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, const blit::Blitter::Rect& rect = {}) {
     ID3D11Texture2D* back_buffer = nullptr;
     if (FAILED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
         return;
@@ -355,15 +374,20 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target) {
         D3D11_TEXTURE2D_DESC source{};
         back_buffer->GetDesc(&source);
         if (source.Width == g_image_width && source.Height == g_image_height) {
-            g_blitter.draw(back_buffer, {}, target.view, g_image_width, g_image_height, g_linearize);
+            g_blitter.draw(back_buffer, rect, target.view, g_image_width, g_image_height, g_linearize);
         }
         back_buffer->Release();
         return;
     }
-    // The window can be resized after the images were made; copy the overlapping part.
+    // The window can be resized after the images were made; copy the overlapping part (no scaling
+    // without the blitter: a sub-rectangle lands unscaled in the image's corner).
     D3D11_TEXTURE2D_DESC source{};
     back_buffer->GetDesc(&source);
-    const D3D11_BOX box{0, 0, 0, (std::min)(source.Width, g_image_width), (std::min)(source.Height, g_image_height), 1};
+    const UINT left = rect.width ? rect.x : 0, top = rect.width ? rect.y : 0;
+    const UINT right = rect.width ? rect.x + rect.width : source.Width;
+    const UINT bottom = rect.width ? rect.y + rect.height : source.Height;
+    const D3D11_BOX box{left, top, 0, (std::min)({right, source.Width, left + g_image_width}),
+                        (std::min)({bottom, source.Height, top + g_image_height}), 1};
     ID3D11DeviceContext* context = nullptr;
     render::device()->GetImmediateContext(&context);
     context->CopySubresourceRegion(target.texture, 0, 0, 0, 0, back_buffer, 0, &box);
@@ -398,6 +422,9 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
     }
     g_was_driven = driven;
 
+    // Same-frame stereo once it's switched on and both eye views are assigned.
+    const bool stereo = g_stereo.load(std::memory_order_relaxed) && stereo::active();
+
     // Which applied view the presented image came from.
     const camera::AppliedView* rendered = nullptr;
     const int lag = g_lag.load(std::memory_order_relaxed);
@@ -423,7 +450,21 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
     if (!driven) {
         submit_screen(swapchain, frame);
     } else {
-        if (rendered && frame.state.shouldRender) {
+        if (rendered && frame.state.shouldRender && stereo) {
+            // Same-frame stereo: the left eye's view drew the back buffer's left half, the right eye's the
+            // right half (views::set_stereo_layout), each from its eye of the same located head.
+            const UINT half = g_image_width / 2;
+            for (int eye = 0; eye < 2; ++eye) {
+                const blit::Blitter::Rect rect{eye == 0 ? 0u : half, 0u, eye == 0 ? half : g_image_width - half,
+                                               g_image_height};
+                const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
+                copy_back_buffer(swapchain, image, rect);
+                g_session->release(static_cast<std::size_t>(eye));
+                g_rendered[eye] = xr_view(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
+                g_has_image[eye] = true;
+            }
+            g_stereo_frames.fetch_add(1, std::memory_order_relaxed);
+        } else if (rendered && frame.state.shouldRender) {
             const int first = g_mode == Mode::Mono ? 0 : rendered->head.eye;
             const int last = g_mode == Mode::Mono ? 1 : rendered->head.eye;
             for (int eye = first; eye <= last; ++eye) {
@@ -447,10 +488,16 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
         if (g_recenter_request.exchange(false, std::memory_order_relaxed)) {
             camera::set_recenter(centre_view(views).pose);
         }
-        if (g_mode == Mode::Mono) {
+        if (stereo) {
+            // The game camera at the head centre covering both eyes (culling sees both); the stereo hook
+            // moves each eye's view to its eye.
+            const camera::HeadView centre = centre_view(views);
+            camera::set_head(centre);
+            stereo::set_eyes(stereo::Eyes{centre.pose, centre.eye_pose, centre.eye_fov});
+        } else if (g_mode == Mode::Mono) {
             camera::set_head(centre_view(views));
         } else {
-            camera::set_head(head_view(views[g_next_eye], g_next_eye));
+            camera::set_head(head_view(views[g_next_eye], g_next_eye, views));
             g_next_eye ^= 1;
         }
     }
@@ -538,10 +585,24 @@ void set_lag(int frames) {
     }
 }
 
+bool set_stereo(bool on) {
+    if (on && g_mode == Mode::Screen) {
+        log::warn("xr: same-frame stereo needs a head-tracked mode ([xr] mode = mono or alternate)");
+        return false;
+    }
+    g_stereo.store(on, std::memory_order_relaxed);
+    if (!on) {
+        stereo::set_eyes(std::nullopt);
+    }
+    log::info("xr: same-frame stereo {}", on ? "on" : "off");
+    return true;
+}
+
 void report() {
-    log::info("xr: {} frames submitted ({} as the screen), {} skipped (session not running); rendered view "
-              "matched {} / unmatched {} / assumed {}; measured lag {}",
+    log::info("xr: {} frames submitted ({} as the screen, {} same-frame stereo), {} skipped (session not running); "
+              "rendered view matched {} / unmatched {} / assumed {}; measured lag {}",
               g_submitted.load(std::memory_order_relaxed), g_screen_frames.load(std::memory_order_relaxed),
+              g_stereo_frames.load(std::memory_order_relaxed),
               g_skipped.load(std::memory_order_relaxed), g_matched.load(std::memory_order_relaxed),
               g_unmatched.load(std::memory_order_relaxed), g_guessed.load(std::memory_order_relaxed),
               g_measured_lag.load(std::memory_order_relaxed));

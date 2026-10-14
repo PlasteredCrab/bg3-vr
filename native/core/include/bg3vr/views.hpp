@@ -2,6 +2,7 @@
 
 #include "bg3vr/module_info.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -44,12 +45,19 @@ void on_frame();
 // Step 5 experiment: finds the game pipeline (the object holding the main view at +0xA0 and the
 // special 3-stage view at +0xA8) and builds a normal view's stage lists into found view `index` on the
 // render thread (not the full setup, which crashes; see views.cpp); a view without a camera gets the
-// driven one.
+// driven one, through the view's own SetCamera on the game thread.
 // kAutomatic picks the first found view that is neither of those.
 inline constexpr std::size_t kAutomatic = static_cast<std::size_t>(-1);
 // compositing also builds stages 0x45 and 0x07 (crashed the game on 2026-10-13).
 // With kAutomatic it first scans (repeatedly, up to a minute) until the split view exists.
 void build(const ModuleInfo& module, std::uintptr_t controller, std::size_t index, bool compositing);
+
+// After a build that completed: the pipeline's main view and the built split view (view addresses,
+// not ReadStates), the pair that draws the two eyes in same-frame stereo.
+std::optional<std::array<std::uintptr_t, 2>> eye_views();
+// Same-frame stereo layout: the main view in the left half, the split view in the right half, both
+// enabled (on), or both back to full screen (off). Needs a completed build.
+bool set_stereo_layout(bool on);
 
 // What points at each found view (memory scan, background thread): a list that holds view 0 but
 // not view 1 is a candidate for the list of views that get drawn.
