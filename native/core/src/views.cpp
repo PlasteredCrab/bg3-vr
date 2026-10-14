@@ -346,6 +346,7 @@ struct Fault {
     std::uintptr_t code_address = 0; // where it faulted
     std::uintptr_t data_address = 0; // what it tried to read or write
     std::uintptr_t rcx = 0, rdx = 0, r8 = 0;
+    std::uintptr_t init_stage = 0; // rdi in the frame of stage 0x0B's init (0x3E4DBA0), if it's on the stack
     std::array<std::uintptr_t, 12> stack{}; // return addresses into the exe, innermost first
 };
 
@@ -366,6 +367,10 @@ int record_fault(EXCEPTION_POINTERS* info, Fault& fault) {
     std::size_t n = 0;
     while (n < fault.stack.size() && context.Rip) {
         fault.stack[n++] = context.Rip;
+        // Stage 0x0B's init keeps the stage in rdi (mov rdi, rcx at 0x3E4DBE4).
+        if (!fault.init_stage && context.Rip - g_module.base >= 0x3E4DBA0 && context.Rip - g_module.base < 0x3E4F0AE) {
+            fault.init_stage = context.Rdi;
+        }
         DWORD64 image_base = 0;
         const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
         if (!function) {
@@ -468,6 +473,48 @@ std::uintptr_t stage_manager(std::uintptr_t view, int id) {
         if (stage && stage_id(stage) == id && mem::try_copy(&group, stage + 0x10, 8) &&
             mem::try_copy(&manager, group, 8)) {
             return manager;
+        }
+    }
+    return 0;
+}
+
+// A stage 0x0B's state after its init (0x3E4DBA0): ok flag +0x19, the five loads +0x2140..+0x2160,
+// the resource lookups +0x2168 / +0x2170 / +0x2178, +0x2190, +0x1260, and the flag the init checks
+// first, [[[stage+8]+0x10]+0x40].
+void log_stage_0b(const char* label, std::uintptr_t stage) {
+    if (!stage) {
+        log::info("views:   {}: no stage", label);
+        return;
+    }
+    std::uint8_t ok = 0;
+    mem::try_copy(&ok, stage + 0x19, 1);
+    std::string fields;
+    for (const std::size_t offset : {0x2140u, 0x2148u, 0x2150u, 0x2158u, 0x2160u, 0x2168u, 0x2170u, 0x2178u, 0x2190u,
+                                     0x1260u}) {
+        std::uintptr_t value = 0;
+        mem::try_copy(&value, stage + offset, 8);
+        fields += std::format(" +0x{:X}={:X}", offset, value);
+    }
+    std::uintptr_t view = 0, frame = 0;
+    std::int32_t frame_flag = -1;
+    mem::try_copy(&view, stage + 8, 8);
+    if (mem::try_copy(&frame, view + 0x10, 8)) {
+        mem::try_copy(&frame_flag, frame + 0x40, 4);
+    }
+    log::info("views:   {} 0x{:X}: ok {}{}; [[view+0x10]+0x40] = {}", label, stage, ok, fields, frame_flag);
+}
+
+// The view's stage with `id`, or 0.
+std::uintptr_t find_stage(std::uintptr_t view, int id) {
+    std::uintptr_t array = 0;
+    std::int32_t count = 0;
+    mem::try_copy(&array, view + 0x28, 8);
+    mem::try_copy(&count, view + 0x34, 4);
+    for (std::int32_t i = 0; i < count && i < 64; ++i) {
+        std::uintptr_t stage = 0;
+        mem::try_copy(&stage, array + i * 8, 8);
+        if (stage && stage_id(stage) == id) {
+            return stage;
         }
     }
     return 0;
@@ -697,6 +744,8 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                 log::info("views:   fault at {} accessing 0x{:X}; rcx 0x{:X} rdx 0x{:X} r8 0x{:X}; stack:{}",
                           mem::describe(g_module, fault.code_address), fault.data_address, fault.rcx, fault.rdx,
                           fault.r8, stack_trace(fault));
+                log_stage_0b("failing stage 0x0B (split view)", fault.init_stage);
+                log_stage_0b("working stage 0x0B (main view) ", find_stage(main_view, 0x0B));
             }
             log_stages("after:  main   ", main_view);
             log_stages("after:  special", special_view);
