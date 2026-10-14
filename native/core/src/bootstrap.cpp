@@ -16,6 +16,7 @@
 #include "bg3vr/text.hpp"
 #include "bg3vr/trace.hpp"
 #include "bg3vr/views.hpp"
+#include "bg3vr/watchdog.hpp"
 #include "bg3vr/win_util.hpp"
 
 #include <windows.h>
@@ -219,6 +220,7 @@ int init(const wchar_t* root_dir) {
     }
     camera::install(g_config, module);
     render::install(module);
+    watchdog::start(module);
 #if BG3VR_HAVE_OPENXR
     headset::install(g_config);
 #endif

@@ -21,6 +21,8 @@ IDXGISwapChain* swapchain();
 // The rf::dx11::RenderFrame of the last Present (rdi at the call): holds the list of views the render loop
 // draws (+0x42E0, count +0x42EC) and the stage resource manager (+0x4250).
 std::uintptr_t render_frame();
+// Frames presented so far.
+std::uint64_t frame_count();
 ID3D11Device* device();
 
 // Called on the presenting thread just before every Present, with the swapchain about to present

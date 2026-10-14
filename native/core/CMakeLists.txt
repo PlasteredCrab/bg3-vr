@@ -17,6 +17,7 @@ add_library(bg3vr_base STATIC
     src/trace.cpp
     src/views.cpp
     src/vr_math.cpp
+    src/watchdog.cpp
     src/watch.cpp
     src/win_util.cpp
 )

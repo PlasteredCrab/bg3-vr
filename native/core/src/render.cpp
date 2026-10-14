@@ -119,6 +119,10 @@ void install(const ModuleInfo& module) {
     log::info("render: present hook installed at exe+0x{:X}", *site - module.base);
 }
 
+std::uint64_t frame_count() {
+    return g_frames.load(std::memory_order_relaxed);
+}
+
 std::uintptr_t render_frame() {
     return g_render_frame.load(std::memory_order_acquire);
 }
