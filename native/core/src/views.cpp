@@ -435,6 +435,61 @@ void log_stages(const char* label, std::uintptr_t view) {
     log::info("views:   {} 0x{:X}: {} stage(s) at 0x{:X}, ids:{}", label, view, count, array, text);
 }
 
+// RenderFrame (rdi at Present) view list +0x42E0 / count +0x42EC; its stage resource manager +0x4250,
+// whose per-view records are at +0x58 / count +0x64 (first word of a record = the view). 0x4073230.
+bool frame_has_view(std::uintptr_t frame, std::uintptr_t view) {
+    std::uintptr_t list = 0;
+    std::uint32_t count = 0;
+    if (!mem::try_copy(&list, frame + 0x42E0, 8) || !mem::try_copy(&count, frame + 0x42EC, 4) || count > 64) {
+        return false;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::uintptr_t v = 0;
+        if (mem::try_copy(&v, list + i * 8, 8) && v == view) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool manager_has_record(std::uintptr_t manager, std::uintptr_t view) {
+    std::uintptr_t list = 0;
+    std::int32_t count = 0;
+    if (!mem::try_copy(&list, manager + 0x58, 8) || !mem::try_copy(&count, manager + 0x64, 4) || count < 0 ||
+        count > 64) {
+        return false;
+    }
+    for (std::int32_t i = 0; i < count; ++i) {
+        std::uintptr_t record = 0, v = 0;
+        if (mem::try_copy(&record, list + i * 8, 8) && mem::try_copy(&v, record, 8) && v == view) {
+            return true;
+        }
+    }
+    return false;
+}
+
+using AddViewFn = void (*)(std::uintptr_t frame, std::uintptr_t view, char special);
+bool call_add_view(AddViewFn add_view, std::uintptr_t frame, std::uintptr_t view) {
+    __try {
+        add_view(frame, view, 0);
+        return true;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
+void log_frame_facts(const char* when, std::uintptr_t frame, std::uintptr_t main_view, std::uintptr_t special_view,
+                     std::uintptr_t target) {
+    std::uintptr_t manager = 0, group = 0;
+    mem::try_copy(&manager, frame + 0x4250, 8);
+    mem::try_copy(&group, main_view + 0x18, 8);
+    log::info("views:   {}: render frame 0x{:X} lists main {} special {} target {}; manager 0x{:X} (main view's "
+              "[view+0x18] 0x{:X}) has records for main {} special {} target {}",
+              when, frame, frame_has_view(frame, main_view), frame_has_view(frame, special_view),
+              frame_has_view(frame, target), manager, group, manager_has_record(manager, main_view),
+              manager_has_record(manager, special_view), manager_has_record(manager, target));
+}
+
 // The resource manager a stage uses is [[stage+0x10]] (stage 0x0B's init, 0x3E4DBA0). Its key table
 // (0x40956C0 / 0x409DB80): buckets at +0x78, bucket count +0x80, next +0x88, keys (u32) +0x98.
 bool manager_has_key(std::uintptr_t manager, std::uint32_t key) {
@@ -683,7 +738,26 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                 *reinterpret_cast<std::uint32_t*>(target + 0x34) = 0;
                 log::info("views:   detached the target's stage array from the special view's");
             }
-            // The stage group's owner (+0x20) stays the special view. Adding a stage registers it with
+            // Give the split view what the game gives a view it draws: a place in the RenderFrame's view
+            // list and a record in the stage resource manager, both done by the game's 0x4073230 (it
+            // inserts before the special view). Only when the view isn't in the list already.
+            const std::uintptr_t frame = render::render_frame();
+            if (frame) {
+                log_frame_facts("before add", frame, main_view, special_view, target);
+                const auto add_view = sig::lookup("render_frame_add_view");
+                if (!frame_has_view(frame, target) && add_view && *add_view - g_module.base == 0x4073230) {
+                    const bool added = call_add_view(reinterpret_cast<AddViewFn>(*add_view), frame, target);
+                    log::info("views:   0x4073230(frame, split view, 0) {}", added ? "returned" : "FAULTED (caught)");
+                    log_frame_facts("after add", frame, main_view, special_view, target);
+                }
+                std::uintptr_t manager = 0;
+                mem::try_copy(&manager, frame + 0x4250, 8);
+                if (manager_has_record(manager, target)) {
+                    *reinterpret_cast<std::uintptr_t*>(target + 0x20) = target;
+                    log::info("views:   the split view has a manager record: it now owns its stage group");
+                }
+            }
+            // Otherwise the stage group's owner (+0x20) stays the special view. Adding a stage registers it with
             // the manager under the owner's record (0x409A4C0: the manager's list at +0x58 holds one
             // record per view; no record for the owner -> the stage isn't registered), and stage
             // 0x0B's key registrations (0x40956C0) fail for unregistered stages, clearing its ok flag

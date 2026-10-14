@@ -17,6 +17,7 @@ namespace {
 
 safetyhook::MidHook g_present_hook;
 std::atomic<IDXGISwapChain*> g_swapchain{nullptr};
+std::atomic<std::uintptr_t> g_render_frame{0};
 std::atomic<ID3D11Device*> g_device{nullptr};
 std::atomic<PresentCallback> g_callback{nullptr};
 std::mutex g_tasks_mutex;
@@ -69,6 +70,7 @@ void on_present(safetyhook::Context& ctx) {
         return;
     }
     g_frames.fetch_add(1, std::memory_order_relaxed);
+    g_render_frame.store(ctx.rdi, std::memory_order_release);
     g_game_sync_interval.store(static_cast<std::uint32_t>(ctx.rdx), std::memory_order_relaxed);
     g_game_present_flags.store(static_cast<std::uint32_t>(ctx.r8), std::memory_order_relaxed);
     if (g_swapchain.exchange(swapchain, std::memory_order_acq_rel) != swapchain) {
@@ -115,6 +117,10 @@ void install(const ModuleInfo& module) {
     }
     g_present_hook = std::move(*hook);
     log::info("render: present hook installed at exe+0x{:X}", *site - module.base);
+}
+
+std::uintptr_t render_frame() {
+    return g_render_frame.load(std::memory_order_acquire);
 }
 
 IDXGISwapChain* swapchain() {

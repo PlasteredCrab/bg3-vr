@@ -18,6 +18,9 @@ void install(const ModuleInfo& module);
 // The game's swapchain and device, once a frame has been presented (nullptr before). Not AddRef'd:
 // they live as long as the game's renderer.
 IDXGISwapChain* swapchain();
+// The rf::dx11::RenderFrame of the last Present (rdi at the call): holds the list of views the render loop
+// draws (+0x42E0, count +0x42EC) and the stage resource manager (+0x4250).
+std::uintptr_t render_frame();
 ID3D11Device* device();
 
 // Called on the presenting thread just before every Present, with the swapchain about to present
