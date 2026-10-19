@@ -20,15 +20,15 @@ marked **(RE)** wait on agent reports, and nothing in them is claimed about the 
 
 | Block | What it is | Depends on |
 |---|---|---|
-| Hand presence | Two tracked hands in the world: pose from OpenXR controllers, mapped into game space like the head (recentre, world scale) | headset module, `vr_math` |
+| Hand presence | Two tracked hands in the world: pose from OpenXR controllers, mapped into game space like the head (recentre, world scale) | **done (untested on hardware):** `headset::hands()` with `world_grip` via `camera::tracked_to_world` |
 | Hand collision proxy | A kinematic shape per hand (sphere or capsule) used for queries, and later for pushing things | physics queries (RE) |
 | Grab candidates | Per hand, each frame: nearby graspable objects (overlap query around the palm), and a pointing ray for distant ones | physics overlap and ray queries (RE), item picking (RE) |
 | Grab state machine | idle → hover → grab (near) / pull (far) → held → release / throw | — |
 | Held-object driver | Keeps a held object at the hand through the physics engine, kinematically or with velocity-tracked constraints, so it still collides | rigid body control (RE) |
 | Ragdoll driver | Grabs one ragdoll bone body and drives it to the hand, so the rest of the body follows through the joints | ragdoll structure (RE) |
 | Authority bridge | Makes held and thrown results real for the game: final position, ownership, damage | client/server model (RE), Lua/Osiris |
-| Body IK | VRIK-style: the character's arms follow the hands and the head follows the headset | bone override point (RE, agent C) |
-| Feedback | Controller haptics on hover, grab and impact | OpenXR haptics |
+| Body IK | VRIK-style: the character's arms follow the hands and the head follows the headset | Skeleton slot 30 hook (section 3a) |
+| Feedback | Controller haptics on hover, grab and impact | **done:** `headset::haptic(hand, amplitude, seconds)` |
 
 ## 2. Interaction model
 
@@ -83,9 +83,38 @@ marked **(RE)** wait on agent reports, and nothing in them is claimed about the 
 - **Combat:** melee hits with held weapons, and thrown impacts, call into the game's attack and damage
   resolution so dice and rules still decide. Separate design later.
 
+## 3a. Body and input (agent C, `re-local/ghidra/agents/C_animation_systems.md`)
+
+Answered from agent C's report; the parts our code uses are re-checked in `docs/re-notes/skeleton.md`.
+
+- **Bones.** The game's Skeleton (vtable 0x588D4A8) wraps a Granny 3D 2.12 skeleton. Poses are model space,
+  in row-major 4x4 matrices. `GetBoneWorldMatrix` is slot 10, `FindBone(FixedString)` slot 17,
+  `SetBoneLocalTransform` slot 20, and slots 22-28 set world-pose matrices. The head bone is `Head_M`.
+  Other bone names are data, so `!vr_skel` logs them.
+- **Override point for IK (arms follow the hands).** Hook Skeleton slot 30 `UpdateMeshBindings` (0x3A20590).
+  At entry, `[skel+0xE0]` holds this frame's model-space pose. Write the IK chain's matrices (clavicle, upper
+  arm, forearm, hand, plus head and neck), then let the original rebuild skinning. Attachments (held weapons,
+  shields) read the edited pose afterwards, because 0x3F12D60 / 0x3F12F40 run after slot 30 in the finish step
+  0x3BD6670. It runs on animation worker threads, so filter by the player's skeleton pointer. The
+  alternative is local space: a post-hook on the Granny plugin 0x3A051F0, then rebuild `[skel+0xE8]`.
+- **Held object attached to the visible hand.** After the IK write, the hand bone's model matrix composed
+  with the visual's world transform is where the held object goes. The game does the same for attachments.
+- **Hiding the head per view.** Visual slot 14 (0x3C6B6F0) takes a render view and sets cull bit 0x200 or
+  0x400 by the view's split index. We already hide through slot 15 (both bits) in `cull.cpp`.
+- **Input injection** (VR buttons to game actions). `InputManager::InjectRaw` 0x40F1F00 on `[0x604B1A8]`
+  with a 16-byte raw change `{u16 id, u16 device, float value, float value2, u8 state}` (controller device
+  3; raw ids 138-167 for sticks, triggers and buttons). The InputManager drains the queue at the start of
+  each frame (0x3F77333). Game events include Interact 0xAD, ActionCancel 0xAE, Throw 0xCE,
+  ContextMenu 0xD6 and CharacterMove 0x9D-0xA0. Whether raw input for an unregistered device id is
+  accepted is **unconfirmed**.
+- **Movement and facing.** Steering yaw at `eoc::SteeringComponent+0xC` (radians); the game's forward is
+  `(-sin yaw, 0, -cos yaw)`. Root motion is applied through 0x3C78110 (set entity world transform; its
+  server-side effects are unconfirmed).
+
 ## 4. Order of work
 
-1. Hand presence: controllers tracked in game space, shown as debug spheres (or on the IK arms later).
+1. Hand presence: controllers tracked in game space (done in code: logged as `xr input:` lines with world
+   poses). Visible hands come with body IK (step 7) or a debug marker.
 2. Queries: ray and overlap from the hand against the game's physics; log what is hit (item, character,
    ragdoll bone).
 3. Near grab of a loose item: kinematic first, then velocity drive. Release with throw velocity.
