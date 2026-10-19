@@ -16,6 +16,7 @@ add_library(bg3vr_base STATIC
     src/probe.cpp
     src/render.cpp
     src/signatures.cpp
+    src/picking.cpp
     src/quality.cpp
     src/rayprobe.cpp
     src/skeleton.cpp

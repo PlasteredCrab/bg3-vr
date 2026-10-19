@@ -45,6 +45,8 @@ void request_report();
 
 // The right hand's aim pose in the game world (game convention: forward is +Z), or nullopt; from the headset.
 void set_hand_aim(std::optional<vr::RigidPose> aim);
+// The latest right-hand aim pose in the game world (any thread), or nullopt.
+std::optional<vr::RigidPose> hand_aim();
 
 // Game thread (camera view update): casts every few updates while a source is set; logs changes.
 void on_frame();

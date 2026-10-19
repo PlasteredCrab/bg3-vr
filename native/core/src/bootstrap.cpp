@@ -16,6 +16,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
+#include "bg3vr/picking.hpp"
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/skeleton.hpp"
@@ -186,6 +187,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.skeleton) {
         skeleton::attach_visual(*request.skeleton);
     }
+    if (request.pick_hand) {
+        picking::set_hand(*request.pick_hand);
+    }
     if (request.quality_report) {
         quality::request_report();
     }
@@ -259,6 +263,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     cull::report();
     skeleton::report();
     dialogue::report();
+    picking::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -300,6 +305,7 @@ int init(const wchar_t* root_dir) {
     rayprobe::init(module);
     quality::install(g_config, module);
     dialogue::install(g_config, module);
+    picking::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 

@@ -50,6 +50,7 @@ struct Request {
     std::optional<std::uintptr_t> skeleton;                    // follow this visual's skeleton; 0 = off
     std::optional<std::string> ray;                            // raycast probe: camera | hand | off | report
     bool quality_report = false;                               // log LOD / texture quality state
+    std::optional<bool> pick_hand;                             // picking ray from the right hand (true) or mouse
 };
 
 // Parses the bridge file:
@@ -71,6 +72,7 @@ struct Request {
 //   skeleton=<hex visual> | skeleton=off   (read the character's skeleton: bones, Head_M)
 //   ray=camera | ray=hand | ray=off | ray=report   (physics raycast probe)
 //   quality=report                    (LOD and texture streaming state per view)
+//   pick=hand | pick=off              (the game's picking ray from the right hand's aim, or the mouse)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

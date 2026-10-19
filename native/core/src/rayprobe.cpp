@@ -175,6 +175,11 @@ void set_hand_aim(std::optional<vr::RigidPose> aim) {
     g_hand_aim = aim;
 }
 
+std::optional<vr::RigidPose> hand_aim() {
+    std::scoped_lock lock(g_mutex);
+    return g_hand_aim;
+}
+
 void on_frame() {
     if (g_report.exchange(false, std::memory_order_relaxed)) {
         log::info("ray: {} casts, {} with a hit, {} failed", g_casts, g_hits, g_failures);

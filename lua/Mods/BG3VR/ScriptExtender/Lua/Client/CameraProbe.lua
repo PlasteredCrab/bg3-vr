@@ -37,6 +37,7 @@
 --   !vr_hands [buzz]          log the motion controllers (poses, buttons, bound profile); buzz pulses both
 --   !vr_ray camera|hand|off|report  physics raycast probe from the screen centre or the right hand's aim
 --   !vr_quality               log LOD / texture streaming state per eye view ([quality] in bg3vr.ini)
+--   !vr_pick hand|off         point with the right controller instead of the mouse (hover, path preview, click target)
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
@@ -470,6 +471,16 @@ Ext.RegisterConsoleCommand("vr_ray", Safely(function(_, mode)
     end
     if BG3VR.WriteBridge(lines) then
         BG3VR.Log("ray probe %s (see 'ray:' lines in bg3vr.log)", mode)
+    end
+end))
+Ext.RegisterConsoleCommand("vr_pick", Safely(function(_, mode)
+    mode = mode or "hand"
+    if mode ~= "hand" and mode ~= "off" then
+        BG3VR.Log("usage: !vr_pick hand|off")
+        return
+    end
+    if BG3VR.WriteBridge({ "pick=" .. mode }) then
+        BG3VR.Log("picking from the %s ('pick:' lines in bg3vr.log)", mode == "hand" and "right hand" or "mouse")
     end
 end))
 Ext.RegisterConsoleCommand("vr_quality", Safely(function()
