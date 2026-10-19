@@ -32,7 +32,8 @@
 --   !vr_follow [height] | off  hold the camera at the character's eyes and keep it there as they move
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
---   !vr_stereo on|off|report  same-frame stereo on the built split view (after !vr_views build)
+--   !vr_stereo on|off|report  same-frame stereo on the second view (after !vr_views create)
+--   !vr_go [height]           follow the character's eyes + !vr_views create + !vr_stereo on (3 s later)
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
@@ -354,6 +355,12 @@ Ext.RegisterConsoleCommand("vr_follow", Safely(function(_, a)
         BG3VR.Warn("usage: !vr_follow [height] | off")
         return
     end
+    StartNativeFollow(height, {})
+end))
+
+-- Holds the camera at the character's eyes (native, every frame); extra bridge lines go in the same write
+-- (two quick writes could be collapsed into the last one by the bridge watcher).
+function StartNativeFollow(height, extra)
     local _, controller = ActiveCamera()
     local address = controller and ProxyAddress(controller)
     local t = _C().Transform
@@ -366,11 +373,15 @@ Ext.RegisterConsoleCommand("vr_follow", Safely(function(_, a)
     local yaw = YawOf(t.Transform.RotationQuat) + 180
     nativeFollow.height = height
     nativeFollow.address = transform
-    if BG3VR.WriteBridge({
-            "controller=" .. address,
-            string.format("pose=%.4f %.4f %.4f %.2f 0", p[1], p[2] + height, p[3], yaw),
-            string.format("follow=%s %.2f", transform, height),
-        }) then
+    local lines = {
+        "controller=" .. address,
+        string.format("pose=%.4f %.4f %.4f %.2f 0", p[1], p[2] + height, p[3], yaw),
+        string.format("follow=%s %.2f", transform, height),
+    }
+    for _, line in ipairs(extra) do
+        lines[#lines + 1] = line
+    end
+    if BG3VR.WriteBridge(lines) then
         BG3VR.Log("following the character (transform %s) at %.2f, facing yaw %.1f", transform, height, yaw)
     end
     if not nativeFollow.handle then
@@ -382,6 +393,29 @@ Ext.RegisterConsoleCommand("vr_follow", Safely(function(_, a)
             end
         end)
     end
+    return true
+end
+
+-- One command for the same-frame stereo setup: follow the character's eyes, create the second view (the
+-- game's player view), and switch the stereo layout on three seconds later (the view is built on the render
+-- thread and gets its camera on the game thread first).
+Ext.RegisterConsoleCommand("vr_go", Safely(function(_, a)
+    local height = tonumber(a or "1.7") or 1.7
+    if not StartNativeFollow(height, { "views=create" }) then
+        return
+    end
+    BG3VR.Log("creating the second view; stereo layout in 3 s")
+    local waited = 0
+    local handle
+    handle = Ext.Events.Tick:Subscribe(function(e)
+        waited = waited + ((e and e.Time and e.Time.DeltaTime) or 0.016)
+        if waited >= 3.0 then
+            Ext.Events.Tick:Unsubscribe(handle)
+            if BG3VR.WriteBridge({ "stereo=on" }) then
+                BG3VR.Log("stereo layout on")
+            end
+        end
+    end)
 end))
 -- Headset: take the current head pose as the centre (also automatic when head tracking starts).
 Ext.RegisterConsoleCommand("vr_recenter", Safely(function()
