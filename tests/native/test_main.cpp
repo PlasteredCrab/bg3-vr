@@ -9,6 +9,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/ik.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
@@ -720,6 +721,54 @@ void test_stereo() {
     CHECK(std::memcmp(block + stereo::layout::kPosition + 12, untouched + stereo::layout::kPosition + 12, 4) == 0);
 }
 
+float distance(const vr::Vec3& a, const vr::Vec3& b) {
+    const float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return std::sqrt(x * x + y * y + z * z);
+}
+
+void test_ik() {
+    // from_to: +Z to +X is 90 degrees about +Y; opposite directions give a half turn.
+    const vr::Quat q = ik::from_to({0, 0, 1}, {2, 0, 0});
+    CHECK(vec_near(vr::rotate(q, {0, 0, 1}), {1, 0, 0}));
+    const vr::Quat flip = ik::from_to({0, 1, 0}, {0, -3, 0});
+    CHECK(vec_near(vr::rotate(flip, {0, 1, 0}), {0, -1, 0}));
+    CHECK(vec_near(vr::rotate(ik::from_to({1, 2, 3}, {1, 2, 3}), {0, 0, 1}), {0, 0, 1}));
+
+    // An arm hanging down from the shoulder: upper arm 0.3, forearm 0.25.
+    const vr::Vec3 shoulder{0, 1.4f, 0}, elbow{0, 1.1f, 0}, wrist{0, 0.85f, 0};
+    const vr::Vec3 pole{0, 1.0f, -1.0f}; // elbows point backwards (-Z)
+
+    // Reachable target in front at chest height: lengths kept, wrist on target, elbow toward the pole.
+    const vr::Vec3 target{0.1f, 1.3f, 0.35f};
+    const ik::TwoBone reach = ik::solve_two_bone(shoulder, elbow, wrist, target, pole);
+    CHECK(reach.reached);
+    CHECK(vec_near(reach.wrist, target));
+    CHECK(near_eq(distance(reach.elbow, shoulder), 0.3f));
+    CHECK(near_eq(distance(reach.wrist, reach.elbow), 0.25f));
+    CHECK(reach.elbow[2] < target[2] * 0.5f); // bent back toward the pole side, not forward
+    // The deltas turn the old bone directions into the new ones.
+    const vr::Vec3 old_upper{0, -0.3f, 0};
+    const vr::Vec3 new_upper = vr::rotate(reach.upper_delta, old_upper);
+    const vr::Vec3 upper{reach.elbow[0] - shoulder[0], reach.elbow[1] - shoulder[1], reach.elbow[2] - shoulder[2]};
+    CHECK(vec_near(new_upper, upper));
+    const vr::Vec3 new_lower = vr::rotate(reach.lower_delta, {0, -0.25f, 0});
+    const vr::Vec3 lower{reach.wrist[0] - reach.elbow[0], reach.wrist[1] - reach.elbow[1], reach.wrist[2] - reach.elbow[2]};
+    CHECK(vec_near(new_lower, lower));
+
+    // Out of reach: the arm points straight at the target, at (almost) full length.
+    const vr::Vec3 distant{0, 1.4f, 2.0f};
+    const ik::TwoBone straight = ik::solve_two_bone(shoulder, elbow, wrist, distant, pole);
+    CHECK(!straight.reached);
+    CHECK(std::abs(distance(straight.wrist, shoulder) - 0.55f) < 1e-3f);
+    CHECK(std::abs(straight.wrist[2] - (shoulder[2] + 0.55f)) < 1e-3f);
+
+    // Pole on the shoulder-target line: the current elbow's side is used instead (here none, so any side),
+    // and lengths still hold.
+    const ik::TwoBone degenerate = ik::solve_two_bone(shoulder, elbow, wrist, {0, 1.0f, 0}, {0, 0.5f, 0});
+    CHECK(near_eq(distance(degenerate.elbow, shoulder), 0.3f));
+    CHECK(near_eq(distance(degenerate.wrist, degenerate.elbow), 0.25f));
+}
+
 } // namespace
 
 int main() {
@@ -740,6 +789,7 @@ int main() {
     test_views_scan();
     test_blit();
     test_stereo();
+    test_ik();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }
