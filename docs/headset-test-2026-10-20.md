@@ -1,0 +1,42 @@
+# Headset test plan (2026-10-20)
+
+First test of the headset path with same-frame stereo, controllers and the skeleton probe. Everything below
+is deployed. Each step lists the `bg3vr.log` lines that answer its question, so one session gives all the
+evidence.
+
+## Before starting
+
+1. Edit `<game>\bin\bg3vr\bg3vr.ini`, section `[xr]`: `enabled = true`, `mode = mono`. (Left off so SteamVR
+   doesn't start with every launch while testing on the desktop.) `input` and `input_haptics` default to on.
+2. Start SteamVR and connect the Quest 2 (Link or Air Link), then start the game and load the save.
+
+Optional, without the game: `build\vs2026\bin\RelWithDebInfo\bg3vr_xr_test.exe --input --seconds 30` shows
+the test pattern and prints the controller profile, button presses and hand poses. It checks the
+controller code alone.
+
+## In the game
+
+| Step | Do | Look for in bg3vr.log |
+|---|---|---|
+| 1 | Wait for the first frame | `xr: session open ...`, `xr input: controller actions attached` (or a warning with the reason) |
+| 2 | Press buttons on both controllers | `xr input: ... profile /interaction_profiles/oculus/touch_controller`, `xr input: right trigger down ...`, a short buzz on each grip press |
+| 3 | `!vr_go` | `skeleton: visual ... -> skeleton ...`, the bone list, `skeleton: Head_M is bone N`, then `stereo layout on` after 3 s |
+| 4 | Put the headset on, look around, walk | both eyes show the scene; `xr: ... same-frame stereo` frame counts in reports (`!vr_fps`) |
+| 5 | Hold the hands out in front, then `!vr_hands` | `xr input: left/right ... world pos (...)`: world hand positions near the character, about 0.5 m in front of the head |
+| 6 | `!vr_hands buzz` | both controllers vibrate |
+| 7 | `!vr_fps` | `skeleton: ... reads, ... failed, ... with a pose older than the last frame` |
+
+Things to note while in the headset (just say them, the logs carry the numbers):
+- Does the world look the right size, and is the horizon level?
+- Is there a visible difference in brightness or sharpness between the eyes (shared TAA/exposure)?
+- Any flicker or a one-frame lag in one eye?
+- Head position vs. the character: too high, too low, inside the head?
+
+## What each answer decides
+
+- Hand world positions: whether `camera::tracked_to_world` places the hands correctly. Next comes the
+  physics raycast from the aim ray (waiting on agent D's scene lookup).
+- Bone list: the arm chain names for IK (`ik::solve_two_bone`) and the Skeleton slot 30 hook.
+- `Head_M` world vs. the follow position: whether the camera can follow the real head bone instead of a
+  fixed height.
+- Fresh-pose counts: whether the head is read after this frame's animation or one frame late.
