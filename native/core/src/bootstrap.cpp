@@ -154,6 +154,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
                 // Where each view's draws land, and the renderer's events, for the first frames of the layout.
                 events::arm(module, 3, 6000);
                 gpu_trace::arm(3);
+                views::diff_eye_views("stereo on");
 #if BG3VR_HAVE_OPENXR
                 headset::set_stereo(true);
 #endif

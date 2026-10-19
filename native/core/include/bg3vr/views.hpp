@@ -66,6 +66,8 @@ std::optional<std::array<std::uintptr_t, 2>> eye_views();
 // Same-frame stereo layout: the main view in the left half, the split view in the right half, both
 // enabled (on), or both back to full screen (off). Needs a completed build.
 bool set_stereo_layout(bool on);
+// Logs every 8-byte field (0..0x2D00) that differs between the main and the split view.
+void diff_eye_views(const char* why);
 
 // What points at each found view (memory scan, background thread): a list that holds view 0 but
 // not view 1 is a candidate for the list of views that get drawn.

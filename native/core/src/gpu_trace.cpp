@@ -21,7 +21,8 @@ namespace {
 // ID3D11DeviceContext vtable slots.
 constexpr std::size_t kDrawIndexed = 12, kDraw = 13, kDrawIndexedInstanced = 20, kDrawInstanced = 21,
                       kOMSetRenderTargets = 33, kOMSetRenderTargetsAndUAVs = 34, kDispatch = 41, kRSSetViewports = 44,
-                      kCopySubresourceRegion = 46, kCopyResource = 47, kClearRenderTargetView = 50;
+                      kCopySubresourceRegion = 46, kCopyResource = 47, kClearRenderTargetView = 50,
+                      kPSSetShaderResources = 8, kCSSetShaderResources = 67, kCSSetUnorderedAccessViews = 68;
 
 std::mutex g_mutex; // guards everything below; the hooks run on whichever thread uses the context
 std::atomic<bool> g_armed{false};
@@ -43,6 +44,7 @@ struct Run {
     Target target;
     D3D11_VIEWPORT viewport{};
     DWORD thread = 0;
+    std::string inputs; // shader resources (and UAVs) bound for the run's draws / dispatches
     std::uint32_t draws = 0, clears = 0, dispatches = 0;
 };
 Run g_run;
@@ -64,14 +66,59 @@ std::string describe_texture(ID3D11Resource* resource) {
     return std::format("res 0x{:X}", reinterpret_cast<std::uintptr_t>(resource));
 }
 
+// Bound shader inputs: pixel-shader resources for draws, compute-shader resources and UAVs for dispatches.
+constexpr UINT kSlots = 8;
+std::uintptr_t g_ps_srv[kSlots]{}, g_cs_srv[kSlots]{}, g_cs_uav[kSlots]{};
+std::string g_ps_text, g_cs_text;
+
+std::string short_texture(std::uintptr_t resource) {
+    if (!resource) {
+        return "-";
+    }
+    auto* r = reinterpret_cast<ID3D11Resource*>(resource);
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(r->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture)))) {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        texture->Release();
+        return std::format("{:X}:{}x{}f{}", resource & 0xFFFFFFF, desc.Width, desc.Height, static_cast<int>(desc.Format));
+    }
+    return std::format("{:X}:buf", resource & 0xFFFFFFF);
+}
+
+std::string slots_text(const std::uintptr_t* slots) {
+    std::string text;
+    for (UINT i = 0; i < kSlots; ++i) {
+        if (slots[i]) {
+            text += std::format(" {}={}", i, short_texture(slots[i]));
+        }
+    }
+    return text;
+}
+
+template <typename View>
+void note_views(std::uintptr_t* slots, UINT start, UINT count, View* const* views) {
+    for (UINT i = 0; i < count && start + i < kSlots; ++i) {
+        slots[start + i] = 0;
+        if (views && views[i]) {
+            ID3D11Resource* resource = nullptr;
+            views[i]->GetResource(&resource);
+            if (resource) {
+                slots[start + i] = reinterpret_cast<std::uintptr_t>(resource);
+                resource->Release(); // the view keeps it alive while bound
+            }
+        }
+    }
+}
+
 void close_run() {
     if (g_run_open && (g_run.draws || g_run.clears || g_run.dispatches)) {
         g_lines.push_back(std::format("  t{} rt 0x{:X} {}x{} fmt {} (x{}) vp ({:.0f},{:.0f} {:.0f}x{:.0f}) draws {} clears {} "
-                                      "dispatches {}",
+                                      "dispatches {} in[{} ]",
                                       g_run.thread, g_run.target.resource, g_run.target.width, g_run.target.height,
                                       static_cast<int>(g_run.target.format), g_run.target.count, g_run.viewport.TopLeftX,
                                       g_run.viewport.TopLeftY, g_run.viewport.Width, g_run.viewport.Height, g_run.draws,
-                                      g_run.clears, g_run.dispatches));
+                                      g_run.clears, g_run.dispatches, g_run.inputs));
     }
     g_run_open = false;
 }
@@ -105,12 +152,12 @@ bool active() {
     return g_lines.size() < 4000;
 }
 
-Run& run() {
-    if (!g_run_open || g_run.target.resource != g_target.resource || g_run.viewport.TopLeftX != g_viewport.TopLeftX ||
+Run& run(const std::string& inputs) {
+    if (!g_run_open || g_run.inputs != inputs || g_run.target.resource != g_target.resource || g_run.viewport.TopLeftX != g_viewport.TopLeftX ||
         g_run.viewport.TopLeftY != g_viewport.TopLeftY || g_run.viewport.Width != g_viewport.Width ||
         g_run.viewport.Height != g_viewport.Height || g_run.thread != GetCurrentThreadId()) {
         close_run();
-        g_run = {g_target, g_viewport, GetCurrentThreadId()};
+        g_run = {g_target, g_viewport, GetCurrentThreadId(), inputs};
         g_run_open = true;
     }
     return g_run;
@@ -140,7 +187,7 @@ void note_targets(UINT count, ID3D11RenderTargetView* const* views) {
     resource->Release();
 }
 
-safetyhook::InlineHook g_hooks[11];
+safetyhook::InlineHook g_hooks[14];
 
 void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
                                               ID3D11DepthStencilView* depth) {
@@ -175,7 +222,7 @@ void STDMETHODCALLTYPE rs_set_viewports(ID3D11DeviceContext* self, UINT count, c
 void count_draw() {
     std::scoped_lock lock(g_mutex);
     if (active()) {
-        ++run().draws;
+        ++run(slots_text(g_ps_srv)).draws;
     }
 }
 void STDMETHODCALLTYPE draw(ID3D11DeviceContext* self, UINT vertices, UINT start) {
@@ -199,7 +246,7 @@ void STDMETHODCALLTYPE dispatch(ID3D11DeviceContext* self, UINT x, UINT y, UINT 
     {
         std::scoped_lock lock(g_mutex);
         if (active()) {
-            ++run().dispatches;
+            ++run(" cs" + slots_text(g_cs_srv) + " uav" + slots_text(g_cs_uav)).dispatches;
         }
     }
     g_hooks[7].call<void>(self, x, y, z);
@@ -246,6 +293,37 @@ void STDMETHODCALLTYPE copy_subresource_region(ID3D11DeviceContext* self, ID3D11
     g_hooks[10].call<void>(self, destination, dst_sub, x, y, z, source, src_sub, box);
 }
 
+void STDMETHODCALLTYPE ps_set_shader_resources(ID3D11DeviceContext* self, UINT start, UINT count,
+                                               ID3D11ShaderResourceView* const* views) {
+    {
+        std::scoped_lock lock(g_mutex);
+        if (active()) {
+            note_views(g_ps_srv, start, count, views);
+        }
+    }
+    g_hooks[11].call<void>(self, start, count, views);
+}
+void STDMETHODCALLTYPE cs_set_shader_resources(ID3D11DeviceContext* self, UINT start, UINT count,
+                                               ID3D11ShaderResourceView* const* views) {
+    {
+        std::scoped_lock lock(g_mutex);
+        if (active()) {
+            note_views(g_cs_srv, start, count, views);
+        }
+    }
+    g_hooks[12].call<void>(self, start, count, views);
+}
+void STDMETHODCALLTYPE cs_set_unordered_access_views(ID3D11DeviceContext* self, UINT start, UINT count,
+                                                     ID3D11UnorderedAccessView* const* views, const UINT* initial) {
+    {
+        std::scoped_lock lock(g_mutex);
+        if (active()) {
+            note_views(g_cs_uav, start, count, views);
+        }
+    }
+    g_hooks[13].call<void>(self, start, count, views, initial);
+}
+
 bool install() {
     ID3D11Device* device = render::device();
     if (!device) {
@@ -270,6 +348,9 @@ bool install() {
         {kClearRenderTargetView, reinterpret_cast<void*>(&clear_render_target_view)},
         {kCopyResource, reinterpret_cast<void*>(&copy_resource)},
         {kCopySubresourceRegion, reinterpret_cast<void*>(&copy_subresource_region)},
+        {kPSSetShaderResources, reinterpret_cast<void*>(&ps_set_shader_resources)},
+        {kCSSetShaderResources, reinterpret_cast<void*>(&cs_set_shader_resources)},
+        {kCSSetUnorderedAccessViews, reinterpret_cast<void*>(&cs_set_unordered_access_views)},
     };
     bool ok = true;
     for (std::size_t i = 0; i < std::size(targets); ++i) {

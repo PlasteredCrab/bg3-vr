@@ -192,6 +192,7 @@ void give_scene(std::uintptr_t view) {
     mem::try_copy(&ready, after + 8, 1);
     log::info("views:   set-player-view-scene steps {}; [view+0x2B10] now 0x{:X} (byte +8 = {})",
               faulted ? std::format("FAULTED at step {}", faulted) : std::string("done"), after, ready);
+    diff_eye_views("after scene");
 }
 
 // On the game thread: the pending SetCamera, if the view's vtable has the expected function there.
@@ -1488,6 +1489,38 @@ void set_split_index(int index) {
 void set_full_setup(bool on) {
     g_full_setup.store(on);
     log::info("views: build uses {}", on ? "the game's full view setup (0x588E50)" : "the stage lists only (0x3AC4EA0)");
+}
+
+void diff_eye_views(const char* why) {
+    std::optional<std::array<std::uintptr_t, 2>> eyes;
+    {
+        std::scoped_lock lock(g_mutex);
+        eyes = g_eye_views;
+    }
+    if (!eyes) {
+        return;
+    }
+    constexpr std::size_t kBytes = 0x2D00;
+    std::vector<std::uint64_t> a(kBytes / 8), b(kBytes / 8);
+    if (!mem::try_copy(a.data(), (*eyes)[0], kBytes) || !mem::try_copy(b.data(), (*eyes)[1], kBytes)) {
+        log::warn("fields [{}]: views unreadable", why);
+        return;
+    }
+    int shown = 0;
+    std::string zero_in_split;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (a[i] == b[i]) {
+            continue;
+        }
+        if (b[i] == 0 && a[i] != 0) {
+            zero_in_split += std::format(" +0x{:X}", i * 8);
+        }
+        if (shown < 700) {
+            log::info("fields [{}]: +0x{:04X} main {:016X} split {:016X}", why, i * 8, a[i], b[i]);
+            ++shown;
+        }
+    }
+    log::info("fields [{}]: {} differing qwords shown; set in main, zero in split:{}", why, shown, zero_in_split);
 }
 
 std::optional<std::array<std::uintptr_t, 2>> eye_views() {
