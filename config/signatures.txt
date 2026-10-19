@@ -84,3 +84,8 @@ job_context_init = 48 89 5C 24 08 48 89 7C 24 10 55 48 8B EC 48 83 EC 50 48 8B D
 view_set_scene = 48 89 5C 24 18 48 89 54 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC F0 00 00 00 4C 8B F1
 # Releases a handle id into a pool (0x41950A0; rcx = [DAT_14604B2E0]+0xC600, rdx = &id), as 0x17F8160 does.
 id_pool_release = 40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 38 48 8B DA
+# A view's atmosphere (0x3CC9700) and lighting (0x3CCAAC0): rcx = view, rdx = source (resource, or another view's
+# active copy at +0x28A0 / +0x28D8), r8 = &id, xmm3 = blend time, [rsp+28] = flag. The split view gets the main
+# view's after its scene (views.cpp copy_environment).
+view_set_atmosphere = 48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 68 A9 48 81 EC A8 00 00 00 0F 29 70 A8 0F 29 78 98 44 0F 29 40 88
+view_set_lighting = 48 89 5C 24 20 55 57 41 56 48 81 EC 90 00 00 00

@@ -284,3 +284,22 @@ The job system, from decompiles:
 
   With no second player, index 1 sees no lights and uses resources that are never filled.
 - **Change:** build with index 1, which gets stage 0x44, then render as index 0 ([views] split_index).
+
+## White split view: level-default environment; flicker: shared temporal buffers (2026-10-19, live)
+
+- **The white.** The field diff (main vs split) shows the split view with its own atmosphere and lighting
+  objects (+0x2880..+0x28D8). Those are the level defaults the scene step attached (0x3CC9D30 /
+  0x3CCAFA0). The per-view constants differ accordingly (PerView far 20000 vs 5000; +0x2420 and
+  +0x2C00..+0x2CF0 empty).
+- **How the game applies environments.** 0x1E1DF90 (atmosphere) and 0x1E1E1D0 (lighting) update every view
+  of every RenderFrame whose camera ID matches the request's and which has a scene, only when a request
+  comes (an environment trigger). The setters 0x3CC9700 / 0x3CCAAC0 keep three copies of the source each:
+  from +0x2880, to +0x2890, active +0x28A0 (lighting +0x28B8 / +0x28C8 / +0x28D8), with the source's
+  layout (id at +8). copy_environment passes the main view's active copies to the split view with no
+  blend.
+- **The flicker.** The GPU trace with shader inputs shows the two views sharing full-size targets, each
+  writing its half, as split-screen does. A few cross-frame resources are written in full by both, e.g.
+  the 214x120 luminance textures that feed exposure: the split view writes them last, and the main view
+  reads them at the start of the next frame. The main view's exposure therefore follows the split view's
+  (white) image. With index 1, per-player resources would keep these apart.
+- **Screen capture:** 12 frames in re-local\captures\ show the left half swapping regions between frames.

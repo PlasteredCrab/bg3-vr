@@ -145,6 +145,84 @@ int call_set_scene(const SceneCall& call) {
     }
 }
 
+// The main view's current atmosphere and lighting into the split view. The game applies them per view
+// (0x1E1DF90 / 0x1E1E1D0: every view whose camera matches gets 0x3CC9700 / 0x3CCAAC0 when a request
+// comes, e.g. an atmosphere trigger), so the split view, which joins later, kept the level defaults the
+// scene step gave it (white; PerView far 20000 vs 5000, field diff 2026-10-19). Each setter keeps copies
+// of the resource it's given (from +0x2880 / to +0x2890 / active +0x28A0; lighting +0x28B8 / +0x28C8 /
+// +0x28D8), made by 0x1B76AA0 with the resource's layout (id at +8): the main view's active copies are
+// passed as the source, with no blend.
+using SetEnvironmentFn = bool (*)(std::uintptr_t view, std::uintptr_t source, std::int32_t* id, float blend, bool flag);
+constexpr std::uint32_t kSetAtmosphereRva = 0x3CC9700, kSetLightingRva = 0x3CCAAC0;
+
+int call_set_environment(SetEnvironmentFn set_atmosphere, SetEnvironmentFn set_lighting, ReleaseIdFn release_id,
+                         std::uintptr_t pool, std::uintptr_t view, std::uintptr_t atmosphere, std::uintptr_t lighting) {
+    int step = 1;
+    __try {
+        std::int32_t id = -1;
+        if (atmosphere) {
+            set_atmosphere(view, atmosphere, &id, 0.0f, false);
+            if (id != -1) {
+                release_id(pool, &id);
+            }
+        }
+        step = 2;
+        id = -1;
+        if (lighting) {
+            set_lighting(view, lighting, &id, 0.0f, false);
+            if (id != -1) {
+                release_id(pool, &id);
+            }
+        }
+        return 0;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                  : EXCEPTION_CONTINUE_SEARCH) {
+        return step;
+    }
+}
+
+void copy_environment(std::uintptr_t view) {
+    const auto set_atmosphere = sig::lookup("view_set_atmosphere");
+    const auto set_lighting = sig::lookup("view_set_lighting");
+    const auto release_id = sig::lookup("id_pool_release");
+    const std::uintptr_t base = g_module.base;
+    if (!set_atmosphere || *set_atmosphere - base != kSetAtmosphereRva || !set_lighting ||
+        *set_lighting - base != kSetLightingRva || !release_id || *release_id - base != kReleaseIdRva) {
+        log::warn("views: the atmosphere / lighting setters aren't where this build has them; not copying");
+        return;
+    }
+    std::optional<std::array<std::uintptr_t, 2>> eyes;
+    {
+        std::scoped_lock lock(g_mutex);
+        eyes = g_eye_views;
+    }
+    if (!eyes) {
+        return;
+    }
+    std::uintptr_t atmosphere = 0, lighting = 0, pool_global = 0;
+    std::int32_t atmosphere_id = -1, lighting_id = -1;
+    mem::try_copy(&atmosphere, (*eyes)[0] + 0x28A0, sizeof(atmosphere));
+    mem::try_copy(&lighting, (*eyes)[0] + 0x28D8, sizeof(lighting));
+    mem::try_copy(&atmosphere_id, atmosphere + 8, sizeof(atmosphere_id));
+    mem::try_copy(&lighting_id, lighting + 8, sizeof(lighting_id));
+    mem::try_copy(&pool_global, base + kIdPoolGlobalRva, sizeof(pool_global));
+    log::info("views: environment from the main view: atmosphere 0x{:X} (id {}), lighting 0x{:X} (id {})", atmosphere,
+              atmosphere_id, lighting, lighting_id);
+    const int faulted = call_set_environment(reinterpret_cast<SetEnvironmentFn>(*set_atmosphere),
+                                             reinterpret_cast<SetEnvironmentFn>(*set_lighting),
+                                             reinterpret_cast<ReleaseIdFn>(*release_id), pool_global + 0xC600, view,
+                                             atmosphere, lighting);
+    std::uintptr_t split_atmosphere = 0, split_lighting = 0;
+    std::int32_t split_atmosphere_id = -1, split_lighting_id = -1;
+    mem::try_copy(&split_atmosphere, view + 0x28A0, sizeof(split_atmosphere));
+    mem::try_copy(&split_lighting, view + 0x28D8, sizeof(split_lighting));
+    mem::try_copy(&split_atmosphere_id, split_atmosphere + 8, sizeof(split_atmosphere_id));
+    mem::try_copy(&split_lighting_id, split_lighting + 8, sizeof(split_lighting_id));
+    log::info("views:   {}; split view's active atmosphere id now {}, lighting id {}",
+              faulted ? std::format("FAULTED at step {}", faulted) : std::string("copied"), split_atmosphere_id,
+              split_lighting_id);
+}
+
 void give_scene(std::uintptr_t view) {
     const auto set_scene = sig::lookup("view_set_scene");
     const auto release_id = sig::lookup("id_pool_release");
@@ -192,6 +270,7 @@ void give_scene(std::uintptr_t view) {
     mem::try_copy(&ready, after + 8, 1);
     log::info("views:   set-player-view-scene steps {}; [view+0x2B10] now 0x{:X} (byte +8 = {})",
               faulted ? std::format("FAULTED at step {}", faulted) : std::string("done"), after, ready);
+    copy_environment(view);
     diff_eye_views("after scene");
 }
 
