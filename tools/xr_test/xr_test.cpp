@@ -11,6 +11,8 @@
 //                                  1920x1080 R8G8B8A8_UNORM texture (standing in for the back buffer),
 //                                  copies it into a quad swapchain and shows it as a 3 m screen 2.5 m
 //                                  ahead, as headset.cpp does with [xr] enabled = true.
+//   --panel                        (implies --input) also shows a 25 cm test panel on the left wrist: the
+//                                  quad layer the game's UI will use, attached to the left grip space.
 //   --input                        (with either session mode) also reads the motion controllers through the
 //                                  same actions the game uses: prints the bound profile, every button press
 //                                  and release, and both hands' grip poses each second; a grip press buzzes
@@ -71,7 +73,7 @@ constexpr int32_t kQuadWidth = 1920;
 constexpr int32_t kQuadHeight = 1080;
 constexpr DXGI_FORMAT kQuadFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-int run(bool probe_only, bool quad, bool input, double seconds) {
+int run(bool probe_only, bool quad, bool input, bool panel, double seconds) {
     bg3vr::xr::System system;
     std::string error;
     const auto status = bg3vr::xr::open(system, error);
@@ -163,6 +165,21 @@ int run(bool probe_only, bool quad, bool input, double seconds) {
                 std::printf("input: %s\n", error.c_str());
                 input = false;
             }
+            if (panel && input && session.create_panel(512, 384, error)) {
+                bg3vr::xr::PanelPlacement place;
+                place.anchor = bg3vr::xr::PanelPlacement::Anchor::LeftGrip;
+                // Grip space: -Z points along the extended index finger, +Y up, +X normal to the palm. The quad
+                // sits 6 cm above and 8 cm behind the grip (toward the wrist); its face (+Z) is turned 60 degrees
+                // up about X, so it faces the eyes when the forearm is raised like reading a watch.
+                place.pose.position = {0.0f, 0.06f, 0.08f};
+                place.pose.orientation = {-0.5f, 0.0f, 0.0f, 0.8660254f};
+                place.width_m = 0.25f;
+                session.set_panel(place);
+                std::printf("panel: 512x384 on the left wrist\n");
+            } else if (panel) {
+                std::printf("panel: %s\n", input ? error.c_str() : "needs input");
+                panel = false;
+            }
             bg3vr::xr::Hand hands[2]{}, last_hands[2]{};
             const auto start = std::chrono::steady_clock::now();
             auto last_report = start;
@@ -225,6 +242,11 @@ int run(bool probe_only, bool quad, bool input, double seconds) {
                 }
 
                 const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(elapsed * 3.0));
+                if (panel && frame.state.shouldRender) {
+                    const auto image = session.acquire_panel();
+                    draw_pattern(context, context1, image.view, 1, 512, 384, pulse);
+                    session.release_panel();
+                }
                 if (quad) {
                     if (frame.state.shouldRender) {
                         draw_pattern(context, context1, source_view, 0, kQuadWidth, kQuadHeight, pulse);
@@ -293,6 +315,7 @@ int main(int argc, char** argv) {
     bool probe_only = false;
     bool quad = false;
     bool input = false;
+    bool panel = false;
     double seconds = 15.0;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -302,12 +325,15 @@ int main(int argc, char** argv) {
             quad = true;
         } else if (arg == "--input") {
             input = true;
+        } else if (arg == "--panel") {
+            input = true;
+            panel = true;
         } else if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::atof(argv[++i]);
         } else {
-            std::fprintf(stderr, "usage: bg3vr_xr_test [--probe] [--quad] [--input] [--seconds N]\n");
+            std::fprintf(stderr, "usage: bg3vr_xr_test [--probe] [--quad] [--input] [--panel] [--seconds N]\n");
             return 1;
         }
     }
-    return run(probe_only, quad, input, seconds);
+    return run(probe_only, quad, input, panel, seconds);
 }

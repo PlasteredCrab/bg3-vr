@@ -12,6 +12,7 @@
 #include <openxr/openxr_platform.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,6 +63,15 @@ struct Hand {
     bool menu = false;        // menu button (left on Touch)
 };
 enum HandIndex : std::size_t { kLeft = 0, kRight = 1 };
+
+// Where the panel layer (Session::create_panel) is shown: a pose in the session's LOCAL space, or relative to a
+// hand's grip (the runtime then keeps it on the controller with no added latency). Width in metres; the height
+// follows the panel image's aspect ratio.
+struct PanelPlacement {
+    enum class Anchor { Local, LeftGrip, RightGrip } anchor = Anchor::Local;
+    XrPosef pose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}};
+    float width_m = 0.3f;
+};
 
 struct EyeImage {
     ID3D11Texture2D* texture = nullptr;
@@ -130,6 +140,15 @@ public:
     std::string interaction_profile(std::size_t hand) const;
     bool take_profile_changed() { return std::exchange(profile_changed_, false); }
 
+    // A second quad layer drawn over the eye views with source alpha (premultiplied), e.g. the game's UI on a
+    // wrist or world panel. Hand anchors need create_input(). Shown while set_panel holds a placement and an
+    // image has been released at least once.
+    bool create_panel(int32_t width, int32_t height, std::string& error);
+    EyeImage acquire_panel();
+    void release_panel();
+    void set_panel(std::optional<PanelPlacement> placement) { panel_placement_ = placement; }
+    bool has_panel() const { return panel_.swapchain != XR_NULL_HANDLE; }
+
     std::size_t view_count() const { return eyes_.size(); }
     int32_t width(std::size_t index) const { return eyes_[index].width; }
     int32_t height(std::size_t index) const { return eyes_[index].height; }
@@ -154,6 +173,12 @@ private:
 
     bool create_swapchain(Eye& eye, std::string& error);
     void destroy_input();
+    // The panel's quad layer, if it should be shown; false otherwise.
+    bool panel_layer(XrCompositionLayerQuad& layer) const;
+
+    Eye panel_;
+    bool panel_ready_ = false; // an image was released
+    std::optional<PanelPlacement> panel_placement_;
 
     XrActionSet action_set_ = XR_NULL_HANDLE;
     XrPath hand_paths_[2]{};

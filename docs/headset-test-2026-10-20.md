@@ -12,7 +12,8 @@ evidence.
 
 Optional, without the game: `build\vs2026\bin\RelWithDebInfo\bg3vr_xr_test.exe --input --seconds 30` shows
 the test pattern and prints the controller profile, button presses and hand poses. It checks the
-controller code alone.
+controller code alone. `--panel` adds a 25 cm test panel on the left wrist (the layer the game UI will use):
+it should stay on the controller with no lag, the pattern drawn over the scene.
 
 Also possible on the desktop, without the headset: `!vr_ray camera` casts from the screen centre. Aim at
 the same kinds of things and then run `!vr_ray off`.
