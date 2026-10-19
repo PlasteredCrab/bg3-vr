@@ -94,6 +94,106 @@ bool call_set_camera(SetCameraFn fn, std::uintptr_t view, std::uintptr_t control
     }
 }
 
+// Giving the split view the level's scene, as the game's set-player-view-scene (0x17F8160) does for a
+// player's view: the stage prepare (0x17DA690, used by every view stage) runs a stage only when
+// [view+0x2B10] (the view's scene) is set and its byte +8 is set; the split view, a copy of the special
+// view, has none, so its 28 stages issued no GPU work (gpu trace, 2026-10-19). 0x17F8160 for a found view:
+// 0x3CCC550(view, scene) with scene = [[DAT_146007A28]+0x90]+0x28 (what the add-player path 0x17F5CB0
+// passes), then 0x3CC9D30(view, X+0x28, &id, 0.0f, false), releasing id via 0x41950A0([DAT_14604B2E0]+0xC600,
+// &id) when set, then 0x3CCAFA0(view, X+0x24, &id, 0.0f, false), X = [[[level+0x18]+8].
+using SetSceneFn = void (*)(std::uintptr_t view, std::uintptr_t scene);
+using AttachFn = void (*)(std::uintptr_t view, std::uintptr_t what, std::int32_t* id, float zero, bool flag);
+using ReleaseIdFn = void (*)(std::uintptr_t pool, std::int32_t* id);
+constexpr std::uint32_t kSetSceneRva = 0x3CCC550, kAttachARva = 0x3CC9D30, kAttachBRva = 0x3CCAFA0,
+                        kReleaseIdRva = 0x41950A0, kLevelGlobalRva = 0x6007A28, kIdPoolGlobalRva = 0x604B2E0;
+// 0x3CC9D30 and 0x3CCAFA0 share their first bytes (no unique signature): checked by prologue instead.
+constexpr std::uint8_t kAttachPrologue[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x10,
+                                            0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x40};
+
+bool prologue_matches(std::uintptr_t address) {
+    std::uint8_t bytes[sizeof(kAttachPrologue)]{};
+    return mem::try_copy(bytes, address, sizeof(bytes)) && std::memcmp(bytes, kAttachPrologue, sizeof(bytes)) == 0;
+}
+
+struct SceneCall {
+    std::uintptr_t view, scene, x;
+    SetSceneFn set_scene;
+    AttachFn attach_a, attach_b;
+    ReleaseIdFn release_id;
+    std::uintptr_t id_pool;
+};
+
+// SEH only (no destructors): the three calls 0x17F8160 makes. Returns the step that faulted, or 0.
+int call_set_scene(const SceneCall& call) {
+    int step = 1;
+    __try {
+        call.set_scene(call.view, call.scene);
+        step = 2;
+        std::int32_t id = -1;
+        call.attach_a(call.view, call.x + 0x28, &id, 0.0f, false);
+        if (id != -1) {
+            step = 3;
+            call.release_id(call.id_pool, &id);
+        }
+        step = 4;
+        id = -1;
+        call.attach_b(call.view, call.x + 0x24, &id, 0.0f, false);
+        return 0;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                  : EXCEPTION_CONTINUE_SEARCH) {
+        return step;
+    }
+}
+
+void give_scene(std::uintptr_t view) {
+    const auto set_scene = sig::lookup("view_set_scene");
+    const auto release_id = sig::lookup("id_pool_release");
+    const std::uintptr_t base = g_module.base;
+    if (!set_scene || *set_scene - base != kSetSceneRva || !release_id || *release_id - base != kReleaseIdRva ||
+        !prologue_matches(base + kAttachARva) || !prologue_matches(base + kAttachBRva)) {
+        log::warn("views: the scene functions aren't where this build has them; the split view gets no scene");
+        return;
+    }
+    std::uintptr_t level_global = 0, level = 0, scene = 0, x18 = 0, x = 0, pool_global = 0, main_scene = 0;
+    mem::try_copy(&level_global, base + kLevelGlobalRva, sizeof(level_global));
+    mem::try_copy(&level, level_global + 0x90, sizeof(level));
+    mem::try_copy(&scene, level + 0x28, sizeof(scene));
+    mem::try_copy(&x18, level + 0x18, sizeof(x18));
+    mem::try_copy(&x, x18 + 0x08, sizeof(x));
+    mem::try_copy(&pool_global, base + kIdPoolGlobalRva, sizeof(pool_global));
+    std::optional<std::array<std::uintptr_t, 2>> eyes;
+    {
+        std::scoped_lock lock(g_mutex);
+        eyes = g_eye_views;
+    }
+    if (eyes) {
+        mem::try_copy(&main_scene, (*eyes)[0] + 0x2B10, sizeof(main_scene));
+    }
+    std::uintptr_t before = 0;
+    mem::try_copy(&before, view + 0x2B10, sizeof(before));
+    log::info("views: scene for view 0x{:X}: level 0x{:X}, level scene 0x{:X} (main view's 0x{:X}), split view had 0x{:X}",
+              view, level, scene, main_scene, before);
+    if (!level || !scene || !x || !pool_global) {
+        log::warn("views:   no level scene to give it");
+        return;
+    }
+    const SceneCall call{view,
+                         scene,
+                         x,
+                         reinterpret_cast<SetSceneFn>(*set_scene),
+                         reinterpret_cast<AttachFn>(base + kAttachARva),
+                         reinterpret_cast<AttachFn>(base + kAttachBRva),
+                         reinterpret_cast<ReleaseIdFn>(*release_id),
+                         pool_global + 0xC600};
+    const int faulted = call_set_scene(call);
+    std::uintptr_t after = 0;
+    std::uint8_t ready = 0;
+    mem::try_copy(&after, view + 0x2B10, sizeof(after));
+    mem::try_copy(&ready, after + 8, 1);
+    log::info("views:   set-player-view-scene steps {}; [view+0x2B10] now 0x{:X} (byte +8 = {})",
+              faulted ? std::format("FAULTED at step {}", faulted) : std::string("done"), after, ready);
+}
+
 // On the game thread: the pending SetCamera, if the view's vtable has the expected function there.
 void apply_pending_camera() {
     std::uintptr_t view = 0, controller = 0;
@@ -123,6 +223,7 @@ void apply_pending_camera() {
     mem::try_copy(&after, view + kReadStateInView + state::kSize + state::kController, sizeof(after));
     log::info("views: SetCamera(view 0x{:X}, camera 0x{:X}) {}; WriteState camera now 0x{:X} (was 0x{:X})", view,
               controller, ok ? "returned" : "FAULTED (caught)", after, current);
+    give_scene(view);
 }
 
 void write_state(std::uintptr_t state_address, const Override& o) {

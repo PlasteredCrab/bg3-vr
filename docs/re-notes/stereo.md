@@ -230,3 +230,40 @@ The job system, from decompiles:
 - **The index matters.** About 60 places read [view+0x2268], most of them stage code. The split view (a
   copy of the special view) had index 0, so it probably renders as player 1. The build now sets it to 1
   before 0x588E50, the game's order.
+
+## Why the split view drew nothing: no scene (gpu trace + decompiles, 2026-10-19)
+
+- **What the GPU trace showed.** The main view's stages issue all the frame's GPU work, in viewport
+  (0,0 960x1080). The split view's 28 stages wait in end-recording but issue nothing: no draw, dispatch,
+  clear or copy.
+- **The stage gate.** Every view stage's prepare (slot 5) calls 0x17DA690, which sets the stage's per-frame
+  flag (+0x18) only when all of these hold:
+  - the stage's init succeeded (+0x19);
+  - the view's ReadState.Enabled is set;
+  - frame+0x42F0 is set;
+  - the view's vtable slot 13 returns true;
+  - **[view+0x2B10] is non-null and its byte +8 is set**;
+  - a global flag is set;
+  - the view has a camera (+0x21D8).
+
+  Some prepares add more checks: 0x18125B0 needs [view+0x2B10] to equal a world entry's +0x28, and
+  0x17DB4C0 checks [view+0x2B10]+0x48. The base execute 0x3CD4300 submits the stage's job only when +0x18
+  is set.
+- **The scene setter.** [view+0x2B10] is the view's scene, set by 0x3CCC550(view, scene). The setter
+  releases the old per-scene entries (+0x2968..+0x2988), rebuilds dependent state (0x3CC9530, 0x3CC92B0),
+  sets +0x2B08 and creates +0x2B18.
+- **How the game gives a player's view a scene.** The game's set-player-view-scene, 0x17F8160(…, player,
+  scene, …), finds the player's view through the manager (0x3BAAE20), or queues itself. For a found view
+  it calls:
+  1. 0x3CCC550(view, scene);
+  2. 0x3CC9D30(view, X+0x28, &id, 0.0f, false), releasing id via 0x41950A0([DAT_14604B2E0]+0xC600, &id);
+  3. 0x3CCAFA0(view, X+0x24, &id, 0.0f, false).
+
+  Here X = [[level+0x18]+8] and level = [DAT_146007A28]+0x90. The add-player path 0x17F5CB0 passes scene =
+  [level+0x28]. 0x3BAA680 (remove local player) and the player-view holders (0x1B72D50, 0x1B740F0,
+  0x1B75FC0, 0x1B76070) also call the setter.
+- **Split-screen systems.** The exe names `ecl::splitscreen::{ViewSystem, RenderViewportSystem,
+  RequestSystem, SplitReasonsSystem}` and `ecl::splitscreen::{Players, View}SingletonComponent`.
+  ForceSplitscreen is a GlobalSwitches property at +0x110 (registered by 0x2137110).
+- **What changed:** after SetCamera, the build runs the same three calls on the split view, on the game
+  thread, and logs the scene before and after.

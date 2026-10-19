@@ -77,3 +77,10 @@ game_allocator = 48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 0F 85 ?? ?? ?? ?? 48 
 allocator_alloc = 48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 54 41 55 41 56 41 57 48 83 EC 20 BD E0 00 00 00
 # Job context init (0x40878C0): rcx = the zeroed 0x88-byte context; creates its 17 job counters.
 job_context_init = 48 89 5C 24 08 48 89 7C 24 10 55 48 8B EC 48 83 EC 50 48 8B D9
+
+# A view's scene (0x3CCC550; rcx = view, rdx = scene): writes [view+0x2B10] and rebuilds what depends on it.
+# Every view stage's prepare (0x17DA690) requires it. Used for the split view after SetCamera, as the game's
+# set-player-view-scene 0x17F8160 does.
+view_set_scene = 48 89 5C 24 18 48 89 54 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC F0 00 00 00 4C 8B F1
+# Releases a handle id into a pool (0x41950A0; rcx = [DAT_14604B2E0]+0xC600, rdx = &id), as 0x17F8160 does.
+id_pool_release = 40 53 55 56 57 41 54 41 55 41 56 41 57 48 83 EC 38 48 8B DA
