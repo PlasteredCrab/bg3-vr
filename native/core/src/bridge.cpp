@@ -256,6 +256,11 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "hands") {
+            const std::string word = text::to_lower(value);
+            if (word == "report" || word == "buzz") {
+                request.hands = word;
+            }
         } else if (key == "probe") {
             const std::string flag = text::to_lower(value);
             request.probe = flag == "1" || flag == "true" || flag == "yes";

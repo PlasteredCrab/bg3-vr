@@ -46,6 +46,7 @@ struct Request {
     std::optional<ViewSet> view_set;                           // one view's placement or Enabled flag                            // render views: true = scan, false = dump
     std::optional<int> xr_lag;                                 // frames between camera update and present; -1 = auto
     std::optional<std::string> stereo;                         // same-frame stereo: on | off | report
+    std::optional<std::string> hands;                          // controllers: report | buzz
 };
 
 // Parses the bridge file:
@@ -63,6 +64,7 @@ struct Request {
 //   follow=<hex transform> [height]  |   follow=off
 //   recenter=1
 //   stereo=on | stereo=off | stereo=report   (same-frame stereo on the built split view)
+//   hands=report | hands=buzz        (log the motion controllers; buzz also pulses both)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

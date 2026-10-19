@@ -260,7 +260,253 @@ bool Session::end_frame_quad(const Frame& frame, float width_m, float distance_m
     return XR_SUCCEEDED(xrEndFrame(session_, &end));
 }
 
+bool Session::create_input(std::string& error) {
+    if (session_ == XR_NULL_HANDLE) {
+        error = "create_input: no session";
+        return false;
+    }
+    if (action_set_ != XR_NULL_HANDLE) {
+        return true;
+    }
+    XrActionSetCreateInfo set_info{XR_TYPE_ACTION_SET_CREATE_INFO};
+    strcpy_s(set_info.actionSetName, "bg3vr");
+    strcpy_s(set_info.localizedActionSetName, "BG3 VR");
+    XrResult result = xrCreateActionSet(instance_, &set_info, &action_set_);
+    if (XR_FAILED(result)) {
+        error = describe(instance_, "xrCreateActionSet", result);
+        return false;
+    }
+    xrStringToPath(instance_, "/user/hand/left", &hand_paths_[kLeft]);
+    xrStringToPath(instance_, "/user/hand/right", &hand_paths_[kRight]);
+
+    const auto make = [&](XrAction& action, const char* name, const char* localized, XrActionType type) {
+        XrActionCreateInfo info{XR_TYPE_ACTION_CREATE_INFO};
+        strcpy_s(info.actionName, name);
+        strcpy_s(info.localizedActionName, localized);
+        info.actionType = type;
+        info.countSubactionPaths = 2;
+        info.subactionPaths = hand_paths_;
+        const XrResult r = xrCreateAction(action_set_, &info, &action);
+        if (XR_FAILED(r)) {
+            error = describe(instance_, "xrCreateAction", r) + " (" + name + ")";
+            return false;
+        }
+        return true;
+    };
+    if (!make(grip_pose_, "grip_pose", "Hand grip pose", XR_ACTION_TYPE_POSE_INPUT) ||
+        !make(aim_pose_, "aim_pose", "Hand aim pose", XR_ACTION_TYPE_POSE_INPUT) ||
+        !make(trigger_, "trigger", "Trigger", XR_ACTION_TYPE_FLOAT_INPUT) ||
+        !make(squeeze_, "squeeze", "Grip", XR_ACTION_TYPE_FLOAT_INPUT) ||
+        !make(thumbstick_, "thumbstick", "Thumbstick", XR_ACTION_TYPE_VECTOR2F_INPUT) ||
+        !make(thumbstick_click_, "thumbstick_click", "Thumbstick click", XR_ACTION_TYPE_BOOLEAN_INPUT) ||
+        !make(primary_, "primary", "Primary button", XR_ACTION_TYPE_BOOLEAN_INPUT) ||
+        !make(secondary_, "secondary", "Secondary button", XR_ACTION_TYPE_BOOLEAN_INPUT) ||
+        !make(menu_, "menu", "Menu", XR_ACTION_TYPE_BOOLEAN_INPUT) ||
+        !make(haptic_, "haptic", "Haptics", XR_ACTION_TYPE_VIBRATION_OUTPUT)) {
+        destroy_input();
+        return false;
+    }
+
+    // Suggested bindings per controller profile; a profile the runtime rejects is skipped.
+    struct Binding {
+        XrAction action;
+        std::string path;
+    };
+    const auto suggest = [&](const char* profile, const std::vector<Binding>& bindings) {
+        XrPath profile_path = XR_NULL_PATH;
+        xrStringToPath(instance_, profile, &profile_path);
+        std::vector<XrActionSuggestedBinding> list;
+        for (const Binding& b : bindings) {
+            XrPath path = XR_NULL_PATH;
+            if (XR_SUCCEEDED(xrStringToPath(instance_, b.path.c_str(), &path))) {
+                list.push_back({b.action, path});
+            }
+        }
+        XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        suggested.interactionProfile = profile_path;
+        suggested.countSuggestedBindings = static_cast<uint32_t>(list.size());
+        suggested.suggestedBindings = list.data();
+        return XR_SUCCEEDED(xrSuggestInteractionProfileBindings(instance_, &suggested));
+    };
+    const auto both = [](XrAction action, const char* suffix) {
+        return std::vector<Binding>{{action, std::string("/user/hand/left") + suffix},
+                                    {action, std::string("/user/hand/right") + suffix}};
+    };
+    const auto join = [](std::initializer_list<std::vector<Binding>> parts) {
+        std::vector<Binding> all;
+        for (const auto& part : parts) {
+            all.insert(all.end(), part.begin(), part.end());
+        }
+        return all;
+    };
+    const auto poses = [&] {
+        return join({both(grip_pose_, "/input/grip/pose"), both(aim_pose_, "/input/aim/pose"),
+                     both(haptic_, "/output/haptic")});
+    };
+    bool any = false;
+    any |= suggest("/interaction_profiles/oculus/touch_controller",
+                   join({poses(), both(trigger_, "/input/trigger/value"), both(squeeze_, "/input/squeeze/value"),
+                         both(thumbstick_, "/input/thumbstick"), both(thumbstick_click_, "/input/thumbstick/click"),
+                         {{primary_, "/user/hand/left/input/x/click"}, {primary_, "/user/hand/right/input/a/click"},
+                          {secondary_, "/user/hand/left/input/y/click"}, {secondary_, "/user/hand/right/input/b/click"},
+                          {menu_, "/user/hand/left/input/menu/click"}}}));
+    any |= suggest("/interaction_profiles/valve/index_controller",
+                   join({poses(), both(trigger_, "/input/trigger/value"), both(squeeze_, "/input/squeeze/value"),
+                         both(thumbstick_, "/input/thumbstick"), both(thumbstick_click_, "/input/thumbstick/click"),
+                         both(primary_, "/input/a/click"), both(secondary_, "/input/b/click")}));
+    any |= suggest("/interaction_profiles/htc/vive_controller",
+                   join({poses(), both(trigger_, "/input/trigger/value"), both(squeeze_, "/input/squeeze/click"),
+                         both(thumbstick_, "/input/trackpad"), both(thumbstick_click_, "/input/trackpad/click"),
+                         both(menu_, "/input/menu/click")}));
+    any |= suggest("/interaction_profiles/khr/simple_controller",
+                   join({poses(), both(trigger_, "/input/select/click"), both(menu_, "/input/menu/click")}));
+    if (!any) {
+        error = "no controller profile's bindings were accepted";
+        destroy_input();
+        return false;
+    }
+
+    XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attach.countActionSets = 1;
+    attach.actionSets = &action_set_;
+    result = xrAttachSessionActionSets(session_, &attach);
+    if (XR_FAILED(result)) {
+        error = describe(instance_, "xrAttachSessionActionSets", result);
+        destroy_input();
+        return false;
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+        XrActionSpaceCreateInfo space_info{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        space_info.subactionPath = hand_paths_[h];
+        space_info.poseInActionSpace.orientation.w = 1.0f;
+        space_info.action = grip_pose_;
+        xrCreateActionSpace(session_, &space_info, &grip_spaces_[h]);
+        space_info.action = aim_pose_;
+        xrCreateActionSpace(session_, &space_info, &aim_spaces_[h]);
+    }
+    return true;
+}
+
+bool Session::sync_input(XrTime time, Hand (&hands)[2]) {
+    hands[kLeft] = {};
+    hands[kRight] = {};
+    if (action_set_ == XR_NULL_HANDLE || !running_) {
+        return false;
+    }
+    XrActiveActionSet active{action_set_, XR_NULL_PATH};
+    XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
+    sync.countActiveActionSets = 1;
+    sync.activeActionSets = &active;
+    const XrResult result = xrSyncActions(session_, &sync);
+    if (result != XR_SUCCESS) {
+        return false; // XR_SESSION_NOT_FOCUSED: no input this frame
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+        Hand& hand = hands[h];
+        XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};
+        get.subactionPath = hand_paths_[h];
+
+        XrActionStatePose pose_state{XR_TYPE_ACTION_STATE_POSE};
+        get.action = grip_pose_;
+        xrGetActionStatePose(session_, &get, &pose_state);
+        hand.active = pose_state.isActive == XR_TRUE;
+
+        XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+        XrSpaceLocation location{XR_TYPE_SPACE_LOCATION, &velocity};
+        if (grip_spaces_[h] != XR_NULL_HANDLE && XR_SUCCEEDED(xrLocateSpace(grip_spaces_[h], space_, time, &location))) {
+            const XrSpaceLocationFlags needed =
+                XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+            hand.grip = location.pose;
+            hand.grip_valid = (location.locationFlags & needed) == needed;
+            hand.velocity_valid = (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+            hand.linear_velocity = velocity.linearVelocity;
+            hand.angular_velocity = velocity.angularVelocity;
+        }
+        XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION};
+        if (aim_spaces_[h] != XR_NULL_HANDLE && XR_SUCCEEDED(xrLocateSpace(aim_spaces_[h], space_, time, &aim))) {
+            hand.aim = aim.pose;
+            hand.aim_valid = (aim.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+        }
+
+        XrActionStateFloat value{XR_TYPE_ACTION_STATE_FLOAT};
+        get.action = trigger_;
+        if (XR_SUCCEEDED(xrGetActionStateFloat(session_, &get, &value)) && value.isActive) {
+            hand.trigger = value.currentState;
+        }
+        value = {XR_TYPE_ACTION_STATE_FLOAT};
+        get.action = squeeze_;
+        if (XR_SUCCEEDED(xrGetActionStateFloat(session_, &get, &value)) && value.isActive) {
+            hand.squeeze = value.currentState;
+        }
+        XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};
+        get.action = thumbstick_;
+        if (XR_SUCCEEDED(xrGetActionStateVector2f(session_, &get, &stick)) && stick.isActive) {
+            hand.thumbstick = stick.currentState;
+        }
+        const auto button = [&](XrAction action) {
+            XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
+            get.action = action;
+            return XR_SUCCEEDED(xrGetActionStateBoolean(session_, &get, &state)) && state.isActive &&
+                   state.currentState == XR_TRUE;
+        };
+        hand.thumbstick_click = button(thumbstick_click_);
+        hand.primary = button(primary_);
+        hand.secondary = button(secondary_);
+        hand.menu = button(menu_);
+    }
+    return true;
+}
+
+void Session::haptic(std::size_t hand, float amplitude, float seconds, float frequency) {
+    if (action_set_ == XR_NULL_HANDLE || hand > 1) {
+        return;
+    }
+    XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+    vibration.amplitude = amplitude;
+    vibration.duration = static_cast<XrDuration>(seconds * 1e9);
+    vibration.frequency = frequency > 0.0f ? frequency : XR_FREQUENCY_UNSPECIFIED;
+    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+    info.action = haptic_;
+    info.subactionPath = hand_paths_[hand];
+    xrApplyHapticFeedback(session_, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+}
+
+std::string Session::interaction_profile(std::size_t hand) const {
+    if (action_set_ == XR_NULL_HANDLE || hand > 1) {
+        return {};
+    }
+    XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
+    if (XR_FAILED(xrGetCurrentInteractionProfile(session_, hand_paths_[hand], &state)) ||
+        state.interactionProfile == XR_NULL_PATH) {
+        return {};
+    }
+    char buffer[XR_MAX_PATH_LENGTH]{};
+    uint32_t length = 0;
+    if (XR_FAILED(xrPathToString(instance_, state.interactionProfile, sizeof(buffer), &length, buffer))) {
+        return {};
+    }
+    return buffer;
+}
+
+void Session::destroy_input() {
+    for (std::size_t h = 0; h < 2; ++h) {
+        for (XrSpace* space : {&grip_spaces_[h], &aim_spaces_[h]}) {
+            if (*space != XR_NULL_HANDLE) {
+                xrDestroySpace(*space);
+                *space = XR_NULL_HANDLE;
+            }
+        }
+    }
+    if (action_set_ != XR_NULL_HANDLE) {
+        xrDestroyActionSet(action_set_); // destroys its actions too
+        action_set_ = XR_NULL_HANDLE;
+    }
+    grip_pose_ = aim_pose_ = trigger_ = squeeze_ = thumbstick_ = thumbstick_click_ = primary_ = secondary_ = menu_ =
+        haptic_ = XR_NULL_HANDLE;
+}
+
 void Session::destroy() {
+    destroy_input();
     eyes_.push_back(quad_); // destroyed with the rest
     quad_ = {};
     for (Eye& eye : eyes_) {
@@ -302,6 +548,8 @@ bool Session::poll() {
             }
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             quit_ = true;
+        } else if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            profile_changed_ = true;
         }
         event = {XR_TYPE_EVENT_DATA_BUFFER};
     }

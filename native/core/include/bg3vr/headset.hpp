@@ -1,6 +1,10 @@
 #pragma once
 
 #include "bg3vr/config.hpp"
+#include "bg3vr/vr_math.hpp"
+
+#include <array>
+#include <cstdint>
 
 // OpenXR in the game (Phase 1 steps 2-4). With [xr] enabled = true in bg3vr.ini, the first presented
 // frame opens an OpenXR session on the game's own D3D11 device. Then, by [xr] mode:
@@ -30,5 +34,37 @@ void recenter();
 bool set_stereo(bool on);
 
 void report();
+
+// Motion controllers ([xr] input = true, the default), sampled once per submitted frame on the presenting
+// thread at the frame's predicted display time. Poses are in the headset's LOCAL space (OpenXR convention:
+// right-handed, +Y up, -Z forward, metres), like the head views before they're mapped into the game.
+struct HandState {
+    bool active = false;         // a controller is bound to this hand
+    bool tracked = false;        // grip position and orientation valid
+    vr::RigidPose grip;          // the held-object pose
+    vr::RigidPose aim;           // pointing ray (origin, -Z)
+    bool aim_valid = false;
+    vr::Vec3 velocity{};         // grip linear velocity, m/s
+    vr::Vec3 angular_velocity{}; // rad/s
+    bool velocity_valid = false;
+    float trigger = 0.0f;
+    float squeeze = 0.0f;
+    float stick_x = 0.0f;
+    float stick_y = 0.0f;
+    bool stick_click = false;
+    bool primary = false;   // A / X
+    bool secondary = false; // B / Y
+    bool menu = false;
+    std::uint64_t sample = 0; // increases with every sample (0: never sampled)
+};
+inline constexpr std::size_t kLeftHand = 0;
+inline constexpr std::size_t kRightHand = 1;
+
+// The latest sample of both hands (any thread).
+std::array<HandState, 2> hands();
+// Queues a vibration on one hand (any thread); it starts on the next submitted frame.
+void haptic(std::size_t hand, float amplitude, float seconds);
+// Logs both hands' current state and bound controller profiles; `buzz` also pulses each hand once.
+void report_hands(bool buzz);
 
 } // namespace bg3vr::headset

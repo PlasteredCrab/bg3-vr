@@ -454,6 +454,9 @@ void test_parse_bridge() {
     CHECK(bridge::parse("xr_lag=AUTO\n").xr_lag == -1);
     CHECK(!bridge::parse("xr_lag=8\n").xr_lag && !bridge::parse("xr_lag=-3\n").xr_lag && !bridge::parse("xr_lag=x\n").xr_lag);
     CHECK(!bridge::parse("pose=off\n").xr_lag);
+    CHECK(bridge::parse("hands=BUZZ\n").hands == std::string("buzz"));
+    CHECK(bridge::parse("hands=report\n").hands == std::string("report"));
+    CHECK(!bridge::parse("hands=on\n").hands);
     CHECK(bridge::parse("views=find\n").views_find == true && bridge::parse("views=DUMP\n").views_find == false);
     CHECK(!bridge::parse("views=x\n").views_find);
     CHECK(bridge::parse("views=sbs\n").views_layout == views::Layout::SideBySide &&

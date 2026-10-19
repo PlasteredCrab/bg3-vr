@@ -18,7 +18,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -78,6 +80,25 @@ int g_searches = 0;
 int g_offset_misses = 0;
 std::atomic<int> g_measured_lag{-1};
 std::atomic<bool> g_restart_search{false};
+
+// Motion controllers. Sampled and logged on the presenting thread; read anywhere through hands().
+bool g_input_wanted = true;   // [xr] input
+bool g_input_haptics = true;  // [xr] input_haptics: a short pulse on each grip press (proves haptics work)
+bool g_input = false;         // the action set was created
+std::mutex g_hands_mutex;
+std::array<HandState, 2> g_hands{};
+std::array<HandState, 2> g_logged{}; // the last state the change log compared against
+std::uint64_t g_hand_samples = 0;
+std::uint64_t g_input_unfocused = 0; // frames xrSyncActions gave no input (session not focused)
+struct HapticRequest {
+    std::atomic<bool> pending{false};
+    std::atomic<float> amplitude{0.0f};
+    std::atomic<float> seconds{0.0f};
+};
+std::array<HapticRequest, 2> g_haptics;
+std::atomic<bool> g_hands_report{false};
+std::atomic<bool> g_hands_buzz{false};
+constexpr std::uint64_t kHandLogEvery = 900; // samples between periodic pose lines (~10 s at 90 Hz)
 std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 bool g_was_driven = false;
 
@@ -350,6 +371,19 @@ void start(IDXGISwapChain* swapchain) {
     g_image_width = desc.BufferDesc.Width;
     g_image_height = desc.BufferDesc.Height;
     g_rendered.assign(2, {XR_TYPE_VIEW});
+    if (g_input_wanted) {
+        std::string input_error;
+        g_input = g_session->create_input(input_error);
+        if (g_input) {
+            log::info("xr input: controller actions attached (Touch, Index, Vive and simple profiles suggested); "
+                      "changes are logged as 'xr input:' lines, poses every {} frames",
+                      kHandLogEvery);
+        } else {
+            log::warn("xr input: no controllers ({}); the headset still works", input_error);
+        }
+    } else {
+        log::info("xr input: off ([xr] input = false)");
+    }
     log::info("xr: session open on '{}', mode {}: images {}x{} format {} (game back buffer format {}, {}{}); screen "
               "{:.1f} m wide at {:.1f} m",
               adapter, mode_name(g_mode), width, height, static_cast<int>(g_session->format()),
@@ -503,6 +537,138 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
     }
 }
 
+const char* hand_name(std::size_t hand) {
+    return hand == kLeftHand ? "left" : "right";
+}
+
+std::string pose_text(const vr::RigidPose& pose) {
+    return std::format("pos ({:.3f}, {:.3f}, {:.3f}) rot ({:.3f}, {:.3f}, {:.3f}, {:.3f})", pose.position[0],
+                       pose.position[1], pose.position[2], pose.orientation[0], pose.orientation[1],
+                       pose.orientation[2], pose.orientation[3]);
+}
+
+std::string hand_text(const HandState& hand) {
+    return std::format("{}{} grip {} | aim {}{} | vel ({:.2f}, {:.2f}, {:.2f}) ang ({:.2f}, {:.2f}, {:.2f}){} | trigger "
+                       "{:.2f} squeeze {:.2f} stick ({:.2f}, {:.2f}){}{}{}{}",
+                       hand.active ? "active" : "inactive", hand.tracked ? " tracked" : " untracked",
+                       pose_text(hand.grip), pose_text(hand.aim), hand.aim_valid ? "" : " (invalid)",
+                       hand.velocity[0], hand.velocity[1], hand.velocity[2], hand.angular_velocity[0],
+                       hand.angular_velocity[1], hand.angular_velocity[2], hand.velocity_valid ? "" : " (invalid)",
+                       hand.trigger, hand.squeeze, hand.stick_x, hand.stick_y, hand.stick_click ? " stick-click" : "",
+                       hand.primary ? " primary" : "", hand.secondary ? " secondary" : "", hand.menu ? " menu" : "");
+}
+
+void log_profiles() {
+    for (std::size_t h = 0; h < 2; ++h) {
+        const std::string profile = g_session->interaction_profile(h);
+        log::info("xr input: {} hand profile {}", hand_name(h), profile.empty() ? "(none)" : profile);
+    }
+}
+
+// Logs what changed on one hand since the last sample: presence, tracking, buttons, analog presses.
+void log_hand_changes(std::size_t h, const HandState& before, const HandState& now) {
+    const char* name = hand_name(h);
+    if (before.active != now.active) {
+        log::info("xr input: {} controller {}", name, now.active ? "connected" : "gone");
+    }
+    if (before.tracked != now.tracked) {
+        log::info("xr input: {} grip {} ({})", name, now.tracked ? "tracked" : "lost", pose_text(now.grip));
+    }
+    const auto edge = [&](const char* what, bool was, bool is) {
+        if (was != is) {
+            log::info("xr input: {} {} {} | {}", name, what, is ? "down" : "up", hand_text(now));
+        }
+    };
+    edge("trigger", before.trigger > 0.5f, now.trigger > 0.5f);
+    edge("squeeze", before.squeeze > 0.5f, now.squeeze > 0.5f);
+    edge("stick-click", before.stick_click, now.stick_click);
+    edge("primary", before.primary, now.primary);
+    edge("secondary", before.secondary, now.secondary);
+    edge("menu", before.menu, now.menu);
+    const auto pushed = [](const HandState& hand) {
+        return hand.stick_x * hand.stick_x + hand.stick_y * hand.stick_y > 0.25f;
+    };
+    if (pushed(before) != pushed(now)) {
+        log::info("xr input: {} stick {} ({:.2f}, {:.2f})", name, pushed(now) ? "pushed" : "centred", now.stick_x,
+                  now.stick_y);
+    }
+}
+
+HandState hand_state(const xr::Hand& hand, std::uint64_t sample) {
+    HandState state;
+    state.active = hand.active;
+    state.tracked = hand.grip_valid;
+    state.grip = rigid_pose(hand.grip);
+    state.aim = rigid_pose(hand.aim);
+    state.aim_valid = hand.aim_valid;
+    state.velocity = {hand.linear_velocity.x, hand.linear_velocity.y, hand.linear_velocity.z};
+    state.angular_velocity = {hand.angular_velocity.x, hand.angular_velocity.y, hand.angular_velocity.z};
+    state.velocity_valid = hand.velocity_valid;
+    state.trigger = hand.trigger;
+    state.squeeze = hand.squeeze;
+    state.stick_x = hand.thumbstick.x;
+    state.stick_y = hand.thumbstick.y;
+    state.stick_click = hand.thumbstick_click;
+    state.primary = hand.primary;
+    state.secondary = hand.secondary;
+    state.menu = hand.menu;
+    state.sample = sample;
+    return state;
+}
+
+// Once per submitted frame: sample the controllers, publish them, log changes, run queued haptics.
+void update_input(const xr::Frame& frame) {
+    if (!g_input) {
+        return;
+    }
+    if (g_session->take_profile_changed()) {
+        log::info("xr input: the runtime changed the controller bindings");
+        log_profiles();
+    }
+    xr::Hand raw[2];
+    if (!g_session->sync_input(frame.state.predictedDisplayTime, raw)) {
+        if (g_input_unfocused++ % kHandLogEvery == 0) {
+            log::info("xr input: no input (session not focused, e.g. the SteamVR dashboard is open), {} frame(s) so far",
+                      g_input_unfocused);
+        }
+    }
+    ++g_hand_samples;
+    const std::array<HandState, 2> now{hand_state(raw[0], g_hand_samples), hand_state(raw[1], g_hand_samples)};
+    {
+        std::lock_guard lock(g_hands_mutex);
+        g_hands = now;
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+        log_hand_changes(h, g_logged[h], now[h]);
+        if (g_input_haptics && g_logged[h].squeeze <= 0.5f && now[h].squeeze > 0.5f) {
+            g_session->haptic(h, 0.3f, 0.03f);
+        }
+    }
+    g_logged = now;
+    if (g_hand_samples % kHandLogEvery == 1) {
+        for (std::size_t h = 0; h < 2; ++h) {
+            log::info("xr input: {} {}", hand_name(h), hand_text(now[h]));
+        }
+    }
+    const bool buzz = g_hands_buzz.exchange(false, std::memory_order_relaxed);
+    if (g_hands_report.exchange(false, std::memory_order_relaxed)) {
+        log::info("xr input: {} samples, {} without input", g_hand_samples, g_input_unfocused);
+        log_profiles();
+        for (std::size_t h = 0; h < 2; ++h) {
+            log::info("xr input: {} {}", hand_name(h), hand_text(now[h]));
+        }
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+        if (buzz) {
+            g_session->haptic(h, 0.5f, 0.1f);
+        }
+        if (g_haptics[h].pending.exchange(false, std::memory_order_acquire)) {
+            g_session->haptic(h, g_haptics[h].amplitude.load(std::memory_order_relaxed),
+                              g_haptics[h].seconds.load(std::memory_order_relaxed));
+        }
+    }
+}
+
 // Just before the game's Present.
 void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     if (g_failed) {
@@ -528,6 +694,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         g_skipped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    update_input(frame);
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
     } else {
@@ -560,6 +727,8 @@ void install(const Config& config) {
         g_screen_distance_m = std::strtof(distance.c_str(), nullptr);
     }
     g_desktop_vsync = config.get_bool("xr", "desktop_vsync", false);
+    g_input_wanted = config.get_bool("xr", "input", true);
+    g_input_haptics = config.get_bool("xr", "input_haptics", true);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));
@@ -606,6 +775,29 @@ void report() {
               g_skipped.load(std::memory_order_relaxed), g_matched.load(std::memory_order_relaxed),
               g_unmatched.load(std::memory_order_relaxed), g_guessed.load(std::memory_order_relaxed),
               g_measured_lag.load(std::memory_order_relaxed));
+}
+
+std::array<HandState, 2> hands() {
+    std::lock_guard lock(g_hands_mutex);
+    return g_hands;
+}
+
+void haptic(std::size_t hand, float amplitude, float seconds) {
+    if (hand > 1) {
+        return;
+    }
+    g_haptics[hand].amplitude.store(std::clamp(amplitude, 0.0f, 1.0f), std::memory_order_relaxed);
+    g_haptics[hand].seconds.store(std::clamp(seconds, 0.0f, 2.0f), std::memory_order_relaxed);
+    g_haptics[hand].pending.store(true, std::memory_order_release);
+}
+
+void report_hands(bool buzz) {
+    if (buzz) {
+        g_hands_buzz.store(true, std::memory_order_relaxed);
+    }
+    g_hands_report.store(true, std::memory_order_relaxed);
+    log::info("xr input: hands report requested{} (logged on the next headset frame{})", buzz ? " with a buzz" : "",
+              g_input ? "" : "; input isn't running yet");
 }
 
 } // namespace bg3vr::headset

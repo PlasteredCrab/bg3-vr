@@ -11,6 +11,10 @@
 //                                  1920x1080 R8G8B8A8_UNORM texture (standing in for the back buffer),
 //                                  copies it into a quad swapchain and shows it as a 3 m screen 2.5 m
 //                                  ahead, as headset.cpp does with [xr] enabled = true.
+//   --input                        (with either session mode) also reads the motion controllers through the
+//                                  same actions the game uses: prints the bound profile, every button press
+//                                  and release, and both hands' grip poses each second; a grip press buzzes
+//                                  that hand.
 //
 // Exit codes: 0 ok, 1 OpenXR/D3D11 error, 2 no headset (form factor unavailable).
 
@@ -67,7 +71,7 @@ constexpr int32_t kQuadWidth = 1920;
 constexpr int32_t kQuadHeight = 1080;
 constexpr DXGI_FORMAT kQuadFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-int run(bool probe_only, bool quad, double seconds) {
+int run(bool probe_only, bool quad, bool input, double seconds) {
     bg3vr::xr::System system;
     std::string error;
     const auto status = bg3vr::xr::open(system, error);
@@ -155,6 +159,11 @@ int run(bool probe_only, bool quad, double seconds) {
         } else {
             std::printf("swapchain format: %d%s\n", static_cast<int>(session.format()),
                         quad ? " (quad mode: copying a 1920x1080 R8G8B8A8_UNORM image)" : "");
+            if (input && !session.create_input(error)) {
+                std::printf("input: %s\n", error.c_str());
+                input = false;
+            }
+            bg3vr::xr::Hand hands[2]{}, last_hands[2]{};
             const auto start = std::chrono::steady_clock::now();
             auto last_report = start;
             uint64_t frames = 0, frames_this_second = 0;
@@ -184,6 +193,35 @@ int run(bool probe_only, bool quad, double seconds) {
                                 1000.0 * std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
                                                    (a.z - b.z) * (a.z - b.z)));
                     reported_eyes = true;
+                }
+
+                if (input) {
+                    if (session.take_profile_changed()) {
+                        for (std::size_t h = 0; h < 2; ++h) {
+                            const std::string profile = session.interaction_profile(h);
+                            std::printf("%s hand profile: %s\n", h == 0 ? "left" : "right",
+                                        profile.empty() ? "(none)" : profile.c_str());
+                        }
+                    }
+                    session.sync_input(frame.state.predictedDisplayTime, hands);
+                    for (std::size_t h = 0; h < 2; ++h) {
+                        const char* name = h == 0 ? "left" : "right";
+                        const auto edge = [&](const char* what, bool was, bool is) {
+                            if (was != is) {
+                                std::printf("%s %s %s\n", name, what, is ? "down" : "up");
+                            }
+                        };
+                        edge("trigger", last_hands[h].trigger > 0.5f, hands[h].trigger > 0.5f);
+                        edge("squeeze", last_hands[h].squeeze > 0.5f, hands[h].squeeze > 0.5f);
+                        edge("stick-click", last_hands[h].thumbstick_click, hands[h].thumbstick_click);
+                        edge("primary", last_hands[h].primary, hands[h].primary);
+                        edge("secondary", last_hands[h].secondary, hands[h].secondary);
+                        edge("menu", last_hands[h].menu, hands[h].menu);
+                        if (last_hands[h].squeeze <= 0.5f && hands[h].squeeze > 0.5f) {
+                            session.haptic(h, 0.5f, 0.1f);
+                        }
+                        last_hands[h] = hands[h];
+                    }
                 }
 
                 const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(elapsed * 3.0));
@@ -223,6 +261,16 @@ int run(bool probe_only, bool quad, double seconds) {
                                 static_cast<double>(frame.state.predictedDisplayPeriod) / 1e6, pose.position.x,
                                 pose.position.y, pose.position.z, pose.orientation.x, pose.orientation.y,
                                 pose.orientation.z, pose.orientation.w);
+                    for (std::size_t h = 0; input && h < 2; ++h) {
+                        const auto& hand = hands[h];
+                        std::printf("  %s: %s%s grip (%.3f, %.3f, %.3f) vel (%.2f, %.2f, %.2f) trigger %.2f squeeze "
+                                    "%.2f stick (%.2f, %.2f)\n",
+                                    h == 0 ? "left" : "right", hand.active ? "active" : "inactive",
+                                    hand.grip_valid ? " tracked" : " untracked", hand.grip.position.x,
+                                    hand.grip.position.y, hand.grip.position.z, hand.linear_velocity.x,
+                                    hand.linear_velocity.y, hand.linear_velocity.z, hand.trigger, hand.squeeze,
+                                    hand.thumbstick.x, hand.thumbstick.y);
+                    }
                     frames_this_second = 0;
                     last_report = now;
                 }
@@ -244,6 +292,7 @@ int run(bool probe_only, bool quad, double seconds) {
 int main(int argc, char** argv) {
     bool probe_only = false;
     bool quad = false;
+    bool input = false;
     double seconds = 15.0;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -251,12 +300,14 @@ int main(int argc, char** argv) {
             probe_only = true;
         } else if (arg == "--quad") {
             quad = true;
+        } else if (arg == "--input") {
+            input = true;
         } else if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::atof(argv[++i]);
         } else {
-            std::fprintf(stderr, "usage: bg3vr_xr_test [--probe] [--quad] [--seconds N]\n");
+            std::fprintf(stderr, "usage: bg3vr_xr_test [--probe] [--quad] [--input] [--seconds N]\n");
             return 1;
         }
     }
-    return run(probe_only, quad, seconds);
+    return run(probe_only, quad, input, seconds);
 }

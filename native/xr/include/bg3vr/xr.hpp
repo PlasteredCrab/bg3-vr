@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bg3vr::xr {
@@ -40,6 +41,27 @@ struct Frame {
     std::vector<XrView> views; // located in the session's LOCAL space for state.predictedDisplayTime
     bool views_valid = false;  // orientation (and position) tracked
 };
+
+// One motion controller, sampled by Session::sync_input. Poses are in the session's LOCAL space (OpenXR
+// convention: right-handed, +Y up, -Z forward), like the views.
+struct Hand {
+    bool active = false;      // the runtime has a controller bound for this hand
+    XrPosef grip{};           // where the hand holds the controller (for held objects)
+    XrPosef aim{};            // a pointing ray: origin and -Z direction (for pointing / gravity pull)
+    bool grip_valid = false;  // position and orientation tracked
+    bool aim_valid = false;
+    XrVector3f linear_velocity{};  // of the grip pose, m/s (throwing)
+    XrVector3f angular_velocity{}; // rad/s
+    bool velocity_valid = false;
+    float trigger = 0.0f;     // 0..1
+    float squeeze = 0.0f;     // grip button, 0..1
+    XrVector2f thumbstick{};  // -1..1 (trackpad on Vive)
+    bool thumbstick_click = false;
+    bool primary = false;     // A (right) / X (left)
+    bool secondary = false;   // B (right) / Y (left)
+    bool menu = false;        // menu button (left on Touch)
+};
+enum HandIndex : std::size_t { kLeft = 0, kRight = 1 };
 
 struct EyeImage {
     ID3D11Texture2D* texture = nullptr;
@@ -93,6 +115,21 @@ public:
     // space. False when orientation isn't tracked.
     bool locate(XrTime time, std::vector<XrView>& views);
 
+    // Motion controllers: one action set (grip and aim poses, trigger, squeeze, thumbstick and its click,
+    // primary / secondary / menu buttons, haptics) with suggested bindings for Oculus Touch, Valve Index,
+    // HTC Vive and the Khronos simple controller, attached to the session. Call once after create().
+    bool create_input(std::string& error);
+    bool has_input() const { return action_set_ != XR_NULL_HANDLE; }
+    // Syncs the actions and samples both hands, poses located at `time` (use the frame's predicted display
+    // time). False when the session isn't focused or input wasn't created (hands then read inactive).
+    bool sync_input(XrTime time, Hand (&hands)[2]);
+    // A vibration on one hand: amplitude 0..1 for `seconds` (frequency 0 = runtime default).
+    void haptic(std::size_t hand, float amplitude, float seconds, float frequency = 0.0f);
+    // The controller profile the runtime bound to a hand (e.g. "/interaction_profiles/oculus/touch_controller"),
+    // empty when none. The runtime reports changes as events; take_profile_changed() says one arrived.
+    std::string interaction_profile(std::size_t hand) const;
+    bool take_profile_changed() { return std::exchange(profile_changed_, false); }
+
     std::size_t view_count() const { return eyes_.size(); }
     int32_t width(std::size_t index) const { return eyes_[index].width; }
     int32_t height(std::size_t index) const { return eyes_[index].height; }
@@ -116,8 +153,19 @@ private:
     DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
 
     bool create_swapchain(Eye& eye, std::string& error);
+    void destroy_input();
+
+    XrActionSet action_set_ = XR_NULL_HANDLE;
+    XrPath hand_paths_[2]{};
+    XrAction grip_pose_ = XR_NULL_HANDLE, aim_pose_ = XR_NULL_HANDLE, trigger_ = XR_NULL_HANDLE,
+             squeeze_ = XR_NULL_HANDLE, thumbstick_ = XR_NULL_HANDLE, thumbstick_click_ = XR_NULL_HANDLE,
+             primary_ = XR_NULL_HANDLE, secondary_ = XR_NULL_HANDLE, menu_ = XR_NULL_HANDLE,
+             haptic_ = XR_NULL_HANDLE;
+    XrSpace grip_spaces_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};
+    XrSpace aim_spaces_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};
     bool running_ = false;
     bool quit_ = false;
+    bool profile_changed_ = false;
 };
 
 } // namespace bg3vr::xr

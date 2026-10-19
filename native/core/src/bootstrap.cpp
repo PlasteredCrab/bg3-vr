@@ -144,6 +144,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.recenter) {
         headset::recenter();
     }
+    if (request.hands) {
+        headset::report_hands(*request.hands == "buzz");
+    }
 #endif
     if (request.stereo) {
         if (*request.stereo == "on") {
