@@ -54,3 +54,7 @@ render_frame_add_view = 48 89 5C 24 08 48 89 6C 24 10 56 57 41 56 48 83 EC 30 48
 # 0x3CCDD00); both branches reach it. rdi = the view. lea rdx,[rdi+2340h] ; lea rcx,[rsp+20h] ; call ... ;
 # mov r8,rax ; lea rdx,[rdi+2820h]
 render_view_camera_built = 48 8D 97 40 23 00 00 48 8D 4C 24 20 E8 ?? ?? ?? ?? 4C 8B C0 48 8D 97 20 28 00 00
+
+# The game's stage setup for a normal view (0x3AC4EA0; rcx = pipeline, rdx = view): builds the view's stage lists
+# through slot 87 and links its job counters into the frame's job graph (0x41074A0). !vr_views build calls it.
+pipeline_choose_stages = 48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 50 48 8B F2 4C 8B F1 4C 8B 6A 40

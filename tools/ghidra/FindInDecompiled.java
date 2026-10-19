@@ -5,7 +5,7 @@
 //
 // RVAs are hex. Used to find code by the fields it touches (e.g. "+ 0x58)" and "+ 100)").
 // Ghidra's batch launcher mangles spaces and parentheses in arguments, so in substrings "_" stands for
-// a space and "~" for ")": pass "+_0x58~" for "+ 0x58)".
+// a space, "~" for ")" and "#" for "|": pass "+_0x58~" for "+ 0x58)".
 //@category BG3VR
 
 import java.io.FileWriter;
@@ -28,7 +28,7 @@ public class FindInDecompiled extends GhidraScript {
             return;
         }
         for (int i = 3; i < args.length; ++i) {
-            args[i] = args[i].replace('_', ' ').replace('~', ')');
+            args[i] = args[i].replace('_', ' ').replace('~', ')').replace('#', '|');
         }
         Address base = currentProgram.getImageBase();
         Address start = base.add(Long.parseLong(args[1].replace("0x", ""), 16));

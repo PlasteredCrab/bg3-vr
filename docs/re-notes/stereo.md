@@ -148,3 +148,32 @@ All from decompiles of 4.1.1.7631656 (`re-local\ghidra\percamera.c`, `jitterproj
 - **What changed:** !vr_views build now calls SetCamera on the game thread instead of writing both states'
   controller pointers directly, and the stereo hook sits at 0x3CC6CB9 (signature
   `render_view_camera_built`).
+
+## The split-view freeze (watchdog stacks, 2026-10-19)
+
+The `!vr_views build full` run froze about 0.3 s after SetCamera returned. The render thread (all others idle;
+the busy main thread was stepping the Lua GC) was spinning in the job-counter wait 0x410E880. The call path:
+
+- the frame end 0x3DF97C0 calls 0x4073040, which calls each view's end-recording (vtable slot 4, 0x3CC7010);
+- end-recording calls each stage's slot 8;
+- here that was 0x3E4A930, the wait of stage **0x45** (vtable 0x58C6EA8; its init loads
+  `DownsampleResolver.bshd`; its id comes from slot 1 at 0x3E4A450, `mov al, 45h`). Its execute (slot 6,
+  0x3E4A6F0) submits the stage's job (stage+0x20) to the counter `[stage+0x2138]` (0x410E5D0).
+
+The job system, from decompiles:
+
+- **Counters:** created by 0x4107090. Predecessors are at +0x268 (up to 3) and successors at +0x250.
+- **Flags at +4:** 1 = armed, 2 = released, 4 = signalled. Release (0x4108550) needs every predecessor
+  done. Before release, jobs wait on the counter's pending list; release flushes them (0x410E6F0).
+- **0x41074A0(sched, A, B)** makes A wait for B.
+- **Per-view job context:** each render view gets a 17-counter context at [view+0x40] (root constructor
+  0x407B080, then 0x40878C0). The render loop 0x4072B30 arms and releases each active view's context
+  (0x407B540). The frame end 0x4073040 waits on all of them.
+- **0x3AC4EA0, the game's stage setup for a normal view:**
+  - it builds 0x45 and 0x07 only when [[view+0x10]+0x40] is set;
+  - otherwise it links the view into the frame's graph: the special view's [ctx+0x40] waits for the view's
+    [ctx+0x78], and DAT_146048680 waits for its [ctx+0x80];
+  - the main view in the log has neither 0x45 nor 0x07; the special view has 19 45 07.
+- **What changed:** our hand-built `full` variant gave the split view a stage 0x45 the game never gives a
+  normal view in this mode, and its job never finished. `!vr_views build` now calls 0x3AC4EA0 itself
+  (signature `pipeline_choose_stages`), and `full` is refused.
