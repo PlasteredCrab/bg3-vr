@@ -68,3 +68,11 @@ Related functions in bg3_dx11.exe 4.1.1.7631656 (not hooked; for orientation):
 | (vtable slot) | Game render view vtable exe+0x55F42F8 slot 10 = SetCamera(view, controller, keep), 0x17F2B30 → 0x3CC90B0 | 0x17F2B30 | Vtable dump + decompile, 2026-10-14 |
 | (function) | 0x3CCCFD0: block [1]'s jittered projection, symmetric, from the controller's FOV, aspect, near, far + jitter | 0x3CCCFD0 | Decompile, 2026-10-14 |
 | (function) | 0x4072CB0: frame sync, copies each view's WriteState into ReadState | 0x4072CB0 | Decompile, 2026-10-14 |
+
+### Added 2026-10-19 (static; agent C plus bg3vr_disasm checks, details in docs/re-notes/skeleton.md)
+
+| Name | Purpose | RVA | Found by |
+| --- | --- | --- | --- |
+| `skeleton_update_mesh_bindings` | Skeleton vtable slot 30 UpdateMeshBindings, entry; rcx = Skeleton. Runs after the new pose is swapped into +0xE0; the body-IK override point. Counting watch in skeleton.cpp. | DX11 0x3A20590 | Agent C decompile; disassembly 2026-10-19 |
+| (vtable) | Skeleton vtable; slot 10 GetBoneWorldMatrix 0x3A1F170, 18 bone name 0x3A1FB90, 19 parent 0x3A1FBC0, 1 pose fresh 0x3A207A0, 29 swap 0x3A1FBE0 | 0x588D4A8 | Agent C; slots re-disassembled 2026-10-19 |
+| (data) | Game loop frame counter (uint32); skeletons stamp it at +0x124 | 0x614FB88 | Slot 1 disassembly |
