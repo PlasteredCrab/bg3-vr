@@ -53,6 +53,11 @@ inline constexpr std::size_t kAutomatic = static_cast<std::size_t>(-1);
 // With kAutomatic it first scans (repeatedly, up to a minute) until the split view exists.
 void build(const ModuleInfo& module, std::uintptr_t controller, std::size_t index, bool compositing);
 
+// The game's own way to an extra view (player manager slot 1, 0x17F82F0, then the pipeline setup), on the render
+// thread; the camera, scene and environment follow on the game thread as for build. !vr_stereo on then places
+// the main and new view with the game's 0x407B800.
+void create(const ModuleInfo& module, std::uintptr_t controller);
+
 // Whether build runs the game's full view setup (0x588E50; [views] full_setup, default true) or only the
 // stage lists (0x3AC4EA0).
 void set_full_setup(bool on);

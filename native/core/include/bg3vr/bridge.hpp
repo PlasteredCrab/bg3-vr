@@ -35,7 +35,8 @@ struct Request {
     bool views_diff = false;                                   // small differences between view 0 and 1
     bool views_jobs = false;                                   // dump the render views' job counters and stages
     bool views_events = false;                                 // log the renderer's events for a few frames
-    bool views_gpu = false;                                    // ... and the GPU draw runs (render targets, viewports)
+    bool views_gpu = false;
+    bool views_create = false;                                 // the game's own player view (0x17F82F0) as the split view                                    // ... and the GPU draw runs (render targets, viewports)
     std::optional<views::Layout> views_layout;                 // layout experiment
     struct ViewSet {
         std::size_t index = 0;
@@ -56,7 +57,7 @@ struct Request {
 //   sweep=on | sweep=<yaw> [<pitch> [<seconds>]] | sweep=off
 //   fov=<left> <right> <up> <down>   |   fov=off              (degrees; left and down negative)
 //   xr_lag=<0..7>                    |   xr_lag=auto
-//   views=find | views=dump | views=sbs | views=swap | views=full | views=refs | views=diff | views=jobs | views=events | views=gpu
+//   views=find | views=dump | views=sbs | views=swap | views=full | views=refs | views=diff | views=jobs | views=events | views=gpu | views=create
 //   views=build [<index>] [full]
 //   views=set <index> <scale x> <scale y> <offset x> <offset y>   |   views=enable <index> <0|1>
 //   follow=<hex transform> [height]  |   follow=off

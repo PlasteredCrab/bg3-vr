@@ -903,8 +903,160 @@ std::uint32_t stage_count(std::uintptr_t view) {
     return count;
 }
 
+// --- The game's own player view (agent B's recipe, re-local/ghidra/agents/B_splitscreen.md) --------------
+// 0x17F82F0 (the player manager's vtable slot 1, CreatePlayerView(mgr, frame)) allocates 0x2D90 bytes,
+// constructs a GameRenderView (0x17F1E60) with the game's player-view settings block (which also gives
+// it its own occlusion helper +0x48, job context +0x40 and stage group) at Scale (0,1) Offset (0,0),
+// and adds it to the frame (0x4073230). 0x3BAA1A0 then sets [view+0x2268] = 1 and runs the pipeline
+// setup (slot 88, 0x588E50). Placement goes through 0x407B800(view, &scale, &offset), which also
+// recomputes the pixel viewports (0x407BB80); enable = [view+0x21E0] and [[view+0x48]+0x80], side =
+// [view+0x226C], as RenderViewportSystem 0x192ED80 writes them.
+using CreatePlayerViewFn = std::uintptr_t (*)(std::uintptr_t manager, std::uintptr_t frame);
+using MainFrameFn = std::uintptr_t (*)(std::uintptr_t pipeline);
+using SetViewportFn = void (*)(std::uintptr_t view, const float* scale, const float* offset);
+constexpr std::uint32_t kCreatePlayerViewRva = 0x17F82F0, kMainFrameRva = 0x3AC7600, kSetViewportRva = 0x407B800,
+                        kPlayerManagerGlobalRva = 0x60487A0, kPipelineGlobalRva = 0x6046F98,
+                        kGameRenderViewVtableRva = 0x55F42F8;
+std::atomic<bool> g_created{false};   // the split view came from create(), not build()
+std::atomic<int> g_game_layout{0};    // 1: place the eye views side by side every frame; 2: restore once
+
+std::uintptr_t call_create_view(CreatePlayerViewFn create, std::uintptr_t manager, std::uintptr_t frame, Fault& fault) {
+    __try {
+        return create(manager, frame);
+    } __except (record_fault(GetExceptionInformation(), fault)) {
+        return 0;
+    }
+}
+
+bool call_set_viewport(SetViewportFn set, std::uintptr_t view, const float* scale, const float* offset) {
+    __try {
+        set(view, scale, offset);
+        return true;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                  : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+}
+
+// On the game thread (on_frame), like RenderViewportSystem.
+void place_view(SetViewportFn set, std::uintptr_t view, float scale_x, float offset_x, bool enabled, int side) {
+    const float scale[2] = {scale_x, 1.0f};
+    const float offset[2] = {offset_x, 0.0f};
+    if (!call_set_viewport(set, view, scale, offset)) {
+        return;
+    }
+    *reinterpret_cast<std::uint8_t*>(view + kReadStateInView + state::kSize) = enabled ? 1 : 0; // WriteState.Enabled
+    std::uintptr_t occlusion = 0;
+    mem::try_copy(&occlusion, view + 0x48, sizeof(occlusion));
+    if (occlusion) {
+        *reinterpret_cast<std::uint8_t*>(occlusion + 0x80) = enabled ? 1 : 0;
+    }
+    *reinterpret_cast<std::int32_t*>(view + 0x226C) = side;
+}
+
+void apply_game_layout() {
+    const int mode = g_game_layout.load();
+    if (mode == 0) {
+        return;
+    }
+    std::optional<std::array<std::uintptr_t, 2>> eyes;
+    {
+        std::scoped_lock lock(g_mutex);
+        eyes = g_eye_views;
+    }
+    const auto set = sig::lookup("view_set_viewport");
+    if (!eyes || !set || *set - g_module.base != kSetViewportRva) {
+        g_game_layout.store(0);
+        return;
+    }
+    const auto fn = reinterpret_cast<SetViewportFn>(*set);
+    if (mode == 1) {
+        place_view(fn, (*eyes)[0], 0.5f, 0.0f, true, 0);
+        place_view(fn, (*eyes)[1], 0.5f, 0.5f, true, 1);
+    } else {
+        place_view(fn, (*eyes)[0], 1.0f, 0.0f, true, 0);
+        place_view(fn, (*eyes)[1], 0.0f, 0.0f, false, 1);
+        g_game_layout.store(0);
+    }
+}
 } // namespace
 
+void create(const ModuleInfo& module, std::uintptr_t controller) {
+    g_module = module;
+    if (controller) {
+        g_controller = controller;
+    }
+    const std::uintptr_t base = module.base;
+    const auto creator = sig::lookup("view_create_player");
+    const auto main_frame = sig::lookup("pipeline_main_frame");
+    const auto setup = sig::lookup("game_pipeline_setup");
+    if (!creator || *creator - base != kCreatePlayerViewRva || !main_frame || *main_frame - base != kMainFrameRva ||
+        !setup || *setup - base != kFullSetupRva) {
+        log::warn("views: create needs view_create_player / pipeline_main_frame / game_pipeline_setup at this build's "
+                  "addresses; not creating");
+        return;
+    }
+    events::arm(g_module, 3, 6000);
+    render::run_on_render_thread([base, create_fn = *creator, frame_fn = *main_frame, setup_fn = *setup,
+                                  driven = g_controller] {
+        std::uintptr_t pipeline = 0, manager = 0, main_view = 0, special_view = 0;
+        mem::try_copy(&pipeline, base + kPipelineGlobalRva, sizeof(pipeline));
+        mem::try_copy(&manager, base + kPlayerManagerGlobalRva, sizeof(manager));
+        mem::try_copy(&main_view, pipeline + 0xA0, sizeof(main_view));
+        mem::try_copy(&special_view, pipeline + 0xA8, sizeof(special_view));
+        const std::uintptr_t frame = pipeline ? reinterpret_cast<MainFrameFn>(frame_fn)(pipeline) : 0;
+        log::info("views: create: pipeline 0x{:X}, player manager 0x{:X}, main frame 0x{:X} (presenting frame 0x{:X}), "
+                  "main view 0x{:X}, special view 0x{:X}",
+                  pipeline, manager, frame, render::render_frame(), main_view, special_view);
+        if (!pipeline || !manager || !frame || !main_view) {
+            log::warn("views: create: missing pipeline, manager, frame or main view; not creating");
+            return;
+        }
+        {
+            std::scoped_lock lock(g_mutex);
+            g_special_view = special_view;
+            g_eye_views = std::array<std::uintptr_t, 2>{main_view, 0};
+        }
+        dump_jobs("before create");
+        Fault fault;
+        const std::uintptr_t view = call_create_view(reinterpret_cast<CreatePlayerViewFn>(create_fn), manager, frame, fault);
+        std::uintptr_t vtable = 0;
+        mem::try_copy(&vtable, view, sizeof(vtable));
+        if (!view || vtable != base + kGameRenderViewVtableRva) {
+            log::warn("views: create: 0x17F82F0 returned 0x{:X} (vtable {}){}", view, mem::describe(g_module, vtable),
+                      fault.code_address ? std::format("; FAULT at {} stack:{}", mem::describe(g_module, fault.code_address),
+                                                       stack_trace(fault))
+                                         : std::string());
+            return;
+        }
+        log::info("views: create: new player view 0x{:X}; frame lists it: {}", view, frame_has_view(frame, view));
+        {
+            std::scoped_lock lock(g_mutex);
+            g_eye_views = std::array<std::uintptr_t, 2>{main_view, view};
+            g_found.push_back(view + kReadStateInView); // so dumps and layouts know it
+        }
+        *reinterpret_cast<std::uint8_t*>(view + kSplitScreenIndexInView) = 1;
+        const bool ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(setup_fn), pipeline, view, fault);
+        const std::uint8_t render_index = g_split_index_after_build.load();
+        *reinterpret_cast<std::uint8_t*>(view + kSplitScreenIndexInView) = render_index;
+        log::info("views: create: pipeline setup {} ({} stages); split-screen index 1 for the setup, {} for rendering",
+                  ok ? "done" : std::format("FAULTED at {}", mem::describe(g_module, fault.code_address)), stage_count(view),
+                  render_index);
+        log_stages("created", view);
+        dump_jobs("after create");
+        g_created.store(ok);
+        if (!ok) {
+            return;
+        }
+        events::arm(g_module, 10, 20000);
+        std::scoped_lock lock(g_mutex);
+        if (driven) {
+            g_pending_camera_view = view;
+            g_pending_camera = driven;
+        }
+    });
+    log::info("views: create queued for the render thread");
+}
 void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t index, bool compositing) {
     if (compositing) {
         log::warn("views: build full is disabled: the split view's own stage 0x45 (DownsampleResolver) hangs the "
@@ -1608,6 +1760,11 @@ std::optional<std::array<std::uintptr_t, 2>> eye_views() {
 }
 
 bool set_stereo_layout(bool on) {
+    if (g_created.load()) {
+        g_game_layout.store(on ? 1 : 2);
+        log::info("views: stereo layout {} (game placement, 0x407B800)", on ? "on" : "off");
+        return true;
+    }
     std::scoped_lock lock(g_mutex);
     if (!g_eye_views) {
         log::warn("views: no built split view yet (!vr_split on, reload, !vr_views build)");
@@ -1636,6 +1793,7 @@ bool set_stereo_layout(bool on) {
 
 void on_frame() {
     apply_pending_camera();
+    apply_game_layout();
     std::vector<std::uintptr_t> views;
     std::array<Override, std::size(g_overrides)> overrides;
     {

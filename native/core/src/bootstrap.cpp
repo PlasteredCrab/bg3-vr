@@ -198,6 +198,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.views_events) {
         events::arm(module, 3, 6000);
     }
+    if (request.views_create) {
+        views::create(module, camera::controller());
+    }
     if (request.views_gpu) {
         events::arm(module, 3, 6000);
         gpu_trace::arm(3);

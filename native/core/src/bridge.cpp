@@ -191,6 +191,8 @@ Request parse(std::string_view content) {
                 request.views_events = true;
             } else if (action == "gpu") {
                 request.views_gpu = true;
+            } else if (action == "create") {
+                request.views_create = true;
             } else if (action == "swap") {
                 request.views_layout = views::Layout::SideBySideSwapped;
             } else if (action == "full") {
