@@ -83,6 +83,39 @@ marked **(RE)** wait on agent reports, and nothing in them is claimed about the 
 - **Combat:** melee hits with held weapons, and thrown impacts, call into the game's attack and damage
   resolution so dice and rules still decide. Separate design later.
 
+## 2a. Physics (agent D, `re-local/ghidra/agents/D_physics.md`; D's sections 7+ still pending)
+
+- **Engine:** NVIDIA PhysX 4.1, statically linked; Larian's layer is `phx::`. The main scene (vtable
+  0x5891B30, `PxScene*` at +0x98, ragdoll manager at +0x90) steps at a **fixed 60 Hz** with at most 3 substeps
+  per frame, on a job worker thread (`phx::PhysXSceneUpdateSystem` 0x75BA10 schedules job 0x3A74AC0, step
+  0x3A61B70). Every PhysX write in the game is bracketed by `lockWrite`/`unlockWrite` (PxScene +0x318/+0x320).
+- **Per-actor wrapper** (vtable 0x58940D0; `PxActor::userData` points to it; `PxRigidActor*` at +0x40; cached
+  pose quat +0x0C / pos +0x1C; owner container at +0x38). The slots the grab system needs, all taking the
+  lock themselves:
+  - `+0xB8 SetWorldTransform(pose, kinematicTarget=false)`: queues the pose; the physics job interpolates
+    it per substep and applies it as a kinematic target. This is **the kinematic hold path**, the same
+    one the game uses for animated bodies.
+  - `+0x120 SetLinearVelocity(v)` / `+0x130 SetAngularVelocity(w)`: **the velocity-drive hold path**
+    (HIGGS-style, keeps collisions). Readers: `+0x128` / `+0x138`.
+  - `+0x100 MakeDynamic`, `+0xF8 MakeKinematic`, `+0x68 WakeUp`, `+0x60 StopMotion`, `+0x08 Teleport`.
+  - `+0xC8 IsDynamic`, `+0xD0 IsKinematic`, `+0xD8 IsStatic`, `+0xE8 IsArticulationLink`.
+  - Mass: PxRigidBody `getMass` (+0xE8 on the PxRigidDynamic vtable 0x5433838) through the actor at +0x40.
+- **Queries:** `RaycastClosest` 0x3A85AA0 (PxScene*, from, to, out hit, flags, masks, ...) returns normal,
+  position, the hit fraction and, at hit+0x28, **the hit actor's wrapper**. That gives the container, and
+  from there the entity (pending in D's §7). Sphere/box sweeps and overlaps sit next to it (main scene slots
+  +0x50..+0xC0).
+- **Ragdolls:** AddRagdoll/RemoveRagdoll/GetRagdollPose on the manager (vtable 0x5894878). The per-frame
+  update 0x3A8CAA0 moves a ragdoll rigidly when its entity moves, and **freezes it** once every body sleeps
+  or a timer runs out: it makes every body kinematic (wrapper `MakeKinematic`) and sets entry flag bit0. To
+  grab a corpse, make its bodies dynamic (`MakeDynamic`) and wake them. Then either keep them awake while
+  held or reset the entry timer (+0x60 elapsed vs +0x58 limit), or the update freezes them again.
+- **Impacts:** the contact callback 0x3A91A50 reports pairs above the actor's contact-report threshold to the
+  owning container's slot +0x98. That's a hook point for thrown-object impacts (damage, sound).
+
+**Decision for held objects:** drive the body with velocities (`SetLinearVelocity` / `SetAngularVelocity`)
+computed each frame from the pose error (section 2, "Near grab", step 4). Fall back to `SetWorldTransform`
+kinematic targets for very heavy or jittery cases. The math is in `native/core/src/grab_math.cpp`.
+
 ## 3a. Body and input (agent C, `re-local/ghidra/agents/C_animation_systems.md`)
 
 Answered from agent C's report; the parts our code uses are re-checked in `docs/re-notes/skeleton.md`.
@@ -128,9 +161,10 @@ the engine did, before building the next layer.
 
 ## 5. Questions for the RE reports
 
-- Physics engine and its API layer: create, step, raycast, overlap, set velocity, set kinematic,
-  constraints.
-- Ragdoll lifecycle and structure; how to address one bone's body.
+- ~~Physics engine and its API layer~~ (answered, section 2a). Remaining: overlap variants' exact semantics,
+  constraints for two-handed holds.
+- Ragdoll structure: which wrapper belongs to which bone (GetRagdollPose maps bodies to bone transforms;
+  agent D §7 pending).
 - Item ↔ physics body link; transform sync direction (physics → ECS or ECS → physics).
 - Client/server: who simulates item physics in single player, and how positions replicate.
 - Throw action: trajectory and damage resolution we can reuse.

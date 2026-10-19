@@ -9,6 +9,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/grab_math.hpp"
 #include "bg3vr/ik.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
@@ -769,6 +770,78 @@ void test_ik() {
     CHECK(near_eq(distance(degenerate.wrist, degenerate.elbow), 0.25f));
 }
 
+void test_grab_math() {
+    // rotation_vector: 90 degrees about +Y.
+    const vr::Vec3 turn = grab::rotation_vector({0, 0, 0, 1}, vr::yaw_quat(90.0f));
+    CHECK(std::abs(turn[1]) > 1.57f && std::abs(turn[1]) < 1.571f && near_eq(turn[0], 0) && near_eq(turn[2], 0));
+    // The short way round: a 270 degree turn is reported as 90 the other way.
+    const vr::Vec3 back = grab::rotation_vector({0, 0, 0, 1}, vr::yaw_quat(270.0f));
+    CHECK(std::abs(back[1]) < 1.571f && back[1] * turn[1] < 0.0f);
+
+    // Drive: integrating the commanded velocity for dt closes `follow` of the error; with follow 1 it lands.
+    const vr::RigidPose body{{0, 1, 0}, {0, 0, 0, 1}};
+    const vr::RigidPose hand{{0.1f, 1.2f, -0.05f}, vr::yaw_quat(30.0f)};
+    grab::DriveParams params;
+    params.follow = 1.0f;
+    params.max_angular = 100.0f; // 30 degrees in one 60 Hz step is 31 rad/s
+    const float dt = 1.0f / 60.0f;
+    const grab::Drive d = grab::drive(body, hand, {}, dt, params);
+    CHECK(!d.snagged);
+    const vr::Vec3 moved{body.position[0] + d.velocity.linear[0] * dt, body.position[1] + d.velocity.linear[1] * dt,
+                         body.position[2] + d.velocity.linear[2] * dt};
+    CHECK(vec_near(moved, hand.position));
+    CHECK(std::abs(std::sqrt(d.velocity.angular[0] * d.velocity.angular[0] + d.velocity.angular[1] * d.velocity.angular[1] +
+                             d.velocity.angular[2] * d.velocity.angular[2]) * dt - 30.0f * 3.14159265f / 180.0f) < 1e-3f);
+    // Feed-forward: no error, moving hand -> the body moves with the hand.
+    const grab::Drive along = grab::drive(hand, hand, {{1, 0, 0}, {}}, dt, params);
+    CHECK(vec_near(along.velocity.linear, {1, 0, 0}));
+    // Clamps and snag.
+    const vr::RigidPose far_hand{{5, 1, 0}, {0, 0, 0, 1}};
+    const grab::Drive snag = grab::drive(body, far_hand, {}, dt, params);
+    CHECK(snag.snagged && std::abs(std::sqrt(snag.velocity.linear[0] * snag.velocity.linear[0]) - params.max_linear) < 1e-3f);
+    // Heavier is slower, never below the minimum.
+    CHECK(grab::follow_for_mass(0.7f, 1.0f) > grab::follow_for_mass(0.7f, 40.0f));
+    CHECK(near_eq(grab::follow_for_mass(0.7f, 20.0f), 0.35f));
+    CHECK(near_eq(grab::follow_for_mass(0.7f, 1e6f), 0.1f));
+
+    // Throw: a hand moving at (2, 1, -3) m/s sampled at 90 Hz with a little noise.
+    grab::ThrowTracker tracker;
+    CHECK(!tracker.velocity());
+    for (int i = 0; i < 40; ++i) {
+        const double t = i / 90.0;
+        const float noise = (i % 2 ? 0.001f : -0.001f);
+        tracker.add(t, {{static_cast<float>(2 * t) + noise, static_cast<float>(1 + t), static_cast<float>(-3 * t)},
+                        vr::yaw_quat(static_cast<float>(t * 90.0))});
+    }
+    const auto thrown = tracker.velocity(0.1);
+    CHECK(thrown.has_value());
+    if (thrown) {
+        CHECK(std::abs(thrown->linear[0] - 2.0f) < 0.1f && std::abs(thrown->linear[1] - 1.0f) < 0.05f &&
+              std::abs(thrown->linear[2] + 3.0f) < 0.05f);
+        CHECK(std::abs(std::abs(thrown->angular[1]) - 3.14159265f / 2.0f) < 0.02f); // 90 deg/s about Y
+    }
+
+    // Launch: integrate the flight; it lands on the target at the reported time, peaking above both points.
+    for (const auto& [from, to] : std::array<std::pair<vr::Vec3, vr::Vec3>, 3>{{{{0, 0, 0}, {3, 1, -2}},
+                                                                               {{0, 2, 0}, {1, 0.5f, 1}},
+                                                                               {{0, 1, 0}, {0, 1, 0.2f}}}}) {
+        const grab::Launch launch = grab::launch_velocity(from, to, 9.81f, 0.4f);
+        const float t = launch.time;
+        const vr::Vec3 landed{from[0] + launch.velocity[0] * t,
+                              from[1] + launch.velocity[1] * t - 0.5f * 9.81f * t * t,
+                              from[2] + launch.velocity[2] * t};
+        CHECK(std::abs(landed[0] - to[0]) < 1e-3f && std::abs(landed[1] - to[1]) < 1e-3f &&
+              std::abs(landed[2] - to[2]) < 1e-3f);
+        const float peak = from[1] + launch.velocity[1] * launch.velocity[1] / (2.0f * 9.81f);
+        CHECK(std::abs(peak - (std::max(from[1], to[1]) + 0.4f)) < 1e-3f);
+    }
+
+    // Flick: pulling the hand back toward the player, away from the item.
+    CHECK(grab::is_flick({0, 1, 0}, {0, 0, -2}, {0, 1, 5}));
+    CHECK(!grab::is_flick({0, 1, 0}, {0, 0, 2}, {0, 1, 5}));
+    CHECK(!grab::is_flick({0, 1, 0}, {2, 0, 0}, {0, 1, 5}));
+}
+
 } // namespace
 
 int main() {
@@ -790,6 +863,7 @@ int main() {
     test_blit();
     test_stereo();
     test_ik();
+    test_grab_math();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

@@ -17,6 +17,7 @@ add_library(bg3vr_base STATIC
     src/render.cpp
     src/signatures.cpp
     src/skeleton.cpp
+    src/grab_math.cpp
     src/ik.cpp
     src/stereo.cpp
     src/trace.cpp
