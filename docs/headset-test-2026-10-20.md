@@ -14,6 +14,9 @@ Optional, without the game: `build\vs2026\bin\RelWithDebInfo\bg3vr_xr_test.exe -
 the test pattern and prints the controller profile, button presses and hand poses. It checks the
 controller code alone.
 
+Also possible on the desktop, without the headset: `!vr_ray camera` casts from the screen centre. Aim at
+the same kinds of things and then run `!vr_ray off`.
+
 ## In the game
 
 | Step | Do | Look for in bg3vr.log |
@@ -24,6 +27,7 @@ controller code alone.
 | 4 | Put the headset on, look around, walk | both eyes show the scene; `xr: ... same-frame stereo` frame counts in reports (`!vr_fps`) |
 | 5 | Hold the hands out in front, then `!vr_hands` | `xr input: left/right ... world pos (...)`: world hand positions near the character, about 0.5 m in front of the head |
 | 6 | `!vr_hands buzz` | both controllers vibrate |
+| 6b | `!vr_ray hand`, point the right controller at the floor, a wall, an item (crate, bottle) and a character; then `!vr_ray off` | `ray: [solid/broad/all] at (...) ... wrapper ... type N dynamic/static ... entity slot ...`: which mask set sees items and characters, and whether items carry an entity handle |
 | 7 | `!vr_fps` | `skeleton: ... reads, ... failed, ... with a pose older than the last frame` |
 
 Things to note while in the headset (just say them, the logs carry the numbers):
