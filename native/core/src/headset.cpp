@@ -4,6 +4,7 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
+#include "bg3vr/rayprobe.hpp"
 #include "bg3vr/render.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
@@ -652,6 +653,12 @@ void update_input(const xr::Frame& frame) {
         }
     }
     g_logged = now;
+    // The right hand's pointing ray in the world, for the raycast probe (and later the grab candidates).
+    std::optional<vr::RigidPose> aim;
+    if (now[kRightHand].aim_valid) {
+        aim = camera::tracked_to_world(now[kRightHand].aim);
+    }
+    rayprobe::set_hand_aim(aim);
     if (g_hand_samples % kHandLogEvery == 1) {
         for (std::size_t h = 0; h < 2; ++h) {
             log::info("xr input: {} {}", hand_name(h), hand_text(now[h]));

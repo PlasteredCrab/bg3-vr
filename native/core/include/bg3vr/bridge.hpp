@@ -48,6 +48,7 @@ struct Request {
     std::optional<std::string> stereo;                         // same-frame stereo: on | off | report
     std::optional<std::string> hands;                          // controllers: report | buzz
     std::optional<std::uintptr_t> skeleton;                    // follow this visual's skeleton; 0 = off
+    std::optional<std::string> ray;                            // raycast probe: camera | hand | off | report
 };
 
 // Parses the bridge file:
@@ -67,6 +68,7 @@ struct Request {
 //   stereo=on | stereo=off | stereo=report   (same-frame stereo on the built split view)
 //   hands=report | hands=buzz        (log the motion controllers; buzz also pulses both)
 //   skeleton=<hex visual> | skeleton=off   (read the character's skeleton: bones, Head_M)
+//   ray=camera | ray=hand | ray=off | ray=report   (physics raycast probe)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

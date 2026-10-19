@@ -15,6 +15,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/rayprobe.hpp"
 #include "bg3vr/skeleton.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
@@ -115,6 +116,7 @@ void on_game_frame() {
     cull::on_frame();
     views::on_frame();
     skeleton::on_frame();
+    rayprobe::on_frame();
 }
 
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
@@ -180,6 +182,15 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     if (request.skeleton) {
         skeleton::attach_visual(*request.skeleton);
+    }
+    if (request.ray) {
+        if (*request.ray == "report") {
+            rayprobe::request_report();
+        } else {
+            rayprobe::set_source(*request.ray == "camera" ? rayprobe::Source::Camera
+                                 : *request.ray == "hand" ? rayprobe::Source::Hand
+                                                          : rayprobe::Source::Off);
+        }
     }
     if (request.trace) {
         if (*request.trace == "on") {
@@ -279,6 +290,7 @@ int init(const wchar_t* root_dir) {
 #endif
     cull::init(module);
     skeleton::init(module);
+    rayprobe::init(module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 

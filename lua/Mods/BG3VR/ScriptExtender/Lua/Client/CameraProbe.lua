@@ -35,6 +35,7 @@
 --   !vr_stereo on|off|report  same-frame stereo on the second view (after !vr_views create)
 --   !vr_go [height]           follow the character's eyes + !vr_views create + !vr_stereo on (3 s later)
 --   !vr_hands [buzz]          log the motion controllers (poses, buttons, bound profile); buzz pulses both
+--   !vr_ray camera|hand|off|report  physics raycast probe from the screen centre or the right hand's aim
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
@@ -448,6 +449,26 @@ Ext.RegisterConsoleCommand("vr_hands", Safely(function(_, mode)
     end
     if BG3VR.WriteBridge({ "hands=" .. mode }) then
         BG3VR.Log("hands " .. mode .. " (see 'xr input:' lines in bg3vr.log)")
+    end
+end))
+Ext.RegisterConsoleCommand("vr_ray", Safely(function(_, mode)
+    mode = mode or "camera"
+    if mode ~= "camera" and mode ~= "hand" and mode ~= "off" and mode ~= "report" then
+        BG3VR.Log("usage: !vr_ray camera|hand|off|report")
+        return
+    end
+    local lines = { "ray=" .. mode }
+    if mode == "camera" then
+        local _, controller = ActiveCamera()
+        local address = controller and ProxyAddress(controller)
+        if not address then
+            BG3VR.Warn("no active camera controller")
+            return
+        end
+        table.insert(lines, 1, "controller=" .. address)
+    end
+    if BG3VR.WriteBridge(lines) then
+        BG3VR.Log("ray probe %s (see 'ray:' lines in bg3vr.log)", mode)
     end
 end))
 -- Any bridge write makes the core log its reports (frame rate, camera, head hide, headset).
