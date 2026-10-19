@@ -58,3 +58,13 @@ render_view_camera_built = 48 8D 97 40 23 00 00 48 8D 4C 24 20 E8 ?? ?? ?? ?? 4C
 # The game's stage setup for a normal view (0x3AC4EA0; rcx = pipeline, rdx = view): builds the view's stage lists
 # through slot 87 and links its job counters into the frame's job graph (0x41074A0). !vr_views build calls it.
 pipeline_choose_stages = 48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 50 48 8B F2 4C 8B F1 4C 8B 6A 40
+
+# Event log hooks (events.cpp, 2026-10-19; armed around !vr_views build).
+# Job counter wait (0x410E880): rcx = counter, dl = help run jobs; keeps the counter in r14.
+job_wait = 40 55 41 56 48 83 EC 38 8B 41 04 0F B6 EA 4C 8B F1
+# Job submit (0x410E5D0): rcx = counter, rdx = job; queues the job, or holds it until the counter is released.
+job_submit = 48 89 54 24 10 53 48 83 EC 20 8B 51 04 48 8B D9
+# A view's job context arm-and-release (0x407B540), called by the render loop 0x4072B30: rcx = view.
+view_release_jobs = 40 53 48 83 EC 20 48 8B 41 40 48 8B D9 48 8B 50 40
+# End-recording's call of each stage's slot 8 (0x3CC7050, loop head): rbx = the stage slot.
+stage_wait_call = 48 8B 0B 48 8B 01 FF 50 40 48 83 C3 08 48 3B DF 75 ?? 48 8B 5C 24 30 48 83 C4 20

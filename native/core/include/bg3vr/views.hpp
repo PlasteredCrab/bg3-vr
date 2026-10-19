@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 // Finding the game's render views (rf::RenderView / ecl::GameRenderView) at runtime, for Phase 1
@@ -67,6 +68,27 @@ void diff();
 
 // Logs the current state of the views found by the last scan (cheap; no scan).
 void dump();
+
+// A value seen somewhere (a register of a frozen thread's frame), to mark in dump_jobs.
+struct Hint {
+    std::uintptr_t value = 0;
+    std::string where;
+};
+// Logs every view in the presenting RenderFrame's view list with its job context (17 job counters:
+// count, flags, predecessors, successors, queue indices) and its stages (id, vtable, wait function,
+// async flag, the counter each waits on and which view's context slot that is), plus the frame-wide
+// counter. Reads only (safe while other threads are suspended or running). Values in `hints` are
+// marked where they appear.
+void dump_jobs(const char* why, const std::vector<Hint>& hints = {});
+
+// One job counter's state, as dump_jobs prints it.
+std::string describe_counter(std::uintptr_t counter);
+// "main", "SPLIT", "special" for the views a build knows, otherwise "view".
+const char* view_role(std::uintptr_t view);
+// The view context slot a counter is ("view 1 ctx+0x78"), searching the RenderFrame's views.
+std::string counter_name(std::uintptr_t counter);
+// A stage's id (its vtable slot 1), or -1.
+int stage_id_of(std::uintptr_t stage);
 
 // The ReadState addresses of the render views found by the last scan.
 std::vector<std::uintptr_t> found();

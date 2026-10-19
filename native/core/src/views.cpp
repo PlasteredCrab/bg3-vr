@@ -1,6 +1,7 @@
 #include "bg3vr/views.hpp"
 
 #include "bg3vr/camera.hpp"
+#include "bg3vr/events.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/render.hpp"
@@ -79,6 +80,7 @@ std::uintptr_t g_pending_camera_view = 0;
 std::uintptr_t g_pending_camera = 0;
 // The pair a completed build leaves: main view, split view.
 std::optional<std::array<std::uintptr_t, 2>> g_eye_views;
+std::uintptr_t g_special_view = 0; // the pipeline's special (compositing) view, for dump labels
 
 bool call_set_camera(SetCameraFn fn, std::uintptr_t view, std::uintptr_t controller) {
     __try {
@@ -803,6 +805,8 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                       kChooseStagesRva);
             return;
         }
+        // A baseline of the renderer's events before the build runs; the build re-arms it for the frames after.
+        events::arm(g_module, 3, 6000);
         render::run_on_render_thread([pipeline, target, main_view, special_view, compositing, build = *build_stages,
                                       choose = choose_stages.value_or(0), driven = g_controller] {
             log_stages("before: main   ", main_view);
@@ -887,6 +891,12 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                 }
             }
             log_resource_facts("before build", main_view, target);
+            {
+                std::scoped_lock lock(g_mutex);
+                g_special_view = special_view;
+                g_eye_views = std::array<std::uintptr_t, 2>{main_view, target}; // for the dump's labels
+            }
+            dump_jobs("before build");
             const std::uint32_t before = stage_count(target);
             bool ok = true;
             Fault fault;
@@ -923,13 +933,15 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
             log_stages("after:  main   ", main_view);
             log_stages("after:  special", special_view);
             log_stages("after:  target ", target);
+            dump_jobs("after build");
+            events::arm(g_module, 10, 20000); // every event of the next frames, up to a hang
             // A view needs a camera: without one the begin-recording camera builder (0x3CC7490) skips the
             // PerCamera blocks. Give it ours, the game's way, on the game thread (apply_pending_camera).
             // Until 2026-10-14 both states' pointers were written directly, which skipped the
             // controller's Enter.
             std::scoped_lock lock(g_mutex);
-            if (ok) {
-                g_eye_views = std::array<std::uintptr_t, 2>{main_view, target};
+            if (!ok) {
+                g_eye_views.reset();
             }
             if (driven) {
                 g_pending_camera_view = target;
@@ -1056,6 +1068,193 @@ void set_view(std::size_t index, std::optional<Placement> placement, std::option
     log::info("views: view {} -> scale ({:.3f}, {:.3f}) offset ({:.3f}, {:.3f}){}", index, o.placement.scale_x,
               o.placement.scale_y, o.placement.offset_x, o.placement.offset_y,
               o.enabled ? (*o.enabled ? ", enabled" : ", disabled") : "");
+}
+
+// Job counters (0x4107090 creates them; 4.1.1.7631656): +0x00 pending count (int), +0x04 flags (1 armed,
+// 2 released, 4 signalled), +0x40 SRW lock and pending-job ring (capacity +0x80, buffer +0x88, read
+// index +0x100), +0x140 a second ring (capacity +0x180, buffer +0x188, read index +0x200) the waiter
+// helps run, +0x240 epoch, +0x248 scheduler queue, +0x250 successors (count +0x25C), +0x260 more flags,
+// +0x264 queue id, +0x268 predecessors (up to 3, null-terminated).
+std::string describe_counter(std::uintptr_t counter) {
+    if (!counter) {
+        return "null";
+    }
+    std::uint8_t raw[0x290]{};
+    if (!mem::try_copy(raw, counter, sizeof(raw))) {
+        return std::format("0x{:X} unreadable", counter);
+    }
+    const auto u32 = [&](std::size_t at) {
+        std::uint32_t v;
+        std::memcpy(&v, raw + at, 4);
+        return v;
+    };
+    const auto u64 = [&](std::size_t at) {
+        std::uint64_t v;
+        std::memcpy(&v, raw + at, 8);
+        return v;
+    };
+    std::string preds;
+    for (std::size_t i = 0; i < 4; ++i) {
+        const std::uint64_t p = u64(0x268 + 8 * i);
+        if (!p) {
+            break;
+        }
+        std::uint32_t pflags = 0;
+        std::int32_t pcount = 0;
+        mem::try_copy(&pcount, p, 4);
+        mem::try_copy(&pflags, p + 4, 4);
+        preds += std::format(" 0x{:X}(n{} f{:X})", p, pcount, pflags);
+    }
+    std::string succs;
+    const std::uint32_t succ_count = u32(0x25C);
+    for (std::uint32_t i = 0; i < succ_count && i < 6; ++i) {
+        std::uint64_t s = 0;
+        mem::try_copy(&s, u64(0x250) + 8 * i, 8);
+        succs += std::format(" 0x{:X}", s);
+    }
+    return std::format("0x{:X} n{} f{:X} f260 {:X} epoch {} q1 cap {} rd {} q2 cap {} rd {} sched 0x{:X} qid {} preds[{} ] "
+                       "succs {}[{} ]",
+                       counter, static_cast<std::int32_t>(u32(0)), u32(4), u32(0x260), u64(0x240), u64(0x80), u64(0x100),
+                       u64(0x180), u64(0x200), u64(0x248), u32(0x264), preds, succ_count, succs);
+}
+
+void dump_jobs(const char* why, const std::vector<Hint>& hints) {
+    const auto mark = [&](std::uintptr_t value) {
+        std::string text;
+        for (const Hint& hint : hints) {
+            if (value && hint.value == value) {
+                text += " <== " + hint.where;
+            }
+        }
+        return text;
+    };
+    const std::uintptr_t frame = render::render_frame();
+    std::uintptr_t list = 0;
+    std::uint32_t count = 0;
+    mem::try_copy(&list, frame + 0x42E0, sizeof(list));
+    mem::try_copy(&count, frame + 0x42EC, sizeof(count));
+    std::optional<std::array<std::uintptr_t, 2>> eyes;
+    std::uintptr_t special = 0;
+    {
+        std::scoped_lock lock(g_mutex);
+        eyes = g_eye_views;
+        special = g_special_view;
+    }
+    std::uintptr_t global = 0;
+    mem::try_copy(&global, g_module.base + 0x6048680, sizeof(global)); // DAT_146048680, the frame counter
+    std::int32_t frame_mode = -1;
+    mem::try_copy(&frame_mode, frame + 0x40, sizeof(frame_mode));
+    log::info("jobs [{}]: RenderFrame 0x{:X}, {} view(s) in its list; [frame+0x40] = {}; frame counter {}{}", why, frame,
+              count, frame_mode, describe_counter(global), mark(global));
+    // Every view's context, for naming counters: (context slot address -> "view N ctx+0xNN").
+    std::vector<std::uintptr_t> views(std::min<std::uint32_t>(count, 16));
+    if (!views.empty()) {
+        mem::try_copy(views.data(), list, views.size() * sizeof(std::uintptr_t));
+    }
+    std::vector<std::pair<std::uintptr_t, std::string>> names;
+    for (std::size_t v = 0; v < views.size(); ++v) {
+        std::uintptr_t ctx = 0;
+        mem::try_copy(&ctx, views[v] + 0x40, sizeof(ctx));
+        for (std::size_t i = 0; i < 17; ++i) {
+            std::uintptr_t counter = 0;
+            mem::try_copy(&counter, ctx + 8 * i, sizeof(counter));
+            names.emplace_back(counter, std::format("view {} ctx+0x{:X}", v, 8 * i));
+        }
+    }
+    const auto name_of = [&](std::uintptr_t counter) {
+        for (const auto& [address, name] : names) {
+            if (address == counter && counter) {
+                return name;
+            }
+        }
+        return counter == global ? std::string("frame counter") : std::string("not a view context slot");
+    };
+    for (std::size_t v = 0; v < views.size(); ++v) {
+        const std::uintptr_t view = views[v];
+        const char* role = eyes && view == (*eyes)[0] ? "main"
+                           : eyes && view == (*eyes)[1] ? "SPLIT"
+                           : view == special             ? "special"
+                                                         : "?";
+        std::uint8_t recording = 0, enabled = 0;
+        std::uintptr_t vtable = 0, ctx = 0, controller = 0, owner = 0;
+        mem::try_copy(&vtable, view, sizeof(vtable));
+        mem::try_copy(&recording, view + 0x2150, 1);
+        mem::try_copy(&enabled, view + kReadStateInView, 1);
+        mem::try_copy(&ctx, view + 0x40, sizeof(ctx));
+        mem::try_copy(&controller, view + kReadStateInView + state::kController, sizeof(controller));
+        mem::try_copy(&owner, view + 0x20, sizeof(owner));
+        log::info("jobs [{}]: view {} 0x{:X} ({}) vtable {} recording {} enabled {} camera 0x{:X} group owner 0x{:X} "
+                  "context 0x{:X}{}",
+                  why, v, view, role, mem::describe(g_module, vtable), recording, enabled, controller, owner, ctx,
+                  mark(view));
+        for (std::size_t i = 0; i < 17; ++i) {
+            std::uintptr_t counter = 0;
+            mem::try_copy(&counter, ctx + 8 * i, sizeof(counter));
+            log::info("jobs [{}]:   ctx+0x{:02X} {}{}", why, 8 * i, describe_counter(counter), mark(counter));
+        }
+        std::uintptr_t stages = 0;
+        std::int32_t stage_count = 0;
+        mem::try_copy(&stages, view + 0x28, sizeof(stages));
+        mem::try_copy(&stage_count, view + 0x34, sizeof(stage_count));
+        for (std::int32_t s = 0; s < stage_count && s < 64; ++s) {
+            std::uintptr_t stage = 0, stage_vtable = 0, wait = 0, execute = 0, counter = 0, stage_view = 0;
+            std::uint8_t async = 0, ok = 0;
+            mem::try_copy(&stage, stages + 8 * s, sizeof(stage));
+            mem::try_copy(&stage_vtable, stage, sizeof(stage_vtable));
+            mem::try_copy(&execute, stage_vtable + 6 * 8, sizeof(execute));
+            mem::try_copy(&wait, stage_vtable + 8 * 8, sizeof(wait));
+            mem::try_copy(&stage_view, stage + 0x08, sizeof(stage_view));
+            mem::try_copy(&async, stage + 0x18, 1);
+            mem::try_copy(&ok, stage + 0x19, 1);
+            mem::try_copy(&counter, stage + 0x2138, sizeof(counter));
+            log::info("jobs [{}]:   stage {:2} id 0x{:02X} 0x{:X} vtable {} execute {} wait {} view 0x{:X} async {} ok {} "
+                      "counter [{}] {}{}{}",
+                      why, s, stage_id(stage), stage, mem::describe(g_module, stage_vtable),
+                      mem::describe(g_module, execute), mem::describe(g_module, wait), stage_view, async, ok,
+                      name_of(counter), describe_counter(counter), mark(stage), mark(counter));
+        }
+    }
+}
+
+const char* view_role(std::uintptr_t view) {
+    std::scoped_lock lock(g_mutex);
+    if (g_eye_views && view == (*g_eye_views)[0]) {
+        return "main";
+    }
+    if (g_eye_views && view == (*g_eye_views)[1]) {
+        return "SPLIT";
+    }
+    return view && view == g_special_view ? "special" : "view";
+}
+
+std::string counter_name(std::uintptr_t counter) {
+    if (!counter) {
+        return "null";
+    }
+    const std::uintptr_t frame = render::render_frame();
+    std::uintptr_t list = 0;
+    std::uint32_t count = 0;
+    mem::try_copy(&list, frame + 0x42E0, sizeof(list));
+    mem::try_copy(&count, frame + 0x42EC, sizeof(count));
+    for (std::uint32_t v = 0; v < count && v < 16; ++v) {
+        std::uintptr_t view = 0, ctx = 0;
+        mem::try_copy(&view, list + 8 * v, sizeof(view));
+        mem::try_copy(&ctx, view + 0x40, sizeof(ctx));
+        for (std::size_t i = 0; i < 17; ++i) {
+            std::uintptr_t slot = 0;
+            mem::try_copy(&slot, ctx + 8 * i, sizeof(slot));
+            if (slot == counter) {
+                return std::format("{} view ctx+0x{:X}", view_role(view), 8 * i);
+            }
+        }
+    }
+    std::uintptr_t global = 0;
+    mem::try_copy(&global, g_module.base + 0x6048680, sizeof(global));
+    return counter == global ? "frame counter" : "other";
+}
+
+int stage_id_of(std::uintptr_t stage) {
+    return stage_id(stage);
 }
 
 std::optional<std::array<std::uintptr_t, 2>> eye_views() {

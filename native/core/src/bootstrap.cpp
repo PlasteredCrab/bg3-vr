@@ -5,6 +5,7 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/cull.hpp"
+#include "bg3vr/events.hpp"
 #if BG3VR_HAVE_OPENXR
 #include "bg3vr/headset.hpp"
 #endif
@@ -185,6 +186,12 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     if (request.views_diff) {
         views::diff();
+    }
+    if (request.views_jobs) {
+        views::dump_jobs("on request");
+    }
+    if (request.views_events) {
+        events::arm(module, 3, 6000);
     }
     if (request.view_set) {
         views::set_view(request.view_set->index, request.view_set->placement, request.view_set->enabled);
