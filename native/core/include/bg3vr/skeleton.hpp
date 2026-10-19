@@ -36,8 +36,12 @@ inline constexpr std::size_t kGrannyBoneName = 0x00;         // char*
 inline constexpr std::size_t kGrannyBoneParent = 0x08;       // int16, -1 = root
 inline constexpr std::size_t kGetBoneWorldMatrixSlot = 10;   // bool (Skeleton*, int16 bone, float out[16]); model space
 inline constexpr std::uintptr_t kGetBoneWorldMatrix = 0x3A1F170; // what slot 10 points to
+inline constexpr std::uintptr_t kUpdateMeshBindings = 0x3A20590; // slot 30, the body-IK override point
 } // namespace layout
 
+// Also installs a counting hook on Skeleton slot 30 (signature skeleton_update_mesh_bindings, the body-IK
+// override point) that records, for the followed skeleton only, how often and on which threads it runs and
+// whether it runs before or after on_frame's head read in the same game frame. Read-only.
 void init(const ModuleInfo& module);
 
 // Follow the skeleton of this ls::Visual (the character's root visual); 0 stops. The skeleton is found and

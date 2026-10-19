@@ -2,6 +2,10 @@
 
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
+#include "bg3vr/signatures.hpp"
+
+#include <safetyhook.hpp>
+#include <windows.h>
 
 #include <array>
 #include <cctype>
@@ -33,6 +37,68 @@ std::uint64_t g_reads = 0;
 std::uint64_t g_failures = 0;
 std::uint64_t g_stale = 0;
 constexpr std::uint64_t kLogEvery = 300;
+
+// Slot 30 watch (the hook runs on animation threads; everything it touches is atomic).
+safetyhook::MidHook g_slot30_hook;
+std::atomic<std::uintptr_t> g_watched{0};
+std::atomic<std::uint64_t> g_slot30_calls{0};       // for the watched skeleton
+std::atomic<std::uint64_t> g_slot30_all{0};         // every skeleton
+std::atomic<std::uint32_t> g_slot30_frame{0};       // game frame of the watched skeleton's last call
+std::atomic<std::uint32_t> g_slot30_same_frame{0};  // calls in that frame
+std::atomic<std::uint32_t> g_slot30_max_per_frame{0};
+constexpr std::size_t kThreadSlots = 6;
+std::array<std::atomic<std::uint32_t>, kThreadSlots> g_slot30_threads{};
+std::atomic<std::uint32_t> g_main_thread{0};        // the thread on_frame runs on
+// on_frame's view of the ordering: frames where slot 30 had already run for this frame when the head was
+// read, vs. frames where it hadn't (yet).
+std::uint64_t g_read_after_slot30 = 0;
+std::uint64_t g_read_before_slot30 = 0;
+std::uint64_t g_last_slot30_calls = 0;
+
+void note_thread(std::uint32_t id) {
+    for (auto& slot : g_slot30_threads) {
+        std::uint32_t seen = slot.load(std::memory_order_relaxed);
+        if (seen == id) {
+            return;
+        }
+        if (seen == 0 && slot.compare_exchange_strong(seen, id, std::memory_order_relaxed)) {
+            return;
+        }
+        if (seen == id) {
+            return;
+        }
+    }
+}
+
+void on_slot30(safetyhook::Context& ctx) {
+    g_slot30_all.fetch_add(1, std::memory_order_relaxed);
+    if (ctx.rcx != g_watched.load(std::memory_order_relaxed) || ctx.rcx == 0) {
+        return;
+    }
+    g_slot30_calls.fetch_add(1, std::memory_order_relaxed);
+    std::uint32_t frame = 0;
+    std::memcpy(&frame, reinterpret_cast<const void*>(g_module.base + layout::kFrameCounter), sizeof(frame));
+    if (g_slot30_frame.exchange(frame, std::memory_order_relaxed) == frame) {
+        const std::uint32_t n = g_slot30_same_frame.fetch_add(1, std::memory_order_relaxed) + 2;
+        std::uint32_t max = g_slot30_max_per_frame.load(std::memory_order_relaxed);
+        while (n > max && !g_slot30_max_per_frame.compare_exchange_weak(max, n, std::memory_order_relaxed)) {
+        }
+    } else {
+        g_slot30_same_frame.store(0, std::memory_order_relaxed);
+    }
+    note_thread(GetCurrentThreadId());
+}
+
+std::string slot30_threads() {
+    std::string out;
+    const std::uint32_t main = g_main_thread.load(std::memory_order_relaxed);
+    for (const auto& slot : g_slot30_threads) {
+        if (const std::uint32_t id = slot.load(std::memory_order_relaxed)) {
+            out += std::format("{}{}{}", out.empty() ? "" : ", ", id, id == main ? " (game thread)" : "");
+        }
+    }
+    return out.empty() ? "none" : out;
+}
 
 struct Bone {
     std::string name;
@@ -195,6 +261,7 @@ void attach_now(std::uintptr_t visual) {
     g_visual = 0;
     g_skeleton = 0;
     g_head_bone = -1;
+    g_watched.store(0, std::memory_order_relaxed);
     {
         std::scoped_lock lock(g_mutex);
         g_head.reset();
@@ -235,12 +302,33 @@ void attach_now(std::uintptr_t visual) {
     g_visual = visual;
     g_skeleton = skeleton;
     g_reads = g_failures = g_stale = 0;
+    g_watched.store(skeleton, std::memory_order_relaxed);
+    g_read_after_slot30 = g_read_before_slot30 = 0;
+    g_last_slot30_calls = g_slot30_calls.load(std::memory_order_relaxed);
 }
 
 } // namespace
 
 void init(const ModuleInfo& module) {
     g_module = module;
+    const auto site = sig::lookup("skeleton_update_mesh_bindings");
+    if (!site) {
+        log::warn("skeleton: signature skeleton_update_mesh_bindings not resolved; no slot 30 watch");
+        return;
+    }
+    if (*site != module.base + layout::kUpdateMeshBindings) {
+        log::warn("skeleton: skeleton_update_mesh_bindings at exe+0x{:X}, expected exe+0x{:X}; no slot 30 watch",
+                  *site - module.base, layout::kUpdateMeshBindings);
+        return;
+    }
+    auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), &on_slot30);
+    if (!hook) {
+        log::error("skeleton: slot 30 mid-hook failed (error type {})", static_cast<int>(hook.error().type));
+        return;
+    }
+    g_slot30_hook = std::move(*hook);
+    log::info("skeleton: slot 30 watch installed at exe+0x{:X} (counts only, for the followed skeleton)",
+              *site - module.base);
 }
 
 void attach_visual(std::uintptr_t visual) {
@@ -250,6 +338,7 @@ void attach_visual(std::uintptr_t visual) {
 
 void on_frame() {
     ++g_frames;
+    g_main_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     std::optional<std::uintptr_t> request;
     {
         std::scoped_lock lock(g_mutex);
@@ -294,6 +383,11 @@ void on_frame() {
         return;
     }
     ++g_reads;
+    if (g_slot30_frame.load(std::memory_order_relaxed) == frame) {
+        ++g_read_after_slot30;
+    } else {
+        ++g_read_before_slot30;
+    }
     const bool fresh = pose_frame + 1 >= frame;
     if (!fresh) {
         ++g_stale;
@@ -321,6 +415,13 @@ void on_frame() {
                   head.world_rotation[3], transform[4], transform[5], transform[6], transform[0], transform[1],
                   transform[2], transform[3], transform[7], transform[8], transform[9], matrix[0], matrix[1],
                   matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9], matrix[10]);
+        const std::uint64_t calls = g_slot30_calls.load(std::memory_order_relaxed);
+        log::info("skeleton: slot 30 for this skeleton: {} calls since the last line ({} for all skeletons), up to {} "
+                  "in one frame, threads {}; head reads after this frame's slot 30 {} / before {}",
+                  calls - g_last_slot30_calls, g_slot30_all.load(std::memory_order_relaxed),
+                  g_slot30_max_per_frame.load(std::memory_order_relaxed), slot30_threads(), g_read_after_slot30,
+                  g_read_before_slot30);
+        g_last_slot30_calls = calls;
     }
 }
 
@@ -330,6 +431,11 @@ std::optional<Head> head() {
 }
 
 void report() {
+    log::info("skeleton: slot 30 watch: {} calls for the followed skeleton, {} for all, up to {} per frame, threads {}; "
+              "head reads after slot 30 {} / before {}",
+              g_slot30_calls.load(std::memory_order_relaxed), g_slot30_all.load(std::memory_order_relaxed),
+              g_slot30_max_per_frame.load(std::memory_order_relaxed), slot30_threads(), g_read_after_slot30,
+              g_read_before_slot30);
     log::info("skeleton: visual 0x{:X} skeleton 0x{:X} head bone {}: {} reads, {} failed, {} with a pose older than "
               "the last frame",
               g_visual, g_skeleton, g_head_bone, g_reads, g_failures, g_stale);

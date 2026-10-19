@@ -97,3 +97,9 @@ view_create_player = 48 89 5C 24 08 48 89 74 24 18 57 48 81 EC D0 00 00 00 48 8B
 pipeline_main_frame = 4C 63 81 98 00 00 00 41 83 F8 FF 75 ?? 33 C0
 # SetViewport (0x407B800): rcx = view, rdx = &scale{x,y}, r8 = &offset{x,y}; WriteState scale/offset, clamped, then the pixel viewports.
 view_set_viewport = 40 53 48 83 EC 20 F2 0F 10 02 0F 57 E4
+
+# Skeleton vtable slot 30 UpdateMeshBindings (fn 0x3A20590), entry; rcx = Skeleton. Runs after the animation
+# finish swaps the new pose into +0xE0 and rebuilds skinning from it: the planned body-IK override point
+# (re-local/ghidra/agents/C_animation_systems.md 1.6 A). Called on animation worker threads.
+#   mov [rsp+10h],rbx ; mov [rsp+18h],rbp ; push rsi ; sub rsp,20h ; mov esi,[rcx+114h]
+skeleton_update_mesh_bindings = 48 89 5C 24 10 48 89 6C 24 18 56 48 83 EC 20 8B B1 14 01 00 00
