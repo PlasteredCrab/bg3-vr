@@ -440,8 +440,8 @@ Ext.RegisterConsoleCommand("vr_views", Safely(function(_, action, ...)
     if action == "set" or action == "enable" or action == "build" then
         action = action .. " " .. table.concat(args, " ")
     elseif action ~= "find" and action ~= "dump" and action ~= "sbs" and action ~= "swap" and action ~= "full"
-        and action ~= "refs" and action ~= "diff" and action ~= "jobs" and action ~= "events" then
-        BG3VR.Warn("usage: !vr_views [find|dump|sbs|swap|full|refs|diff|jobs|events] | set <view> <scale x> <scale y> <offset x> <offset y> | enable <view> <0|1> | build <view>")
+        and action ~= "refs" and action ~= "diff" and action ~= "jobs" and action ~= "events" and action ~= "gpu" then
+        BG3VR.Warn("usage: !vr_views [find|dump|sbs|swap|full|refs|diff|jobs|events|gpu] | set <view> <scale x> <scale y> <offset x> <offset y> | enable <view> <0|1> | build <view>")
         return
     end
     local _, controller = ActiveCamera()

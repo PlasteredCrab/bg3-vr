@@ -6,6 +6,7 @@ add_library(bg3vr_base STATIC
     src/config.cpp
     src/cull.cpp
     src/events.cpp
+    src/gpu_trace.cpp
     src/hooks.cpp
     src/log.cpp
     src/memory.cpp

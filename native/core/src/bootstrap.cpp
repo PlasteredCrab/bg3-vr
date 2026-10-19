@@ -6,6 +6,7 @@
 #include "bg3vr/config.hpp"
 #include "bg3vr/cull.hpp"
 #include "bg3vr/events.hpp"
+#include "bg3vr/gpu_trace.hpp"
 #if BG3VR_HAVE_OPENXR
 #include "bg3vr/headset.hpp"
 #endif
@@ -150,6 +151,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
                 stereo::assign((*eyes)[0], 0);
                 stereo::assign((*eyes)[1], 1);
                 views::set_stereo_layout(true);
+                // Where each view's draws land, and the renderer's events, for the first frames of the layout.
+                events::arm(module, 3, 6000);
+                gpu_trace::arm(3);
 #if BG3VR_HAVE_OPENXR
                 headset::set_stereo(true);
 #endif
@@ -192,6 +196,10 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     if (request.views_events) {
         events::arm(module, 3, 6000);
+    }
+    if (request.views_gpu) {
+        events::arm(module, 3, 6000);
+        gpu_trace::arm(3);
     }
     if (request.view_set) {
         views::set_view(request.view_set->index, request.view_set->placement, request.view_set->enabled);

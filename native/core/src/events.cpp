@@ -1,5 +1,6 @@
 #include "bg3vr/events.hpp"
 
+#include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/render.hpp"
@@ -11,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <format>
 #include <iterator>
 #include <mutex>
 
@@ -62,6 +64,7 @@ std::uintptr_t return_address(const safetyhook::Context& ctx) {
 // render_view_begin / render_view_end entries: rcx = view.
 void on_begin(safetyhook::Context& ctx) {
     g_render_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    gpu_trace::marker(std::format("begin-recording view 0x{:X} ({})", ctx.rcx, views::view_role(ctx.rcx)));
     std::uint64_t frame;
     if (take(frame)) {
         log::info("events: f{} t{} begin-recording view 0x{:X} ({}) from {}", frame, GetCurrentThreadId(), ctx.rcx,
@@ -69,6 +72,7 @@ void on_begin(safetyhook::Context& ctx) {
     }
 }
 void on_end(safetyhook::Context& ctx) {
+    gpu_trace::marker(std::format("end-recording view 0x{:X} ({})", ctx.rcx, views::view_role(ctx.rcx)));
     std::uint64_t frame;
     if (take(frame)) {
         log::info("events: f{} t{} end-recording view 0x{:X} ({}) from {}", frame, GetCurrentThreadId(), ctx.rcx,
@@ -85,14 +89,15 @@ void on_release(safetyhook::Context& ctx) {
 }
 // 0x3CC7050 in end-recording: rbx = the stage slot about to have its slot 8 (wait) called.
 void on_stage_wait(safetyhook::Context& ctx) {
-    std::uint64_t frame;
-    if (!take(frame)) {
-        return;
-    }
     std::uintptr_t stage = 0, view = 0, counter = 0, vtable = 0, wait = 0;
     std::uint8_t async = 0;
     mem::try_copy(&stage, ctx.rbx, sizeof(stage));
     mem::try_copy(&view, stage + 0x08, sizeof(view));
+    gpu_trace::marker(std::format("stage 0x{:02X} of view 0x{:X} ({}) waits", views::stage_id_of(stage), view, views::view_role(view)));
+    std::uint64_t frame;
+    if (!take(frame)) {
+        return;
+    }
     mem::try_copy(&counter, stage + 0x2138, sizeof(counter));
     mem::try_copy(&async, stage + 0x18, 1);
     mem::try_copy(&vtable, stage, sizeof(vtable));
