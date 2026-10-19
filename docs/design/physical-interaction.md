@@ -112,9 +112,27 @@ marked **(RE)** wait on agent reports, and nothing in them is claimed about the 
 - **Impacts:** the contact callback 0x3A91A50 reports pairs above the actor's contact-report threshold to the
   owning container's slot +0x98. That's a hook point for thrown-object impacts (damage, sound).
 
-**Decision for held objects:** drive the body with velocities (`SetLinearVelocity` / `SetAngularVelocity`)
-computed each frame from the pose error (section 2, "Near grab", step 4). Fall back to `SetWorldTransform`
-kinematic targets for very heavy or jittery cases. The math is in `native/core/src/grab_math.cpp`.
+- **Simulation is client-side and cosmetic** (agent D's final report). The server only has a query scene, so
+  moving a body physically changes no game state until the entity is moved through a server path
+  (section 2b).
+- **World items are created as static, query-only bodies.** D found no system that copies a body's pose back into
+  the item's transform. So a held item needs two things each frame: its visual/transform (client setters,
+  section 2b) and, if it should collide, its body.
+- **Ragdolls start from death:** an animation-graph node (0x3DCD200) raycasts the ground twice and calls AddRagdoll.
+  The bodies inherit the death animation's velocities, and the skeleton reads the ragdoll pose back through
+  node 0x3A4E0B0.
+
+**Decision for held objects:**
+1. Write the item transform with the client setters every frame (section 2b). That is what is seen.
+2. For the body, start with D's recommendation: `MakeKinematic` on grab, then `SetWorldTransform(handPose, false)`
+   every frame (queued, interpolated per substep). On release: `MakeDynamic`, set the release velocities
+   (`ThrowTracker`), `WakeUp`.
+3. Move to a velocity drive (`grab::drive`, HIGGS-style, collides with the world) once the kinematic path
+   works, for items whose body turns out to be dynamic or made dynamic.
+4. Once the thrown body comes to rest, commit the final pose to the server (section 2b).
+
+For corpses, grab one ragdoll body (MakeDynamic + WakeUp on all of them) and drive it the same way. The
+math is in `native/core/src/grab_math.cpp`.
 
 ## 2b. Items, authority and throwing (agent E, `re-local/ghidra/agents/E_items_interaction.md`)
 
