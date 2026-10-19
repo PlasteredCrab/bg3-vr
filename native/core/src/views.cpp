@@ -461,6 +461,8 @@ bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintpt
 // the split view by hand (build full) hung the render thread in that stage's job wait (DownsampleResolver,
 // 0x3E4A930 -> 0x410E880; watchdog stacks 2026-10-19), so the game's function is used instead.
 using ChooseStagesFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view);
+constexpr std::uint32_t kFullSetupRva = 0x588E50; // game pipeline vtable slot 88, same arguments
+std::atomic<bool> g_full_setup{true};
 constexpr std::uint32_t kChooseStagesRva = 0x3AC4EA0;
 
 // A render view's job context ([view+0x40]: 17 job counters the render loop arms and releases each
@@ -852,7 +854,7 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
         // A baseline of the renderer's events before the build runs; the build re-arms it for the frames after.
         events::arm(g_module, 3, 6000);
         render::run_on_render_thread([pipeline, target, main_view, special_view, compositing, build = *build_stages,
-                                      choose = choose_stages.value_or(0), driven = g_controller] {
+                                      choose = choose_stages.value_or(0), setup, driven = g_controller] {
             log_stages("before: main   ", main_view);
             log_stages("before: special", special_view);
             log_stages("before: target ", target);
@@ -991,10 +993,21 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                 std::int32_t frame_mode = -1;
                 mem::try_copy(&frame_of_view, target + 0x10, sizeof(frame_of_view));
                 mem::try_copy(&frame_mode, frame_of_view + 0x40, sizeof(frame_mode));
-                log::info("views:   0x3AC4EA0(pipeline, split view): [[view+0x10]+0x40] = {} ({})", frame_mode,
+                log::info("views:   [[view+0x10]+0x40] = {} ({})", frame_mode,
                           frame_mode == 0 ? "no compositing stages; job counters linked into the frame's graph"
                                           : "the view gets its own compositing stages");
-                ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(choose), pipeline, target, fault);
+                if (g_full_setup.load() && setup - g_module.base == kFullSetupRva) {
+                    // The game's whole setup for a new view (0x588E50, game pipeline vtable slot 88): 0x3AC4EA0,
+                    // then the stages it creates itself (0x3D, 0x3C, 0x33 and others) and the two output
+                    // objects it hooks into the view's stage 0x21. Stage lists alone leave the view black
+                    // (2026-10-19). It crashed on 2026-10-13, before the split view had its own stage array,
+                    // frame record and job context.
+                    log::info("views:   calling the game's full view setup 0x588E50(pipeline, split view)");
+                    ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(setup), pipeline, target, fault);
+                } else {
+                    log::info("views:   calling 0x3AC4EA0(pipeline, split view) (stage lists only)");
+                    ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(choose), pipeline, target, fault);
+                }
             }
             log::info("views: stage lists{} for view 0x{:X} {}: {} stage(s) before, {} after",
                       compositing ? " (with 0x45/0x07)" : "", target, ok ? "built" : "FAULTED (access violation caught)",
@@ -1332,6 +1345,11 @@ std::string counter_name(std::uintptr_t counter) {
 
 int stage_id_of(std::uintptr_t stage) {
     return stage_id(stage);
+}
+
+void set_full_setup(bool on) {
+    g_full_setup.store(on);
+    log::info("views: build uses {}", on ? "the game's full view setup (0x588E50)" : "the stage lists only (0x3AC4EA0)");
 }
 
 std::optional<std::array<std::uintptr_t, 2>> eye_views() {

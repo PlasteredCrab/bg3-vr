@@ -53,6 +53,10 @@ inline constexpr std::size_t kAutomatic = static_cast<std::size_t>(-1);
 // With kAutomatic it first scans (repeatedly, up to a minute) until the split view exists.
 void build(const ModuleInfo& module, std::uintptr_t controller, std::size_t index, bool compositing);
 
+// Whether build runs the game's full view setup (0x588E50; [views] full_setup, default true) or only the
+// stage lists (0x3AC4EA0).
+void set_full_setup(bool on);
+
 // After a build that completed: the pipeline's main view and the built split view (view addresses,
 // not ReadStates), the pair that draws the two eyes in same-frame stereo.
 std::optional<std::array<std::uintptr_t, 2>> eye_views();

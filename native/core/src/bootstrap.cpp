@@ -248,6 +248,7 @@ int init(const wchar_t* root_dir) {
         trace::start(module); // catches calls that only happen while the game starts (!vr_trace off reports)
     }
     camera::install(g_config, module);
+    views::set_full_setup(g_config.get_bool("views", "full_setup", true));
     stereo::install(g_config, module);
     render::install(module);
     watchdog::start(module);

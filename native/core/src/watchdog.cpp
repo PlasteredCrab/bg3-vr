@@ -7,7 +7,11 @@
 
 #include <windows.h>
 
+#include <psapi.h>
 #include <tlhelp32.h>
+
+#include <array>
+#include <atomic>
 
 #include <chrono>
 #include <format>
@@ -150,6 +154,73 @@ void dump_threads() {
     log::info("watchdog: job dump done");
 }
 
+// Crash watch: a vectored handler that logs the first occurrence of each faulting address outside this
+// DLL (whose own memory probes fault by design): exception, registers, unwound stack with each game
+// frame's registers, and for the first few, the render views' job dump with those registers as hints.
+// It only observes (continues the search), so the game's own handlers still run.
+std::uintptr_t g_self_begin = 0, g_self_end = 0;
+std::array<std::atomic<std::uintptr_t>, 32> g_seen_faults{};
+std::atomic<int> g_fault_dumps{0};
+thread_local bool t_in_handler = false;
+
+bool first_time(std::uintptr_t address) {
+    for (auto& slot : g_seen_faults) {
+        std::uintptr_t current = slot.load();
+        if (current == address) {
+            return false;
+        }
+        if (current == 0 && slot.compare_exchange_strong(current, address)) {
+            return true;
+        }
+        if (current == address) {
+            return false;
+        }
+    }
+    return false; // table full: stop logging
+}
+
+LONG CALLBACK on_exception(EXCEPTION_POINTERS* info) {
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+        code != EXCEPTION_PRIV_INSTRUCTION && code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != 0xC0000374 /*heap*/) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const auto address = reinterpret_cast<std::uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+    if ((address >= g_self_begin && address < g_self_end) || t_in_handler || !first_time(address)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    t_in_handler = true;
+    const CONTEXT& c = *info->ContextRecord;
+    const ULONG_PTR* params = info->ExceptionRecord->ExceptionInformation;
+    const bool has_access = code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2;
+    log::warn("crash watch: exception 0x{:X} at {} on thread {}{}", code, mem::describe(g_module, address),
+              GetCurrentThreadId(),
+              has_access ? std::format(" ({} 0x{:X})", params[0] == 0 ? "reading" : params[0] == 1 ? "writing" : "executing",
+                                       params[1])
+                         : std::string());
+    log::warn("crash watch:   rax {:X} rbx {:X} rcx {:X} rdx {:X} rsi {:X} rdi {:X} rbp {:X} rsp {:X}", c.Rax, c.Rbx, c.Rcx,
+              c.Rdx, c.Rsi, c.Rdi, c.Rbp, c.Rsp);
+    log::warn("crash watch:   r8 {:X} r9 {:X} r10 {:X} r11 {:X} r12 {:X} r13 {:X} r14 {:X} r15 {:X}", c.R8, c.R9, c.R10,
+              c.R11, c.R12, c.R13, c.R14, c.R15);
+    std::vector<std::string> frames;
+    std::vector<views::Hint> hints;
+    const std::string stack = unwind(c, GetCurrentThreadId(), frames, hints);
+    log::warn("crash watch:   stack:{}", stack);
+    for (const std::string& frame : frames) {
+        log::warn("crash watch:     {}", frame);
+    }
+    for (const auto& [name, value] : {std::pair{"rax", c.Rax}, std::pair{"rcx", c.Rcx}, std::pair{"rdx", c.Rdx},
+                                      std::pair{"r8", c.R8}, std::pair{"r9", c.R9}}) {
+        hints.push_back({value, std::format("faulting frame {}", name)});
+    }
+    // The job dump only matters once a split view has been built (and isn't spent on startup faults).
+    if (views::eye_views() && g_fault_dumps.fetch_add(1) < 3) {
+        views::dump_jobs("exception", hints);
+    }
+    t_in_handler = false;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void watch() {
     std::uint64_t last = render::frame_count();
     auto last_change = std::chrono::steady_clock::now();
@@ -177,6 +248,16 @@ void watch() {
 
 void start(const ModuleInfo& module) {
     g_module = module;
+    HMODULE self = nullptr;
+    MODULEINFO info{};
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&on_exception), &self) &&
+        GetModuleInformation(GetCurrentProcess(), self, &info, sizeof(info))) {
+        g_self_begin = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll);
+        g_self_end = g_self_begin + info.SizeOfImage;
+    }
+    AddVectoredExceptionHandler(0, on_exception);
+    log::info("watchdog: crash watch on (faults outside this DLL are logged once per address)");
     std::thread(watch).detach();
 }
 

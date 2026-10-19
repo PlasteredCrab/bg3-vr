@@ -193,3 +193,19 @@ The job system, from decompiles:
   matched against the job dump, and the event log shows the same order.
 - **Fix:** `!vr_views build` gives the split view its own context, made the constructor's way, before
   calling 0x3AC4EA0. The view destructor (0x407B320) frees it with the same allocator.
+
+## Correction and next step (2026-10-19)
+
+- **The old explanation was wrong.** The 2026-10-13 note above said 0x3AC4EA0's two 0x41074A0 calls "link the
+  special view's output" and freed a stage. In fact 0x41074A0 only adds a job-graph edge (A waits for B).
+- **What really caused that crash:** a stage with a garbage vtable in the special view's begin-recording.
+  That matches the shared stage array: the split view grew it to 30 stages, and the special view kept the
+  freed buffer. That was found and fixed afterwards.
+- **What works now.** With the stage array detached, a frame record from 0x4073230, its own job context
+  and 0x3AC4EA0, the split view runs every frame without hanging. But it draws nothing (right half black
+  with the stereo layout).
+- **What it's missing:** the main view's 0x3A, 0x3D, 0x44, 0x3C, 0x1F, 0x33 and 0x0A. The full setup
+  0x588E50 creates 0x3D, 0x3C and 0x33 inline (stage vtables 0x55F6E70, 0x55F4AB0, 0x55F7078) and hooks two
+  output objects into the view's stage 0x21.
+- **Next step:** `!vr_views build` now runs 0x588E50 ([views] full_setup = true). A crash watch (vectored
+  handler) logs any fault with its registers, stack and a job dump.
