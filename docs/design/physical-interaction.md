@@ -167,6 +167,32 @@ Nothing below has been tested in game; it is what the decompiled code shows.
 - **Inventory and use:** `Osi.Pickup` / `ToInventory` / `Equip` / `Open` / `Close` / `Use` (server Lua). Native use
   goes through `esv::item::UseSystem` (0x35E6820, 0x33D8D30).
 
+## 2c. Pointing, actions and dice (agent I, `re-local/ghidra/agents/I_picking_actions.md`)
+
+Static RE only.
+
+- **Pointing.** The game's picking unprojects the cursor through `ScreenToWorldRay` 0x4085960 and runs four raycast
+  jobs on the result: objects, placeable surfaces, ground (with the AI-grid tile) and scenery. The mod replaces that
+  ray with the right hand's aim ray for the two picking calls (`picking.cpp`, `!vr_pick hand`). Hover, highlight,
+  path preview and the click target then follow the hand. Real controller mode doesn't ray-pick: it scores targets
+  by facing and distance (0x1C488F0), so we stay in mouse mode.
+- **Clicking.** A world click is input event 4 ("Action1"), handled by the character's input controller
+  (`ecl::Character+0xA0`, 0x1B3F680). The trigger can inject the raw input bound to it. Clicking an enemy arms the
+  Spell task with the weapon attack spell (0x1FB3420 / 0x0FD1E00 / 0x1FB2BF0). Tasks can also be started directly:
+  `ic->vf[0x68](type)` then `ic->vf[0x78](task, 0)`.
+- **A physical hit becomes a real attack.** Server Lua `Osi.Attack(attacker, target, 0)` (0x3654360) picks the
+  equipped weapon's attack spell and queues it without the "ignore" flags, so the game rolls normally. `Osi.UseSpell`
+  always sets flags including IgnoreSpellRolls (effect unconfirmed). Neither checks turns or combat. Plan:
+  - when the blade capsule hits a character with enough speed, call `Osi.Attack`;
+  - show the roll in VR from the Script Extender's `DealDamage` / `DealtDamage` events (natural d20, total,
+    critical);
+  - in turn-based combat, only allow it as the character's action.
+- **Dice.** Attack rolls have no 3D dice; the dice animation is for ability checks (RequestedRoll 0xEA,
+  SelectDice 0x131). Physical VR dice for checks would hook there (later).
+- **Turns.** End turn: 0x1B3E3C0(playerId) or `Osi.EndTurn`. Movement resource GUID
+  `d6b2369d-84f0-4ca4-a3a7-62d2d192a185`. Where walking spends it is not found yet; it matters for limiting
+  room-scale walking in combat.
+
 ## 3a. Body and input (agent C, `re-local/ghidra/agents/C_animation_systems.md`)
 
 Answered from agent C's report; the parts our code uses are re-checked in `docs/re-notes/skeleton.md`.
