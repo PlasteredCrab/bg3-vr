@@ -336,3 +336,17 @@ The job system, from decompiles:
   - Stage 0x47 (0x3E53FA0) keys a GPU slot by split index, so two views on index 0 race.
   - Exposure and TAA history are shared unless stages pick resources by split index.
   - Command opcode 0x21 sets the scissor bottom to y + width (0x40C7080).
+
+## Same-frame two-view rendering works (2026-10-19, 14:16)
+
+- **What works.** `!vr_views create` (the game's CreatePlayerView 0x17F82F0, setup 0x588E50, then
+  SetCamera, scene and environment) followed by `!vr_stereo on` (placement through 0x407B800) gives
+  two complete views in one frame: the main view on the left half and the created view on the right.
+  Both render the full scene with correct aspect.
+- **No flicker.** Frame-to-frame change measured on screen captures is the same in both halves (about
+  8-10/255 per sample, animation only), compared with region swaps before.
+- **Captures:** re-local\captures\20261019-141659-create.
+- **Left for VR:**
+  - eye offsets and projections (the stereo hook, with the headset driving it);
+  - per-eye TAA history and exposure (A's notes);
+  - eye resolution (the back buffer halves are 960x1200).
