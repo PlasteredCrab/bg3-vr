@@ -566,6 +566,7 @@ bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintpt
 using ChooseStagesFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view);
 constexpr std::uint32_t kFullSetupRva = 0x588E50; // game pipeline vtable slot 88, same arguments
 std::atomic<bool> g_full_setup{true};
+std::atomic<std::uint8_t> g_split_index_after_build{0}; // [views] split_index
 constexpr std::uint32_t kChooseStagesRva = 0x3AC4EA0;
 
 // A render view's job context ([view+0x40]: 17 job counters the render loop arms and releases each
@@ -1125,6 +1126,15 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                     log::info("views:   split-screen index of the split view {} -> 1 (as 0x3BAA1A0 does)", split_index);
                     log::info("views:   calling the game's full view setup 0x588E50(pipeline, split view)");
                     ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(setup), pipeline, target, fault);
+                    // Index 1 builds the second player's stage set (0x44), but the stage code also uses the
+                    // index per frame: lights, decals and effects are filtered by a per-player bit
+                    // ((mask >> index) & 1), objects carry per-player visibility bits (0x220 / 0x420), and
+                    // some stages bind per-player resources (0x447C4203 / 0xC0F3544B for 0, 0x337B7295 /
+                    // 0xB7F464DD for 1) and per-player texels. There is no second player, so index 1 rendered
+                    // white (2026-10-19). As a second eye of the same player the view renders as player 0.
+                    const std::uint8_t render_index = g_split_index_after_build.load();
+                    *reinterpret_cast<std::uint8_t*>(target + kSplitScreenIndexInView) = render_index;
+                    log::info("views:   split-screen index set to {} for rendering", render_index);
                 } else {
                     log::info("views:   calling 0x3AC4EA0(pipeline, split view) (stage lists only)");
                     ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(choose), pipeline, target, fault);
@@ -1468,6 +1478,11 @@ std::string counter_name(std::uintptr_t counter) {
 
 int stage_id_of(std::uintptr_t stage) {
     return stage_id(stage);
+}
+
+void set_split_index(int index) {
+    g_split_index_after_build.store(static_cast<std::uint8_t>(index < 0 ? 0 : index > 1 ? 1 : index));
+    log::info("views: the split view renders with split-screen index {}", g_split_index_after_build.load());
 }
 
 void set_full_setup(bool on) {

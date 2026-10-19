@@ -56,6 +56,9 @@ void build(const ModuleInfo& module, std::uintptr_t controller, std::size_t inde
 // Whether build runs the game's full view setup (0x588E50; [views] full_setup, default true) or only the
 // stage lists (0x3AC4EA0).
 void set_full_setup(bool on);
+// The split-screen index the split view renders with after the build (which uses 1): [views] split_index,
+// default 0 (render as player 0, the same lights, exposure and per-player resources as the main view).
+void set_split_index(int index);
 
 // After a build that completed: the pipeline's main view and the built split view (view addresses,
 // not ReadStates), the pair that draws the two eyes in same-frame stereo.

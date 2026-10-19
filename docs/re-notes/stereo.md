@@ -267,3 +267,20 @@ The job system, from decompiles:
   ForceSplitscreen is a GlobalSwitches property at +0x110 (registered by 0x2137110).
 - **What changed:** after SetCamera, the build runs the same three calls on the split view, on the game
   thread, and logs the scene before and after.
+
+## The split view renders; the split index decides lights and exposure (2026-10-19)
+
+- **The scene fix works.** With a scene, the split view renders its whole pipeline into the right half,
+  viewport (960,0 960x1080): shadows, G-buffer, lighting, post and history copies. The main and split views
+  share the same full-screen targets, each in its own half. The special view's stage 0x07 composites the
+  shared output to the back buffer.
+- **But the right half came out white and the left flickered.** The stage code uses [view+0x2268] every
+  frame:
+  - light, decal and effect lists are filtered by `(mask >> index) & 1`;
+  - objects carry per-player visibility bits (0x220 for player 0, 0x420 for player 1, as in the
+    controller's Enter);
+  - one stage binds per-player resources (0x447C4203 / 0xC0F3544B for 0, 0x337B7295 / 0xB7F464DD for 1);
+  - one texture coordinate is offset by the index (a per-player texel).
+
+  With no second player, index 1 sees no lights and uses resources that are never filled.
+- **Change:** build with index 1, which gets stage 0x44, then render as index 0 ([views] split_index).
