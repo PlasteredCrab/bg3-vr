@@ -116,6 +116,39 @@ marked **(RE)** wait on agent reports, and nothing in them is claimed about the 
 computed each frame from the pose error (section 2, "Near grab", step 4). Fall back to `SetWorldTransform`
 kinematic targets for very heavy or jittery cases. The math is in `native/core/src/grab_math.cpp`.
 
+## 2b. Items, authority and throwing (agent E, `re-local/ghidra/agents/E_items_interaction.md`)
+
+Nothing below has been tested in game; it is what the decompiled code shows.
+
+- **Authority.** The game always runs a server and a client world, even in single player. Item transforms have
+  a client → server path the server accepts **without an ownership check**. Each frame the client sends
+  `ItemUpdateMessage` 0x44 for every item whose client flag 0x40000 is set (builder 0x1FF3C10). The server
+  (0x426DC40, case 0x44) applies SetTranslate 0x30BCE40 / SetRotate 0x30BD0C0 and flag 0x400. The game itself uses
+  this path: its client settle routine 0x1C7BD70 aligns items to the ground and reports them this way.
+  Characters are different: the server only accepts steering from the controlling peer.
+- **Holding an item (client, game thread):**
+  - on grab: physics suspend 0x1C7DD00(ecl::Item*);
+  - every frame: `SetTranslate` 0x1C77050 and `SetRotate` 0x1C77130;
+  - on release: resume 0x1C7DE60, then report once, either with `ecl::Item::SetFlags` 0x1C76D50(item, 0x40000) or
+    from Lua with `Osi.TeleportToPosition` / `Osi.ItemMoveToPosition`.
+
+  Never raise 0x40000 every frame (one network message each time). This is the transform path. How it combines
+  with the PhysX velocity drive (section 2a) is the main question for the first grab test. The physics
+  suspend sets physics-object flag 0x100000, whose meaning inside phx is unconfirmed.
+- **Throw.** The game's throw is the spell `Throw_Throw`: an `esv::Projectile` carries the object (attach 0x2AE3AD0,
+  move 0x2AE2B20, landing 0x2ADE7A0, which snaps to the navigation grid and wakes item physics). Damage comes from
+  the spell data by weight, not from physics. Plan for a VR throw: fly the object ourselves (physics release
+  velocity, section 2), report where it lands as above, and apply the game's damage and statuses with
+  `Osi.ApplyDamage` / statuses using the same weight rules. Casting the real spell with a given object and
+  destination is untraced.
+- **Bodies.** A corpse stays an `esv::Character`. It can be thrown (the throw rules accept `Dead()`) and is moved with
+  the character branch of `TeleportToPosition` (0x35F09A0). The ragdoll side is in section 2a.
+- **Ray hit → entity.** The game calls the hit object's slot +0xA0, which returns the EntityHandle at the
+  container's +0x20 (agents D and E agree). An item comes from the handle via 0x793890 and a character via 0x7841A0.
+  The raycast probe (`!vr_ray`) logs this slot for every hit.
+- **Inventory and use:** `Osi.Pickup` / `ToInventory` / `Equip` / `Open` / `Close` / `Use` (server Lua). Native use
+  goes through `esv::item::UseSystem` (0x35E6820, 0x33D8D30).
+
 ## 3a. Body and input (agent C, `re-local/ghidra/agents/C_animation_systems.md`)
 
 Answered from agent C's report; the parts our code uses are re-checked in `docs/re-notes/skeleton.md`.
@@ -166,7 +199,7 @@ the engine did, before building the next layer.
 - Ragdoll structure: which wrapper belongs to which bone (GetRagdollPose maps bodies to bone transforms;
   agent D §7 pending).
 - Item ↔ physics body link; transform sync direction (physics → ECS or ECS → physics).
-- Client/server: who simulates item physics in single player, and how positions replicate.
-- Throw action: trajectory and damage resolution we can reuse.
+- ~~Client/server and replication~~, ~~throw resolution~~ (answered, section 2b). Remaining: whether a held
+  item's PhysX body follows the client transform setters or must be driven separately (first grab test).
 - Skeleton bone override point (for arms following the hands) and where the hand bone pose comes from
   (to attach held objects to the visible hand).

@@ -36,7 +36,7 @@ constexpr std::uint32_t kEveryFrames = 6;  // ~10 casts a second at 60 fps
 constexpr std::uint64_t kFullLineEvery = 50;
 constexpr float kRayLength = 10.0f;        // metres
 
-// Query parameter sets seen at real call sites (D_physics.md 8.2) plus a fully permissive one, all cast every
+// Query parameter sets seen at real call sites (D_physics.md 8.2, E_items_interaction.md 11) plus a fully permissive one, all cast every
 // time, so the log shows which masks see items and characters.
 struct Masks {
     const char* name;
@@ -44,9 +44,10 @@ struct Masks {
     std::int32_t context;
     std::uint32_t word0, word3;
 };
-constexpr std::array<Masks, 3> kMasks{{
+constexpr std::array<Masks, 4> kMasks{{
     {"solid", 0xF, 0xCE30, 0x80010080, 1, 0xFFFFFFFF, 0xFFFFFFFF},  // 0x1FE35C0
     {"broad", 5, 0xFFFFFFFF, 0xC, 1, 0xFFFFFFFF, 0xFFFFFFFF},       // 0x1957FD0, AddRagdoll node
+    {"item", 0xF, 0xFFFF, 0x4280, 1, 0xFFFFFFFF, 0xFFFFFFFF},       // client item ground snap 0x1C7C0F0 (agent E)
     {"all", 0xF, 0xFFFFFFFF, 0, 1, 0xFFFFFFFF, 0xFFFFFFFF},         // permissive
 }};
 std::array<std::uintptr_t, kMasks.size()> g_last_wrapper{};
