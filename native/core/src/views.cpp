@@ -865,17 +865,27 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
             // +0x30, count +0x34). Growing it reallocated the shared buffer and left the special view
             // pointing at freed memory (crash, 2026-10-13). Give it its own, empty array first; the
             // game allocates a fresh one on the first stage added.
-            std::uintptr_t target_stages = 0, special_stages = 0, owner = 0;
+            // The split view is a shallow copy of another view: of the special view (3 stages) in most runs,
+            // of the main view (29 stages, the main view's own array and job context) in the 12:04 run on
+            // 2026-10-19, where building into the shared array freed the main view's and crashed the next
+            // frame. Whichever it copied, it starts from an empty array of its own.
+            std::uintptr_t target_stages = 0, special_stages = 0, main_stages = 0, owner = 0;
             mem::try_copy(&target_stages, target + 0x28, sizeof(target_stages));
             mem::try_copy(&special_stages, special_view + 0x28, sizeof(special_stages));
+            mem::try_copy(&main_stages, main_view + 0x28, sizeof(main_stages));
             mem::try_copy(&owner, target + 0x20, sizeof(owner));
-            log::info("views:   target stage group: owner view 0x{:X}, stages 0x{:X} (special's 0x{:X})", owner,
-                      target_stages, special_stages);
-            if (target_stages && target_stages == special_stages) {
+            log::info("views:   target stage group: owner view 0x{:X}, stages 0x{:X} (special's 0x{:X}, main's 0x{:X})",
+                      owner, target_stages, special_stages, main_stages);
+            if (target_stages && (target_stages == special_stages || target_stages == main_stages)) {
                 *reinterpret_cast<std::uintptr_t*>(target + 0x28) = 0;
                 *reinterpret_cast<std::uint32_t*>(target + 0x30) = 0;
                 *reinterpret_cast<std::uint32_t*>(target + 0x34) = 0;
-                log::info("views:   detached the target's stage array from the special view's");
+                log::info("views:   detached the target's stage array from the {} view's",
+                          target_stages == main_stages ? "main" : "special");
+            } else if (target_stages && stage_count(target) != 0) {
+                log::warn("views:   the target has {} stage(s) of its own in an unshared array; not building over them",
+                          stage_count(target));
+                return;
             }
             // Give the split view what the game gives a view it draws: a place in the RenderFrame's view
             // list and a record in the stage resource manager, both done by the game's 0x4073230 (it
