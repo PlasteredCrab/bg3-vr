@@ -10,6 +10,9 @@
 #include <atomic>
 #include <cstdint>
 #include <format>
+#include <cmath>
+#include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -24,6 +27,7 @@ constexpr std::size_t kDrawIndexed = 12, kDraw = 13, kDrawIndexedInstanced = 20,
                       kCopySubresourceRegion = 46, kCopyResource = 47, kClearRenderTargetView = 50,
                       kPSSetShaderResources = 8, kCSSetShaderResources = 67, kCSSetUnorderedAccessViews = 68;
 
+safetyhook::InlineHook g_hooks[14];
 std::mutex g_mutex; // guards everything below; the hooks run on whichever thread uses the context
 std::atomic<bool> g_armed{false};
 std::uint64_t g_start_frame = 0;
@@ -111,6 +115,117 @@ void note_views(std::uintptr_t* slots, UINT start, UINT count, View* const* view
     }
 }
 
+// One pixel of a run's render target, read back right after the run: at 25% across (the left view's half)
+// and 75% across (the right view's), to see which pass first produces the split view's white. Copies go
+// through the copy hook's trampoline (no re-entry into these hooks while g_mutex is held).
+std::map<DXGI_FORMAT, ID3D11Texture2D*> g_staging;
+
+float half_to_float(std::uint16_t h) {
+    const std::uint32_t sign = (h >> 15) & 1, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+    float value = exponent == 0 ? std::ldexp(static_cast<float>(mantissa), -24)
+                  : exponent == 31 ? (mantissa ? NAN : INFINITY)
+                                   : std::ldexp(static_cast<float>(mantissa | 0x400), static_cast<int>(exponent) - 25);
+    return sign ? -value : value;
+}
+float small_float(std::uint32_t bits, int mantissa_bits) { // unsigned 5-bit exponent floats (R11G11B10)
+    const std::uint32_t exponent = bits >> mantissa_bits, mantissa = bits & ((1u << mantissa_bits) - 1);
+    if (exponent == 0) {
+        return std::ldexp(static_cast<float>(mantissa), -14 - mantissa_bits);
+    }
+    if (exponent == 31) {
+        return mantissa ? NAN : INFINITY;
+    }
+    return std::ldexp(static_cast<float>(mantissa | (1u << mantissa_bits)), static_cast<int>(exponent) - 15 - mantissa_bits);
+}
+
+std::string decode_pixel(DXGI_FORMAT format, const std::uint8_t* p) {
+    std::uint32_t u32;
+    std::memcpy(&u32, p, 4);
+    switch (format) {
+    case DXGI_FORMAT_R32G32B32A32_FLOAT: {
+        float v[4];
+        std::memcpy(v, p, 16);
+        return std::format("({:.3g},{:.3g},{:.3g},{:.3g})", v[0], v[1], v[2], v[3]);
+    }
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: {
+        std::uint16_t v[4];
+        std::memcpy(v, p, 8);
+        return std::format("({:.3g},{:.3g},{:.3g},{:.3g})", half_to_float(v[0]), half_to_float(v[1]), half_to_float(v[2]),
+                           half_to_float(v[3]));
+    }
+    case DXGI_FORMAT_R11G11B10_FLOAT:
+        return std::format("({:.3g},{:.3g},{:.3g})", small_float(u32 & 0x7FF, 6), small_float((u32 >> 11) & 0x7FF, 6),
+                           small_float(u32 >> 22, 5));
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+        return std::format("({:.3f},{:.3f},{:.3f})", (u32 & 0x3FF) / 1023.0f, ((u32 >> 10) & 0x3FF) / 1023.0f,
+                           ((u32 >> 20) & 0x3FF) / 1023.0f);
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+        return std::format("({},{},{},{})", p[0], p[1], p[2], p[3]);
+    case DXGI_FORMAT_R16G16_FLOAT: {
+        std::uint16_t v[2];
+        std::memcpy(v, p, 4);
+        return std::format("({:.3g},{:.3g})", half_to_float(v[0]), half_to_float(v[1]));
+    }
+    case DXGI_FORMAT_R32_FLOAT: {
+        float v;
+        std::memcpy(&v, p, 4);
+        return std::format("({:.4g})", v);
+    }
+    case DXGI_FORMAT_R16_FLOAT: {
+        std::uint16_t v;
+        std::memcpy(&v, p, 2);
+        return std::format("({:.3g})", half_to_float(v));
+    }
+    default:
+        return std::format("raw {:08X}", u32);
+    }
+}
+
+// Under g_mutex, on the thread that drew the run.
+std::string sample_target(std::uintptr_t resource) {
+    auto* texture = reinterpret_cast<ID3D11Texture2D*>(resource);
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    if (desc.Width < 256 || desc.SampleDesc.Count != 1 || (desc.BindFlags & D3D11_BIND_DEPTH_STENCIL) ||
+        desc.Width > 4096) {
+        return {};
+    }
+    ID3D11Device* device = render::device();
+    ID3D11Texture2D*& staging = g_staging[desc.Format];
+    if (!staging) {
+        D3D11_TEXTURE2D_DESC s{};
+        s.Width = s.Height = 1;
+        s.MipLevels = s.ArraySize = 1;
+        s.Format = desc.Format;
+        s.SampleDesc.Count = 1;
+        s.Usage = D3D11_USAGE_STAGING;
+        s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(device->CreateTexture2D(&s, nullptr, &staging))) {
+            staging = nullptr;
+            return " px n/a";
+        }
+    }
+    ID3D11DeviceContext* context = nullptr;
+    device->GetImmediateContext(&context);
+    std::string text = " px";
+    for (const float at : {0.25f, 0.75f}) {
+        const UINT x = static_cast<UINT>(desc.Width * at), y = desc.Height / 2;
+        const D3D11_BOX box{x, y, 0, x + 1, y + 1, 1};
+        g_hooks[10].call<void>(context, static_cast<ID3D11Resource*>(staging), 0u, 0u, 0u, 0u,
+                               static_cast<ID3D11Resource*>(texture), 0u, &box);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+            text += std::format(" {}={}", at < 0.5f ? "L" : "R",
+                                decode_pixel(desc.Format, static_cast<const std::uint8_t*>(mapped.pData)));
+            context->Unmap(staging, 0);
+        }
+    }
+    context->Release();
+    return text;
+}
+
 void close_run() {
     if (g_run_open && (g_run.draws || g_run.clears || g_run.dispatches)) {
         g_lines.push_back(std::format("  t{} rt 0x{:X} {}x{} fmt {} (x{}) vp ({:.0f},{:.0f} {:.0f}x{:.0f}) draws {} clears {} "
@@ -119,6 +234,9 @@ void close_run() {
                                       static_cast<int>(g_run.target.format), g_run.target.count, g_run.viewport.TopLeftX,
                                       g_run.viewport.TopLeftY, g_run.viewport.Width, g_run.viewport.Height, g_run.draws,
                                       g_run.clears, g_run.dispatches, g_run.inputs));
+        if (g_run.target.resource && g_run.draws) {
+            g_lines.back() += sample_target(g_run.target.resource);
+        }
     }
     g_run_open = false;
 }
@@ -187,7 +305,6 @@ void note_targets(UINT count, ID3D11RenderTargetView* const* views) {
     resource->Release();
 }
 
-safetyhook::InlineHook g_hooks[14];
 
 void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
                                               ID3D11DepthStencilView* depth) {

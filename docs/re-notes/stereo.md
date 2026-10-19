@@ -303,3 +303,19 @@ The job system, from decompiles:
   reads them at the start of the next frame. The main view's exposure therefore follows the split view's
   (white) image. With index 1, per-player resources would keep these apart.
 - **Screen capture:** 12 frames in re-local\captures\ show the left half swapping regions between frames.
+
+## Ruled out for the white split view (2026-10-19, live memory + decompiles)
+
+- **Environment.** After copy_environment the split view's active atmosphere and lighting have the main
+  view's IDs (0x34500221 / 0x0FB00231, at +8 of +0x28A0 / +0x28D8, read live). Still white.
+- **Focus data (+0x2CC8..+0x2D84, constant buffer +0x2C00..+0x2C7C).**
+  - Slot 2 of the game render view (0x17F2230) runs per frame and fills it from the local players: the
+    view's own player into +0x2CC8, other players into +0x2D00. It looks each player's view up through the
+    manager (0x3BAAE20), so the unregistered split view gets player 1 as "other".
+  - 0x17F2B80 (in begin-recording) builds the 0x80-byte constant buffer from it.
+  - It's character focus data, not exposure.
+- **+0x48.** A per-view occlusion/visibility helper (vtable 0x59116E0, constructor 0x41A1BD0). The base
+  view constructor 0x3CC5AA0 creates it only if frame+0x40 == 0 and [view+0x2BD0] is set (1 in main, 0 in
+  the special view's copy). It affects culling, not colour.
+- **Next:** the GPU trace reads back one pixel of each pass's render target at 25% and 75% across, to find
+  the pass that turns the split view's half white.
