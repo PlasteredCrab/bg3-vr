@@ -36,6 +36,7 @@
 --   !vr_go [height]           follow the character's eyes + !vr_views create + !vr_stereo on (3 s later)
 --   !vr_hands [buzz]          log the motion controllers (poses, buttons, bound profile); buzz pulses both
 --   !vr_ray camera|hand|off|report  physics raycast probe from the screen centre or the right hand's aim
+--   !vr_quality               log LOD / texture streaming state per eye view ([quality] in bg3vr.ini)
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
@@ -469,6 +470,11 @@ Ext.RegisterConsoleCommand("vr_ray", Safely(function(_, mode)
     end
     if BG3VR.WriteBridge(lines) then
         BG3VR.Log("ray probe %s (see 'ray:' lines in bg3vr.log)", mode)
+    end
+end))
+Ext.RegisterConsoleCommand("vr_quality", Safely(function()
+    if BG3VR.WriteBridge({ "quality=report" }) then
+        BG3VR.Log("quality report written to bg3vr.log ('quality:' lines)")
     end
 end))
 -- Any bridge write makes the core log its reports (frame rate, camera, head hide, headset).

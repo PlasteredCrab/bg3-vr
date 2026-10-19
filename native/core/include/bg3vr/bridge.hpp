@@ -49,6 +49,7 @@ struct Request {
     std::optional<std::string> hands;                          // controllers: report | buzz
     std::optional<std::uintptr_t> skeleton;                    // follow this visual's skeleton; 0 = off
     std::optional<std::string> ray;                            // raycast probe: camera | hand | off | report
+    bool quality_report = false;                               // log LOD / texture quality state
 };
 
 // Parses the bridge file:
@@ -69,6 +70,7 @@ struct Request {
 //   hands=report | hands=buzz        (log the motion controllers; buzz also pulses both)
 //   skeleton=<hex visual> | skeleton=off   (read the character's skeleton: bones, Head_M)
 //   ray=camera | ray=hand | ray=off | ray=report   (physics raycast probe)
+//   quality=report                    (LOD and texture streaming state per view)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

@@ -28,6 +28,7 @@ the same kinds of things and then run `!vr_ray off`.
 | 5 | Hold the hands out in front, then `!vr_hands` | `xr input: left/right ... world pos (...)`: world hand positions near the character, about 0.5 m in front of the head |
 | 6 | `!vr_hands buzz` | both controllers vibrate |
 | 6b | `!vr_ray hand`, point the right controller at the floor, a wall, an item (crate, bottle) and a character; then `!vr_ray off` | `ray: [solid/broad/all] at (...) ... wrapper ... type N dynamic/static ... entity slot ...`: which mask set sees items and characters, and whether items carry an entity handle |
+| 6c | `!vr_quality` (after `!vr_go`) | `quality: view 0/1 ... fov ... LOD band factor ... texture factor ...` and the texture cache budget and usage: tells whether `[quality] texture_distance` / `texture_budget_mb` are needed |
 | 7 | `!vr_fps` | `skeleton: ... reads, ... failed, ... with a pose older than the last frame` |
 
 Things to note while in the headset (just say them, the logs carry the numbers):

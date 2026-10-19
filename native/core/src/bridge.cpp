@@ -256,6 +256,8 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "quality") {
+            request.quality_report = text::to_lower(value) == "report";
         } else if (key == "ray") {
             const std::string word = text::to_lower(value);
             if (word == "camera" || word == "hand" || word == "off" || word == "report") {
