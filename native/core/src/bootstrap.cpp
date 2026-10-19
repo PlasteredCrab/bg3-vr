@@ -15,6 +15,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/skeleton.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/trace.hpp"
@@ -113,6 +114,7 @@ DWORD WINAPI watch_modules(void*) {
 void on_game_frame() {
     cull::on_frame();
     views::on_frame();
+    skeleton::on_frame();
 }
 
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
@@ -176,6 +178,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.hide) {
         cull::set_hidden(*request.hide);
     }
+    if (request.skeleton) {
+        skeleton::attach_visual(*request.skeleton);
+    }
     if (request.trace) {
         if (*request.trace == "on") {
             trace::start(module);
@@ -235,6 +240,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     camera::report();
     cull::report();
+    skeleton::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -272,6 +278,7 @@ int init(const wchar_t* root_dir) {
     headset::install(g_config);
 #endif
     cull::init(module);
+    skeleton::init(module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 

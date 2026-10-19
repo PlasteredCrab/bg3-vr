@@ -256,6 +256,12 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "skeleton") {
+            if (text::to_lower(value) == "off") {
+                request.skeleton = 0;
+            } else if (const auto address = parse_address(value)) {
+                request.skeleton = *address;
+            }
         } else if (key == "hands") {
             const std::string word = text::to_lower(value);
             if (word == "report" || word == "buzz") {

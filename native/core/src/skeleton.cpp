@@ -1,0 +1,338 @@
+#include "bg3vr/skeleton.hpp"
+
+#include "bg3vr/log.hpp"
+#include "bg3vr/memory.hpp"
+
+#include <array>
+#include <cctype>
+#include <format>
+#include <atomic>
+#include <cmath>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace bg3vr::skeleton {
+
+namespace {
+
+ModuleInfo g_module;
+
+// Requests from the bridge thread (under g_mutex).
+std::mutex g_mutex;
+std::optional<std::uintptr_t> g_request; // a new visual (0 = stop)
+std::optional<Head> g_head;
+
+// Game thread only.
+std::uintptr_t g_visual = 0;
+std::uintptr_t g_skeleton = 0;
+short g_head_bone = -1;
+std::uint64_t g_frames = 0;
+std::uint64_t g_reads = 0;
+std::uint64_t g_failures = 0;
+std::uint64_t g_stale = 0;
+constexpr std::uint64_t kLogEvery = 300;
+
+struct Bone {
+    std::string name;
+    short parent = -1;
+};
+
+std::uintptr_t rva(std::uintptr_t offset) {
+    return g_module.base + offset;
+}
+
+template <class T>
+bool copy(T& out, std::uintptr_t address) {
+    return mem::try_copy(&out, address, sizeof(T));
+}
+
+// A C string of at most 127 characters, read safely.
+std::string read_name(std::uintptr_t address) {
+    std::array<char, 128> buffer{};
+    for (std::size_t i = 0; i + 1 < buffer.size(); ++i) {
+        if (!copy(buffer[i], address + i) || buffer[i] == '\0') {
+            buffer[i] = '\0';
+            break;
+        }
+    }
+    return buffer.data();
+}
+
+// The skeleton of the visual's default slot (remapper slot -1), or of the first slot; 0 with a reason.
+std::uintptr_t find_skeleton(std::uintptr_t visual, std::string& why, bool verbose) {
+    std::uintptr_t vtable = 0;
+    if (!copy(vtable, visual) || vtable != rva(layout::kVisualVtable)) {
+        why = std::format("not an ls::Visual (vtable {})", mem::describe(g_module, vtable));
+        return 0;
+    }
+    std::uintptr_t slots = 0;
+    std::uint8_t count = 0;
+    if (!copy(slots, visual + layout::kVisualSkeletonSlots) || !copy(count, visual + layout::kVisualSkeletonSlotCount) ||
+        !slots || count == 0) {
+        why = std::format("no skeleton slots (array 0x{:X}, count {})", slots, count);
+        return 0;
+    }
+    std::uintptr_t fallback = 0;
+    for (std::uint8_t i = 0; i < count && i < 16; ++i) {
+        std::uintptr_t slot = 0;
+        std::int32_t remapper = 0;
+        std::uintptr_t skeleton = 0;
+        std::uintptr_t skeleton_vtable = 0;
+        if (!copy(slot, slots + i * sizeof(void*)) || !copy(remapper, slot) ||
+            !copy(skeleton, slot + layout::kSlotSkeleton) || !copy(skeleton_vtable, skeleton)) {
+            continue;
+        }
+        if (skeleton_vtable != rva(layout::kSkeletonVtable)) {
+            if (verbose) log::info("skeleton: slot {} of visual 0x{:X}: 0x{:X} has vtable {}, not the Skeleton's", i, visual,
+                      skeleton, mem::describe(g_module, skeleton_vtable));
+            continue;
+        }
+        if (remapper == -1) {
+            return skeleton;
+        }
+        if (!fallback) {
+            fallback = skeleton;
+        }
+    }
+    if (!fallback) {
+        why = std::format("none of {} slot(s) holds a Skeleton", count);
+    }
+    return fallback;
+}
+
+std::vector<Bone> read_bones(std::uintptr_t skeleton) {
+    std::vector<Bone> bones;
+    std::uintptr_t granny = 0;
+    std::int32_t count = 0;
+    std::uintptr_t array = 0;
+    if (!copy(granny, skeleton + layout::kSkeletonGranny) || !copy(count, granny + layout::kGrannyBoneCount) ||
+        !copy(array, granny + layout::kGrannyBones) || count <= 0 || count > 1024) {
+        log::warn("skeleton: can't read the Granny skeleton of 0x{:X} (granny 0x{:X}, {} bones)", skeleton, granny,
+                  count);
+        return bones;
+    }
+    bones.reserve(static_cast<std::size_t>(count));
+    for (std::int32_t i = 0; i < count; ++i) {
+        const std::uintptr_t bone = array + static_cast<std::uintptr_t>(i) * layout::kGrannyBoneStride;
+        std::uintptr_t name = 0;
+        std::int16_t parent = -1;
+        copy(name, bone + layout::kGrannyBoneName);
+        copy(parent, bone + layout::kGrannyBoneParent);
+        bones.push_back({name ? read_name(name) : std::string("?"), parent});
+    }
+    return bones;
+}
+
+bool bone_matrix(std::uintptr_t skeleton, short bone, float (&out)[16]) {
+    using GetBoneWorldMatrixFn = bool (*)(std::uintptr_t, short, float*);
+    const auto fn = mem::read<GetBoneWorldMatrixFn>(rva(layout::kSkeletonVtable) +
+                                                    layout::kGetBoneWorldMatrixSlot * sizeof(void*));
+    return fn(skeleton, bone, out);
+}
+
+// Rotation of a row-major matrix whose rows 0-2 are the bone's X, Y, Z axes (row-vector convention, as the
+// world-pose buffers are).
+vr::Quat rows_to_quat(const float (&m)[16]) {
+    // Column-vector rotation R = transpose of the 3x3 rows: R[r][c] = m[c*4 + r].
+    const auto R = [&](int r, int c) { return m[c * 4 + r]; };
+    const float trace = R(0, 0) + R(1, 1) + R(2, 2);
+    vr::Quat q;
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q = {(R(2, 1) - R(1, 2)) / s, (R(0, 2) - R(2, 0)) / s, (R(1, 0) - R(0, 1)) / s, 0.25f * s};
+    } else if (R(0, 0) > R(1, 1) && R(0, 0) > R(2, 2)) {
+        const float s = std::sqrt(1.0f + R(0, 0) - R(1, 1) - R(2, 2)) * 2.0f;
+        q = {0.25f * s, (R(0, 1) + R(1, 0)) / s, (R(0, 2) + R(2, 0)) / s, (R(2, 1) - R(1, 2)) / s};
+    } else if (R(1, 1) > R(2, 2)) {
+        const float s = std::sqrt(1.0f + R(1, 1) - R(0, 0) - R(2, 2)) * 2.0f;
+        q = {(R(0, 1) + R(1, 0)) / s, 0.25f * s, (R(1, 2) + R(2, 1)) / s, (R(0, 2) - R(2, 0)) / s};
+    } else {
+        const float s = std::sqrt(1.0f + R(2, 2) - R(0, 0) - R(1, 1)) * 2.0f;
+        q = {(R(0, 2) + R(2, 0)) / s, (R(1, 2) + R(2, 1)) / s, 0.25f * s, (R(1, 0) - R(0, 1)) / s};
+    }
+    const float length = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (length > 0.0f) {
+        for (float& c : q) {
+            c /= length;
+        }
+    }
+    return q;
+}
+
+// Logs every bone (index, name, parent) eight to a line, then the ones an arm/head IK chain needs.
+void log_bones(const std::vector<Bone>& bones) {
+    log::info("skeleton: {} bones", bones.size());
+    std::string line;
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        line += std::format("{}{}:{}<{}", line.empty() ? "" : "  ", i, bones[i].name, bones[i].parent);
+        if ((i + 1) % 8 == 0 || i + 1 == bones.size()) {
+            log::info("skeleton:   {}", line);
+            line.clear();
+        }
+    }
+    static const char* const kInteresting[] = {"head", "neck", "spine", "clavicle", "shoulder", "arm", "elbow",
+                                               "wrist", "hand", "finger", "thumb", "index", "root", "pelvis", "hip"};
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        std::string lower = bones[i].name;
+        for (char& c : lower) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        for (const char* word : kInteresting) {
+            if (lower.find(word) != std::string::npos) {
+                log::info("skeleton: chain bone {} '{}' parent {} ('{}')", i, bones[i].name, bones[i].parent,
+                          bones[i].parent >= 0 && static_cast<std::size_t>(bones[i].parent) < bones.size()
+                              ? bones[static_cast<std::size_t>(bones[i].parent)].name
+                              : "-");
+                break;
+            }
+        }
+    }
+}
+
+void attach_now(std::uintptr_t visual) {
+    g_visual = 0;
+    g_skeleton = 0;
+    g_head_bone = -1;
+    {
+        std::scoped_lock lock(g_mutex);
+        g_head.reset();
+    }
+    if (!visual) {
+        log::info("skeleton: stopped");
+        return;
+    }
+    // Slot 10 must still be the GetBoneWorldMatrix this code was checked against.
+    std::uintptr_t slot10 = 0;
+    copy(slot10, rva(layout::kSkeletonVtable) + layout::kGetBoneWorldMatrixSlot * sizeof(void*));
+    if (slot10 != rva(layout::kGetBoneWorldMatrix)) {
+        log::error("skeleton: Skeleton vtable slot 10 is {}, expected exe+0x{:X}; not reading bones (game updated?)",
+                   mem::describe(g_module, slot10), layout::kGetBoneWorldMatrix);
+        return;
+    }
+    std::string why;
+    const std::uintptr_t skeleton = find_skeleton(visual, why, true);
+    if (!skeleton) {
+        log::warn("skeleton: visual 0x{:X}: {}", visual, why);
+        return;
+    }
+    std::int16_t count = 0;
+    copy(count, skeleton + layout::kSkeletonBoneCount);
+    log::info("skeleton: visual 0x{:X} -> skeleton 0x{:X} ({} bones in the Skeleton)", visual, skeleton, count);
+    const std::vector<Bone> bones = read_bones(skeleton);
+    log_bones(bones);
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        if (bones[i].name == "Head_M") {
+            g_head_bone = static_cast<short>(i);
+        }
+    }
+    if (g_head_bone < 0) {
+        log::warn("skeleton: no Head_M bone; head tracking from the skeleton is off");
+    } else {
+        log::info("skeleton: Head_M is bone {}", g_head_bone);
+    }
+    g_visual = visual;
+    g_skeleton = skeleton;
+    g_reads = g_failures = g_stale = 0;
+}
+
+} // namespace
+
+void init(const ModuleInfo& module) {
+    g_module = module;
+}
+
+void attach_visual(std::uintptr_t visual) {
+    std::scoped_lock lock(g_mutex);
+    g_request = visual;
+}
+
+void on_frame() {
+    ++g_frames;
+    std::optional<std::uintptr_t> request;
+    {
+        std::scoped_lock lock(g_mutex);
+        request.swap(g_request);
+    }
+    if (request) {
+        attach_now(*request);
+    }
+    if (!g_visual) {
+        return;
+    }
+    // Equipment changes and reloads replace skeletons: re-resolve from the visual every frame.
+    std::string why;
+    const std::uintptr_t skeleton = find_skeleton(g_visual, why, false);
+    if (skeleton != g_skeleton) {
+        if (!skeleton) {
+            log::warn("skeleton: the visual 0x{:X} lost its skeleton ({}); stopped", g_visual, why);
+            attach_now(0);
+            return;
+        }
+        log::info("skeleton: the visual's skeleton changed 0x{:X} -> 0x{:X}; re-reading bones", g_skeleton, skeleton);
+        attach_now(g_visual);
+        if (!g_visual) {
+            return;
+        }
+    }
+    if (g_head_bone < 0) {
+        return;
+    }
+
+    float matrix[16];
+    std::array<float, 10> transform{}; // visual world transform: quat, translate, scale
+    std::uint32_t frame = 0;
+    std::uint32_t pose_frame = 0;
+    copy(frame, rva(layout::kFrameCounter));
+    copy(pose_frame, g_skeleton + layout::kSkeletonPoseFrame);
+    if (!bone_matrix(g_skeleton, g_head_bone, matrix) ||
+        !mem::try_copy(transform.data(), g_visual + layout::kVisualWorldTransform, sizeof(transform))) {
+        if (g_failures++ % kLogEvery == 0) {
+            log::warn("skeleton: head bone read failed ({} so far)", g_failures);
+        }
+        return;
+    }
+    ++g_reads;
+    const bool fresh = pose_frame + 1 >= frame;
+    if (!fresh) {
+        ++g_stale;
+    }
+    Head head;
+    head.model = {matrix[12], matrix[13], matrix[14]};
+    const vr::Quat visual_rotation{transform[0], transform[1], transform[2], transform[3]};
+    const vr::Vec3 scaled{head.model[0] * transform[7], head.model[1] * transform[8], head.model[2] * transform[9]};
+    const vr::Vec3 offset = vr::rotate(visual_rotation, scaled);
+    head.world = {transform[4] + offset[0], transform[5] + offset[1], transform[6] + offset[2]};
+    head.world_rotation = vr::multiply(visual_rotation, rows_to_quat(matrix));
+    head.frame = frame;
+    head.fresh = fresh;
+    {
+        std::scoped_lock lock(g_mutex);
+        g_head = head;
+    }
+    if (g_reads % kLogEvery == 1) {
+        log::info("skeleton: frame {} (pose frame {}) Head_M model ({:.3f}, {:.3f}, {:.3f}) world ({:.3f}, {:.3f}, "
+                  "{:.3f}) rot ({:.3f}, {:.3f}, {:.3f}, {:.3f}); visual at ({:.3f}, {:.3f}, {:.3f}) rot ({:.3f}, "
+                  "{:.3f}, {:.3f}, {:.3f}) scale ({:.3f}, {:.3f}, {:.3f}); matrix rows ({:.3f} {:.3f} {:.3f} | {:.3f} "
+                  "{:.3f} {:.3f} | {:.3f} {:.3f} {:.3f})",
+                  frame, pose_frame, head.model[0], head.model[1], head.model[2], head.world[0], head.world[1],
+                  head.world[2], head.world_rotation[0], head.world_rotation[1], head.world_rotation[2],
+                  head.world_rotation[3], transform[4], transform[5], transform[6], transform[0], transform[1],
+                  transform[2], transform[3], transform[7], transform[8], transform[9], matrix[0], matrix[1],
+                  matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9], matrix[10]);
+    }
+}
+
+std::optional<Head> head() {
+    std::scoped_lock lock(g_mutex);
+    return g_head;
+}
+
+void report() {
+    log::info("skeleton: visual 0x{:X} skeleton 0x{:X} head bone {}: {} reads, {} failed, {} with a pose older than "
+              "the last frame",
+              g_visual, g_skeleton, g_head_bone, g_reads, g_failures, g_stale);
+}
+
+} // namespace bg3vr::skeleton

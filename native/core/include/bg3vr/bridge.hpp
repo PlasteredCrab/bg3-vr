@@ -47,6 +47,7 @@ struct Request {
     std::optional<int> xr_lag;                                 // frames between camera update and present; -1 = auto
     std::optional<std::string> stereo;                         // same-frame stereo: on | off | report
     std::optional<std::string> hands;                          // controllers: report | buzz
+    std::optional<std::uintptr_t> skeleton;                    // follow this visual's skeleton; 0 = off
 };
 
 // Parses the bridge file:
@@ -65,6 +66,7 @@ struct Request {
 //   recenter=1
 //   stereo=on | stereo=off | stereo=report   (same-frame stereo on the built split view)
 //   hands=report | hands=buzz        (log the motion controllers; buzz also pulses both)
+//   skeleton=<hex visual> | skeleton=off   (read the character's skeleton: bones, Head_M)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

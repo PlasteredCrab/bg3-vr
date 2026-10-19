@@ -402,7 +402,12 @@ end
 -- thread and gets its camera on the game thread first).
 Ext.RegisterConsoleCommand("vr_go", Safely(function(_, a)
     local height = tonumber(a or "1.7") or 1.7
-    if not StartNativeFollow(height, { "views=create" }) then
+    local extra = { "views=create" }
+    local skeleton = SkeletonBridgeLine and SkeletonBridgeLine()
+    if skeleton then
+        extra[#extra + 1] = skeleton -- bones and the head bone logged alongside, for the first-person eye point
+    end
+    if not StartNativeFollow(height, extra) then
         return
     end
     BG3VR.Log("creating the second view; stereo layout in 3 s")

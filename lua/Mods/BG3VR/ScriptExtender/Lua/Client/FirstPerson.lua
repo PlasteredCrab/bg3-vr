@@ -2,6 +2,7 @@
 --   !vr_vis                 list the controlled character's visual parts (slot, template, flags)
 --   !vr_head hide [match]   hide head parts from the main view, keeping their shadows
 --   !vr_head show           show them again
+--   !vr_skel [off]          read the character's skeleton natively: logs every bone and tracks Head_M
 --
 -- Hiding goes through the native core: it calls the game's own MoveableObject::ToggleCullFlag600
 -- on each visual every frame, from the game thread. (Writing the flags from Lua doesn't work: the
@@ -110,6 +111,30 @@ local function Safely(fn)
 end
 
 Ext.RegisterConsoleCommand("vr_vis", Safely(function() Dump() end))
+
+-- The native "skeleton=" bridge line for the controlled character's root visual, or nil.
+function SkeletonBridgeLine()
+    local root = RootVisual()
+    local address = root and BG3VR.ProxyAddress(root)
+    return address and ("skeleton=" .. address) or nil
+end
+
+Ext.RegisterConsoleCommand("vr_skel", Safely(function(_, mode)
+    if mode == "off" then
+        if BG3VR.WriteBridge({ "skeleton=off" }) then
+            BG3VR.Log("skeleton reading stopped")
+        end
+        return
+    end
+    local line = SkeletonBridgeLine()
+    if not line then
+        BG3VR.Warn("no controlled character visual")
+        return
+    end
+    if BG3VR.WriteBridge({ line }) then
+        BG3VR.Log("reading the character's skeleton (%s); bones and Head_M in bg3vr.log", line)
+    end
+end))
 
 Ext.RegisterConsoleCommand("vr_head", Safely(function(_, mode, match)
     if mode == "hide" then
