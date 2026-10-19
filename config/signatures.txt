@@ -68,3 +68,12 @@ job_submit = 48 89 54 24 10 53 48 83 EC 20 8B 51 04 48 8B D9
 view_release_jobs = 40 53 48 83 EC 20 48 8B 41 40 48 8B D9 48 8B 50 40
 # End-recording's call of each stage's slot 8 (0x3CC7050, loop head): rbx = the stage slot.
 stage_wait_call = 48 8B 0B 48 8B 01 FF 50 40 48 83 C3 08 48 3B DF 75 ?? 48 8B 5C 24 30 48 83 C4 20
+
+# A render view's job context, made the root view constructor's way (0x407B080) for the split view, which
+# otherwise shares the special view's (views.cpp new_job_context; 2026-10-19).
+# The game allocator (0x40EA160): returns the allocator; arena = result + 0xE8.
+game_allocator = 48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 0F 85 ?? ?? ?? ?? 48 89 6C 24 38
+# Allocate (0x4188700): rcx = arena, rdx = size, r8 = alignment, r9 = &slack; returns the block.
+allocator_alloc = 48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 54 41 55 41 56 41 57 48 83 EC 20 BD E0 00 00 00
+# Job context init (0x40878C0): rcx = the zeroed 0x88-byte context; creates its 17 job counters.
+job_context_init = 48 89 5C 24 08 48 89 7C 24 10 55 48 8B EC 48 83 EC 50 48 8B D9

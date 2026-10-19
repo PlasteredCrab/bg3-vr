@@ -463,6 +463,50 @@ bool call_build_stages(BuildStagesFn build, std::uintptr_t pipeline, std::uintpt
 using ChooseStagesFn = void (*)(std::uintptr_t pipeline, std::uintptr_t view);
 constexpr std::uint32_t kChooseStagesRva = 0x3AC4EA0;
 
+// A render view's job context ([view+0x40]: 17 job counters the render loop arms and releases each
+// frame and the frame end waits on). The root view constructor 0x407B080 allocates 0x88 bytes from the
+// game allocator (0x4188700 on arena 0x40EA160()+0xE8, align 0x10), zeroes them and fills them with
+// 0x40878C0; the destructor 0x407B320 destroys the counters and frees the block with the same
+// allocator. The split view, a copy of the special view, shares the special view's context: the
+// stage setup then made that context's +0x40 counter wait for its own +0x78, which needs the split
+// view's stages, and the split view's stage 0x08 waited on +0x40 during end-recording: a cycle (job dumps,
+// 2026-10-19). So it gets a context of its own, made the constructor's way.
+using GameAllocatorFn = std::uintptr_t (*)();
+using AllocateFn = void* (*)(std::uintptr_t arena, std::uint64_t size, std::uint64_t align, std::int64_t* slack);
+using InitJobContextFn = void (*)(void* context);
+constexpr std::uint32_t kGameAllocatorRva = 0x40EA160;
+constexpr std::uint32_t kAllocateRva = 0x4188700;
+constexpr std::uint32_t kInitJobContextRva = 0x40878C0;
+constexpr std::size_t kJobContextSize = 0x88;
+
+std::uintptr_t new_job_context(GameAllocatorFn allocator, AllocateFn allocate, InitJobContextFn init) {
+    __try {
+        std::int64_t slack = 0;
+        void* context = allocate(allocator() + 0xE8, kJobContextSize, 0x10, &slack);
+        if (!context) {
+            return 0;
+        }
+        std::memset(context, 0, kJobContextSize);
+        init(context);
+        return reinterpret_cast<std::uintptr_t>(context);
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                  : EXCEPTION_CONTINUE_SEARCH) {
+        return 0;
+    }
+}
+
+// The three functions, if the signatures resolved where this build has them.
+std::optional<std::array<std::uintptr_t, 3>> job_context_functions() {
+    const auto allocator = sig::lookup("game_allocator");
+    const auto allocate = sig::lookup("allocator_alloc");
+    const auto init = sig::lookup("job_context_init");
+    if (!allocator || !allocate || !init || *allocator - g_module.base != kGameAllocatorRva ||
+        *allocate - g_module.base != kAllocateRva || *init - g_module.base != kInitJobContextRva) {
+        return std::nullopt;
+    }
+    return std::array<std::uintptr_t, 3>{*allocator, *allocate, *init};
+}
+
 bool call_choose_stages(ChooseStagesFn choose, std::uintptr_t pipeline, std::uintptr_t view, Fault& fault) {
     __try {
         choose(pipeline, view);
@@ -897,6 +941,39 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                 g_eye_views = std::array<std::uintptr_t, 2>{main_view, target}; // for the dump's labels
             }
             dump_jobs("before build");
+            // Its own job context (see new_job_context), before the stage setup links it into the frame.
+            {
+                std::uintptr_t contexts[3]{};
+                mem::try_copy(&contexts[0], main_view + 0x40, sizeof(std::uintptr_t));
+                mem::try_copy(&contexts[1], special_view + 0x40, sizeof(std::uintptr_t));
+                mem::try_copy(&contexts[2], target + 0x40, sizeof(std::uintptr_t));
+                log::info("views:   job contexts: main 0x{:X}, special 0x{:X}, split 0x{:X}", contexts[0], contexts[1],
+                          contexts[2]);
+                if (!contexts[2] || contexts[2] == contexts[0] || contexts[2] == contexts[1]) {
+                    const auto functions = job_context_functions();
+                    if (!functions) {
+                        log::warn("views:   the split view shares another view's job context and the allocator / "
+                                  "context functions aren't where this build has them; not building (it would hang)");
+                        return;
+                    }
+                    const std::uintptr_t context =
+                        new_job_context(reinterpret_cast<GameAllocatorFn>((*functions)[0]),
+                                        reinterpret_cast<AllocateFn>((*functions)[1]),
+                                        reinterpret_cast<InitJobContextFn>((*functions)[2]));
+                    if (!context) {
+                        log::warn("views:   creating a job context for the split view FAULTED or failed; not building");
+                        return;
+                    }
+                    *reinterpret_cast<std::uintptr_t*>(target + 0x40) = context;
+                    log::info("views:   the split view shared job context 0x{:X}; it now has its own, 0x{:X}:", contexts[2],
+                              context);
+                    for (std::size_t i = 0; i < 17; ++i) {
+                        std::uintptr_t counter = 0;
+                        mem::try_copy(&counter, context + 8 * i, sizeof(counter));
+                        log::info("views:     ctx+0x{:02X} {}", 8 * i, describe_counter(counter));
+                    }
+                }
+            }
             const std::uint32_t before = stage_count(target);
             bool ok = true;
             Fault fault;

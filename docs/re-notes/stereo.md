@@ -177,3 +177,19 @@ The job system, from decompiles:
 - **What changed:** our hand-built `full` variant gave the split view a stage 0x45 the game never gives a
   normal view in this mode, and its job never finished. `!vr_views build` now calls 0x3AC4EA0 itself
   (signature `pipeline_choose_stages`), and `full` is refused.
+
+## Root cause of the split-view hang: a shared job context (job dumps, 2026-10-19)
+
+- **The split view shares the special view's job context.** Its [view+0x40] is the special view's
+  (0x192B08A74D0 in both before the build): it starts as a copy of the special view, pointers included.
+  The root constructor 0x407B080 normally gives every view its own context: 0x88 bytes from the game
+  allocator (0x4188700 on arena 0x40EA160()+0xE8, align 0x10), zeroed, then filled by 0x40878C0.
+- **The game's stage setup then closes a loop.** 0x3AC4EA0 made that shared context's +0x40 counter wait
+  for its own +0x78.
+- **The deadlock.** In the first frame, the split view's end-recording called stage 0x08's wait
+  (0x3F7A6F0), which tail-calls 0x410E880 on ctx+0x40. That counter was armed and signalled (n4 f5) but
+  never released, because its predecessor ctx+0x78 (n2 f5) can't complete before this frame's stages do.
+- **How it was pinned down.** The watchdog's frame registers (the wait's r14, end-recording's rbx) were
+  matched against the job dump, and the event log shows the same order.
+- **Fix:** `!vr_views build` gives the split view its own context, made the constructor's way, before
+  calling 0x3AC4EA0. The view destructor (0x407B320) frees it with the same allocator.

@@ -24,6 +24,13 @@ std::atomic<bool> g_armed{false};
 std::atomic<std::uint64_t> g_start_frame{0};
 std::atomic<int> g_frames{0};
 std::atomic<std::int64_t> g_budget{0};
+// The render thread (the one that begins recording): job submits and waits are logged only there, or the
+// game thread's own jobs use up the budget.
+std::atomic<DWORD> g_render_thread{0};
+
+bool on_render_thread() {
+    return GetCurrentThreadId() == g_render_thread.load(std::memory_order_relaxed);
+}
 
 struct Site {
     const char* signature;
@@ -54,6 +61,7 @@ std::uintptr_t return_address(const safetyhook::Context& ctx) {
 
 // render_view_begin / render_view_end entries: rcx = view.
 void on_begin(safetyhook::Context& ctx) {
+    g_render_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     std::uint64_t frame;
     if (take(frame)) {
         log::info("events: f{} t{} begin-recording view 0x{:X} ({}) from {}", frame, GetCurrentThreadId(), ctx.rcx,
@@ -96,7 +104,7 @@ void on_stage_wait(safetyhook::Context& ctx) {
 // 0x410E5D0 entry: rcx = counter, rdx = job.
 void on_submit(safetyhook::Context& ctx) {
     std::uint64_t frame;
-    if (!take(frame)) {
+    if (!on_render_thread() || !take(frame)) {
         return;
     }
     std::uintptr_t job_vtable = 0;
@@ -108,7 +116,7 @@ void on_submit(safetyhook::Context& ctx) {
 // 0x410E880 entry: rcx = counter, dl = help run jobs while waiting.
 void on_wait(safetyhook::Context& ctx) {
     std::uint64_t frame;
-    if (!take(frame)) {
+    if (!on_render_thread() || !take(frame)) {
         return;
     }
     log::info("events: f{} t{} wait (help {}) from {} on [{}] {}", frame, GetCurrentThreadId(), ctx.rdx & 0xFF,
