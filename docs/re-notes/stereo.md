@@ -209,3 +209,24 @@ The job system, from decompiles:
   output objects into the view's stage 0x21.
 - **Next step:** `!vr_views build` now runs 0x588E50 ([views] full_setup = true). A crash watch (vectored
   handler) logs any fault with its registers, stack and a job dump.
+
+## Full setup works; split-screen index (2026-10-19)
+
+- **The full setup now runs cleanly.** 0x588E50 on the split view, after the fixes above, ran with no fault
+  or hang: 27 stages, all of the main view's except 0x44 and 0x0A. The right half was still black.
+- **0x0A** (vtable 0x58C4810) is built inline by 0x3AC4EA0 only for the pipeline's main view
+  (pipeline+0xA0), so a second player's view wouldn't have it either.
+- **0x44** (vtable 0x58C6DE8) is built by 0x3AC51C0 only for the main view or a view whose byte
+  [view+0x2268] is 1. That byte is the split-screen index after WriteState.
+- **How the game adds a player view.** In 0x3BAA1A0(manager, player), the game's own add-player-view:
+  1. the manager's vtable slot 1 creates a view;
+  2. [view+0x2268] is set to 1;
+  3. the view is disabled if this isn't the active player;
+  4. the pipeline setup (DAT_146046f98 slot 88) runs;
+  5. the view is stored as player 1's or 2's.
+
+  0x3BAA380 (add local player, called from 0x17F5CB0 with an input device) uses it, or a spare view from
+  the manager's pool (+0x80, count +0x8C).
+- **The index matters.** About 60 places read [view+0x2268], most of them stage code. The split view (a
+  copy of the special view) had index 0, so it probably renders as player 1. The build now sets it to 1
+  before 0x588E50, the game's order.

@@ -47,6 +47,8 @@ inline constexpr std::size_t kDebugName = state::kSize + 0x08;        // MSVC st
 // ReadState's offset in the view. The Script Extender says 0x2148; in 4.1.1.7631656 the game render
 // view's vtable (exe+0x55F42F8) sits 0x2158 before ReadState, and its methods use fields at +0x2150.
 inline constexpr std::size_t kReadStateInView = 0x2158;
+// The split-screen index byte right after WriteState (0x21E0 + 0x88); outside the part the frame sync copies.
+inline constexpr std::size_t kSplitScreenIndexInView = kReadStateInView + 2 * state::kSize;
 // How far past the view's start to look for the camera's matrices (GameRenderView::PerCamera).
 inline constexpr std::size_t kMatrixSearchBytes = 0x4000;
 
@@ -1002,6 +1004,14 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
                     // objects it hooks into the view's stage 0x21. Stage lists alone leave the view black
                     // (2026-10-19). It crashed on 2026-10-13, before the split view had its own stage array,
                     // frame record and job context.
+                    // The game's own add-player-view (0x3BAA1A0) creates the view, sets its split-screen index
+                    // ([view+0x2268], a byte after WriteState) to 1, then runs this same setup (pipeline slot 88).
+                    // The index is read by about 60 places in the stage code and decides stage 0x44 (built for
+                    // the main view or index 1, 0x3AC51C0); the special view's copy has 0.
+                    std::uint8_t split_index = 0xFF;
+                    mem::try_copy(&split_index, target + kSplitScreenIndexInView, 1);
+                    *reinterpret_cast<std::uint8_t*>(target + kSplitScreenIndexInView) = 1;
+                    log::info("views:   split-screen index of the split view {} -> 1 (as 0x3BAA1A0 does)", split_index);
                     log::info("views:   calling the game's full view setup 0x588E50(pipeline, split view)");
                     ok = call_choose_stages(reinterpret_cast<ChooseStagesFn>(setup), pipeline, target, fault);
                 } else {
@@ -1273,10 +1283,12 @@ void dump_jobs(const char* why, const std::vector<Hint>& hints) {
         mem::try_copy(&ctx, view + 0x40, sizeof(ctx));
         mem::try_copy(&controller, view + kReadStateInView + state::kController, sizeof(controller));
         mem::try_copy(&owner, view + 0x20, sizeof(owner));
-        log::info("jobs [{}]: view {} 0x{:X} ({}) vtable {} recording {} enabled {} camera 0x{:X} group owner 0x{:X} "
-                  "context 0x{:X}{}",
-                  why, v, view, role, mem::describe(g_module, vtable), recording, enabled, controller, owner, ctx,
-                  mark(view));
+        std::uint8_t split_index = 0xFF;
+        mem::try_copy(&split_index, view + kSplitScreenIndexInView, 1);
+        log::info("jobs [{}]: view {} 0x{:X} ({}) vtable {} recording {} enabled {} split index {} camera 0x{:X} group owner "
+                  "0x{:X} context 0x{:X}{}",
+                  why, v, view, role, mem::describe(g_module, vtable), recording, enabled, split_index, controller, owner,
+                  ctx, mark(view));
         for (std::size_t i = 0; i < 17; ++i) {
             std::uintptr_t counter = 0;
             mem::try_copy(&counter, ctx + 8 * i, sizeof(counter));
