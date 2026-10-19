@@ -319,3 +319,20 @@ The job system, from decompiles:
   the special view's copy). It affects culling, not colour.
 - **Next:** the GPU trace reads back one pixel of each pass's render target at 25% and 75% across, to find
   the pass that turns the split view's half white.
+
+## Agent reports (2026-10-19)
+
+- `re-local/ghidra/agents/A_rendering.md` (rendering reference manual) and
+  `re-local/ghidra/agents/B_splitscreen.md` (player manager, player views, splitscreen ECS systems,
+  recipe). Agent C (animation and other systems) is still running.
+- **Why the copied split view drew no pixels.** The likely cause, combining A's open question with the
+  diffs: the copied view kept the special view's per-view GPU constant-buffer handles
+  (+0x2820..+0x2868; split values differ from main's and match the copy's source). The special view
+  records after the split view and uploads its own camera-less blocks into those buffers, so the split
+  view's draws can read empty matrices. Unconfirmed. `!vr_views create` uses the game's constructor
+  (0x17F82F0), which gives the view its own buffers, occlusion object (+0x48, Intel Masked Occlusion
+  Culling), job context and stage group.
+- **A's two-eye notes.**
+  - Stage 0x47 (0x3E53FA0) keys a GPU slot by split index, so two views on index 0 race.
+  - Exposure and TAA history are shared unless stages pick resources by split index.
+  - Command opcode 0x21 sets the scissor bottom to y + width (0x40C7080).
