@@ -103,3 +103,9 @@ view_set_viewport = 40 53 48 83 EC 20 F2 0F 10 02 0F 57 E4
 # (re-local/ghidra/agents/C_animation_systems.md 1.6 A). Called on animation worker threads.
 #   mov [rsp+10h],rbx ; mov [rsp+18h],rbp ; push rsi ; sub rsp,20h ; mov esi,[rcx+114h]
 skeleton_update_mesh_bindings = 48 89 5C 24 10 48 89 6C 24 18 56 48 83 EC 20 8B B1 14 01 00 00
+
+# Timeline: a player joins (fn 0x1D5B890, agent G "OnTimelinePlayerJoined"), entry; r8 = ecl::Timeline*,
+# r9 = timeline data (type at +0x78). It calls 0x2007570, which skips the view camera switch when
+# byte [timeline+0x4C5] is set (test at 0x2007AE9). dialogue.cpp keeps dialogues in first person here.
+#   push rbp..r15 ; lea rbp,[rsp-0Fh] ; sub rsp,0A8h ; mov rax,[cookie] ; xor rax,rsp ; mov [rbp-9],rax ; mov [rbp-61h],r9
+timeline_player_joined = 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F1 48 81 EC A8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 F7 4C 89 4D 9F

@@ -15,6 +15,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/dialogue.hpp"
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/skeleton.hpp"
@@ -257,6 +258,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     camera::report();
     cull::report();
     skeleton::report();
+    dialogue::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -297,6 +299,7 @@ int init(const wchar_t* root_dir) {
     skeleton::init(module);
     rayprobe::init(module);
     quality::install(g_config, module);
+    dialogue::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 

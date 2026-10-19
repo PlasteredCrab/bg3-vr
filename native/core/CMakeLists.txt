@@ -19,6 +19,7 @@ add_library(bg3vr_base STATIC
     src/quality.cpp
     src/rayprobe.cpp
     src/skeleton.cpp
+    src/dialogue.cpp
     src/grab_math.cpp
     src/ik.cpp
     src/stereo.cpp

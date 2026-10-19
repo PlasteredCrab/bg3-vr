@@ -362,6 +362,11 @@ std::uintptr_t controller() {
     return g_controller;
 }
 
+bool pose_held() {
+    std::scoped_lock lock(g_mutex);
+    return g_pose.has_value();
+}
+
 void set_pose(std::optional<Pose> pose) {
     std::scoped_lock lock(g_mutex);
     g_pose = pose;

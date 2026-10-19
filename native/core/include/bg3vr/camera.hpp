@@ -50,6 +50,8 @@ std::uintptr_t controller();
 
 // The pose to hold the driven camera at; nullopt releases it.
 void set_pose(std::optional<Pose> pose);
+// True while a pose is held (the mod drives the camera).
+bool pose_held();
 
 // Replaces the driven camera's projection with an asymmetric per-eye one (in the game's reversed-Z
 // form, using the controller's own near and far planes) at the projection setter call
