@@ -55,6 +55,10 @@ struct HandState {
     bool primary = false;   // A / X
     bool secondary = false; // B / Y
     bool menu = false;
+    // The grip in the game world (game convention and units), placed like the head (camera::tracked_to_world);
+    // invalid while no pose is held or the grip isn't tracked.
+    vr::RigidPose world_grip;
+    bool world_valid = false;
     std::uint64_t sample = 0; // increases with every sample (0: never sampled)
 };
 inline constexpr std::size_t kLeftHand = 0;

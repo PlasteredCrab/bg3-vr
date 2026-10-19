@@ -63,6 +63,15 @@ RigidPose anchor(const camera::Pose& anchor, const RigidPose& local) {
     return {{anchor.x + offset[0], anchor.y + offset[1], anchor.z + offset[2]}, multiply(yaw, local.orientation)};
 }
 
+RigidPose tracked_to_world(const RigidPose& xr_pose, const Vec3& recenter_position, float recenter_yaw_deg,
+                           float world_scale, const camera::Pose& held) {
+    RigidPose local = recentered(from_openxr(xr_pose), recenter_position, recenter_yaw_deg);
+    for (float& axis : local.position) {
+        axis *= world_scale;
+    }
+    return anchor(held, local);
+}
+
 camera::Mat4 projection(float angle_left, float angle_right, float angle_up, float angle_down, float near_z,
                         float far_z) {
     const float l = std::tan(angle_left), r = std::tan(angle_right);

@@ -555,7 +555,8 @@ std::string hand_text(const HandState& hand) {
                        hand.velocity[0], hand.velocity[1], hand.velocity[2], hand.angular_velocity[0],
                        hand.angular_velocity[1], hand.angular_velocity[2], hand.velocity_valid ? "" : " (invalid)",
                        hand.trigger, hand.squeeze, hand.stick_x, hand.stick_y, hand.stick_click ? " stick-click" : "",
-                       hand.primary ? " primary" : "", hand.secondary ? " secondary" : "", hand.menu ? " menu" : "");
+                       hand.primary ? " primary" : "", hand.secondary ? " secondary" : "", hand.menu ? " menu" : "") +
+           (hand.world_valid ? " | world " + pose_text(hand.world_grip) : " | world (no held pose)");
 }
 
 void log_profiles() {
@@ -612,6 +613,12 @@ HandState hand_state(const xr::Hand& hand, std::uint64_t sample) {
     state.primary = hand.primary;
     state.secondary = hand.secondary;
     state.menu = hand.menu;
+    if (state.tracked) {
+        if (const auto world = camera::tracked_to_world(state.grip)) {
+            state.world_grip = *world;
+            state.world_valid = true;
+        }
+    }
     state.sample = sample;
     return state;
 }

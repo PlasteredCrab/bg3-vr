@@ -66,6 +66,8 @@ float g_world_scale = 1.0f;
 vr::Vec3 g_recenter_position{0.0f, 0.0f, 0.0f};
 float g_recenter_yaw_deg = 0.0f;
 std::optional<vr::RigidPose> g_written;
+// The held pose (after following and mouse look) at the last view update: where tracked poses are anchored.
+std::optional<Pose> g_anchor;
 std::array<AppliedView, kAppliedHistory> g_applied{};
 std::uint64_t g_applied_serial = 0;
 std::atomic<std::uint64_t> g_head_writes{0};
@@ -202,7 +204,6 @@ void on_view_update(safetyhook::Context& ctx) {
     }
     vr::RigidPose world{{pose->x, pose->y, pose->z}, pose_quaternion(*pose)};
     if (head) {
-        vr::RigidPose local = vr::from_openxr(head->pose);
         vr::Vec3 position;
         float recenter_yaw;
         {
@@ -210,12 +211,7 @@ void on_view_update(safetyhook::Context& ctx) {
             position = g_recenter_position;
             recenter_yaw = g_recenter_yaw_deg;
         }
-        local = vr::recentered(local, position, recenter_yaw);
-
-        for (float& axis : local.position) {
-            axis *= g_world_scale;
-        }
-        world = vr::anchor(*pose, local);
+        world = vr::tracked_to_world(head->pose, position, recenter_yaw, g_world_scale, *pose);
     }
     std::memcpy(transform, world.orientation.data(), sizeof(world.orientation));
     std::memcpy(reinterpret_cast<std::uint8_t*>(transform) + layout::kTransformTranslate, world.position.data(),
@@ -224,6 +220,7 @@ void on_view_update(safetyhook::Context& ctx) {
 
     std::scoped_lock lock(g_mutex);
     g_written = world;
+    g_anchor = *pose;
     if (head) {
         std::move_backward(g_applied.begin(), g_applied.end() - 1, g_applied.end());
         AppliedView& applied = g_applied.front();
@@ -443,6 +440,14 @@ void set_head(std::optional<HeadView> view) {
         }
     }
     g_head = view;
+}
+
+std::optional<vr::RigidPose> tracked_to_world(const vr::RigidPose& xr_pose) {
+    std::scoped_lock lock(g_mutex);
+    if (!g_anchor || !g_pose) {
+        return std::nullopt;
+    }
+    return vr::tracked_to_world(xr_pose, g_recenter_position, g_recenter_yaw_deg, g_world_scale, *g_anchor);
 }
 
 void set_recenter(const vr::RigidPose& origin) {

@@ -387,6 +387,16 @@ void test_vr_math() {
     CHECK(vec_near(stepped.position, {0, 0, 0.5f}) && near_eq(vr::facing_yaw(stepped.orientation), 30.0f));
     const vr::Quat pitched = vr::multiply(vr::yaw_quat(origin_yaw), {0.258819f, 0, 0, 0.965926f}); // 30 deg about +X
     const auto tilted = vr::recentered({origin, pitched}, origin, origin_yaw);
+    {
+        // tracked_to_world: a hand 0.5 m right of and 0.3 m in front of the recentering origin (OpenXR: -Z is
+        // forward), world scale 2, anchored at (10, 2, -3) facing yaw 90 (+X): it lands 1 unit along the
+        // anchor's right (-Z) and 0.6 along its forward (+X).
+        const vr::RigidPose hand{{0.5f, 1.0f, -0.3f}, {0, 0, 0, 1}};
+        const auto world = vr::tracked_to_world(hand, {0.0f, 1.0f, 0.0f}, 0.0f, 2.0f, {10, 2, -3, 90, 0});
+        CHECK(std::abs(world.position[0] - 10.6f) < 1e-4f);
+        CHECK(std::abs(world.position[1] - 2.0f) < 1e-4f);
+        CHECK(std::abs(world.position[2] - -4.0f) < 1e-4f);
+    }
     CHECK(vec_near(vr::rotate(tilted.orientation, {0, 0, 1}), vr::rotate({0.258819f, 0, 0, 0.965926f}, {0, 0, 1})));
 
     // Projection: the symmetric case reproduces the game's own matrix (logged 2026-10-12: vertical

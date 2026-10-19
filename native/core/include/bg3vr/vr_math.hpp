@@ -44,6 +44,12 @@ RigidPose recentered(const RigidPose& pose, const Vec3& origin_position, float o
 // is ignored, so the horizon stays level with the real one.
 RigidPose anchor(const camera::Pose& anchor, const RigidPose& local);
 
+// A tracked pose (head, hand) from OpenXR's LOCAL space into the game world, the way the camera places
+// the head: mirrored into game convention, taken relative to the recentering origin (position and yaw,
+// game convention), its position scaled by `world_scale`, then anchored at the held pose.
+RigidPose tracked_to_world(const RigidPose& xr_pose, const Vec3& recenter_position, float recenter_yaw_deg,
+                           float world_scale, const camera::Pose& held);
+
 // Per-eye projection in the game's form (left-handed, reversed-Z, finite far plane: the near plane
 // maps to depth 1) from OpenXR field-of-view angles in radians (left and down are negative).
 camera::Mat4 projection(float angle_left, float angle_right, float angle_up, float angle_down, float near_z,

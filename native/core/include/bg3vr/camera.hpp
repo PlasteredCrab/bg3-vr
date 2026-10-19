@@ -96,6 +96,11 @@ void set_head(std::optional<HeadView> view);
 // of its orientation is used, so the horizon stays level.
 void set_recenter(const vr::RigidPose& origin);
 
+// A tracked pose (e.g. a controller's grip, OpenXR convention and LOCAL space, like HeadView::pose) in the
+// game world, placed exactly as the head is: same recentering, world scale and anchor (the held pose at
+// the last view update). nullopt while no pose is held.
+std::optional<vr::RigidPose> tracked_to_world(const vr::RigidPose& xr_pose);
+
 // A head view as the driven camera actually used it: `serial` counts view updates of the driven
 // camera, and `view_matrix` is the world-to-camera matrix written for it, to recognise the frame later.
 struct AppliedView {
