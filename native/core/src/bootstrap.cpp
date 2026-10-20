@@ -17,6 +17,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
+#include "bg3vr/hold.hpp"
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/vrplay.hpp"
 #include "bg3vr/picking.hpp"
@@ -126,6 +127,7 @@ void on_game_frame() {
     quality::on_frame();
     locomotion::on_frame();
     vrplay::on_frame();
+    hold::on_frame();
 }
 
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
@@ -206,6 +208,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
             headset::set_stereo(false);
 #endif
             cull::forget();
+            hold::forget();
         }
     }
     if (request.ik) {
@@ -294,6 +297,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     locomotion::report();
     vrplay::report();
     bodyik::report();
+    hold::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -339,6 +343,7 @@ int init(const wchar_t* root_dir) {
     picking::install(g_config, module);
     locomotion::install(g_config, module);
     vrplay::install(g_config, module);
+    hold::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
     bridge::write_status("xr=off\n"); // a fresh start: nothing from a previous run counts

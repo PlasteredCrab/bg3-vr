@@ -4,6 +4,7 @@
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/gpu_trace.hpp"
+#include "bg3vr/hold.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/bridge.hpp"
@@ -669,6 +670,15 @@ void update_input(const xr::Frame& frame) {
         aim = camera::tracked_to_world(now[kRightHand].aim);
     }
     rayprobe::set_hand_aim(aim);
+    // Grips and aims for picking things up (world, game convention).
+    for (std::size_t h = 0; h < 2; ++h) {
+        std::optional<vr::RigidPose> aim_world;
+        if (now[h].aim_valid) {
+            aim_world = camera::tracked_to_world(now[h].aim);
+        }
+        hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f,
+                       now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world);
+    }
     // The grips for the arm IK (world, game convention).
     bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
                         now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);

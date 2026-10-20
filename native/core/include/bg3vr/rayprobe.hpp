@@ -51,4 +51,19 @@ std::optional<vr::RigidPose> hand_aim();
 // Game thread (camera view update): casts every few updates while a source is set; logs changes.
 void on_frame();
 
+// One raycast through the game's RaycastClosest (game thread). Masks as at the game's call sites; the defaults are
+// the picking objects job's (characters and items, agent I 1.4).
+struct Hit {
+    vr::Vec3 position{};
+    vr::Vec3 normal{};
+    float distance = 0.0f;           // metres from `from`
+    std::uintptr_t wrapper = 0;      // Larian per-actor wrapper (PxActor userData)
+    std::uintptr_t container = 0;    // wrapper+0x38
+    std::uint64_t entity = 0;        // container+0x20, 0xFFC0000000000000 = none
+    std::uint16_t actor_type = 0xFFFF; // PhysX concrete type: 5 dynamic, 6 static, 13 articulation link
+};
+inline constexpr std::uint64_t kNullEntity = 0xFFC0000000000000ull;
+std::optional<Hit> raycast(const vr::Vec3& from, const vr::Vec3& to, std::uint32_t query_flags = 0xF,
+                           std::uint32_t group = 0x4CA20, std::uint32_t exclude = 0x210080);
+
 } // namespace bg3vr::rayprobe

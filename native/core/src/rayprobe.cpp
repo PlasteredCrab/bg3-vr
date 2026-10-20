@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <mutex>
@@ -178,6 +179,41 @@ void set_hand_aim(std::optional<vr::RigidPose> aim) {
 std::optional<vr::RigidPose> hand_aim() {
     std::scoped_lock lock(g_mutex);
     return g_hand_aim;
+}
+
+std::optional<Hit> raycast(const vr::Vec3& from, const vr::Vec3& to, std::uint32_t query_flags, std::uint32_t group,
+                           std::uint32_t exclude) {
+    const std::uintptr_t scene = find_scene();
+    const auto slot = peek<std::uintptr_t>(rva(layout::kMainSceneVtable) + layout::kRaycastSlot);
+    if (!scene || slot != rva(layout::kRaycastSlotTarget)) {
+        return std::nullopt;
+    }
+    std::array<std::uint8_t, layout::kHitSize> hit{};
+    const float no_hit = FLT_MAX;
+    std::memcpy(hit.data() + layout::kHitFraction, &no_hit, sizeof(no_hit));
+    alignas(16) std::array<std::uint8_t, 0x40> filter{};
+    const Masks masks{"api", query_flags, group, exclude, 1, 0xFFFFFFFF, 0xFFFFFFFF};
+    bool faulted = false;
+    const bool result = guarded_raycast(reinterpret_cast<RaycastFn>(slot), scene, from.data(), to.data(), hit.data(),
+                                        masks, filter.data(), faulted);
+    std::uintptr_t wrapper = 0;
+    std::memcpy(&wrapper, hit.data() + layout::kHitWrapper, sizeof(wrapper));
+    if (faulted || !result || !wrapper) {
+        return std::nullopt;
+    }
+    Hit out;
+    float fraction = 0.0f;
+    std::memcpy(out.normal.data(), hit.data() + layout::kHitNormal, sizeof(float) * 3);
+    std::memcpy(out.position.data(), hit.data() + layout::kHitPosition, sizeof(float) * 3);
+    std::memcpy(&fraction, hit.data() + layout::kHitFraction, sizeof(fraction));
+    const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    out.distance = fraction * std::sqrt(dx * dx + dy * dy + dz * dz);
+    out.wrapper = wrapper;
+    out.container = peek<std::uintptr_t>(wrapper + layout::kWrapperContainer);
+    out.entity = out.container ? peek<std::uint64_t>(out.container + layout::kContainerEntity, kNullEntity) : kNullEntity;
+    const auto actor = peek<std::uintptr_t>(wrapper + layout::kWrapperActor);
+    out.actor_type = actor ? peek<std::uint16_t>(actor + layout::kActorConcreteType, 0xFFFF) : 0xFFFF;
+    return out;
 }
 
 void on_frame() {

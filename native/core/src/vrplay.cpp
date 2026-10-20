@@ -1,6 +1,7 @@
 #include "bg3vr/vrplay.hpp"
 
 #include "bg3vr/camera.hpp"
+#include "bg3vr/hold.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -246,9 +247,11 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         l.active && l.primary, l.active && l.secondary, l.active && l.menu, l.active && l.stick_click,
         r.active && analog(r.trigger, g_down[RightTrigger]), r.active && analog(r.squeeze, g_down[RightGrip]),
         r.active && r.primary, r.active && r.secondary, r.active && r.stick_click};
+    const bool grips_grab = hold::enabled(); // the grips pick things up instead
     for (int c = 0; c < kControlCount; ++c) {
         const Binding& b = g_bindings[c];
-        if (now[c] != g_down[c] && b.bound && !b.recenter) {
+        const bool grip = c == LeftGrip || c == RightGrip;
+        if (now[c] != g_down[c] && b.bound && !b.recenter && !(grips_grab && grip && !g_injected[c])) {
             if (inject(b.device, b.id, now[c])) {
                 g_injected[c] = now[c];
                 if (now[c]) {
