@@ -11,6 +11,7 @@
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/grab_math.hpp"
 #include "bg3vr/ik.hpp"
+#include "bg3vr/rigid.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
@@ -853,6 +854,83 @@ void test_grab_math() {
     CHECK(!grab::is_flick({0, 1, 0}, {2, 0, 0}, {0, 1, 5}));
 }
 
+// A row-major, row-vector world-pose matrix as Granny stores it: rows 0-2 are the rotated axes, row 3 the translation.
+void granny_matrix(const vr::Quat& q, const vr::Vec3& t, float m[16]) {
+    const vr::Vec3 axes[3] = {vr::rotate(q, {1, 0, 0}), vr::rotate(q, {0, 1, 0}), vr::rotate(q, {0, 0, 1})};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            m[r * 4 + c] = axes[r][static_cast<std::size_t>(c)];
+        }
+        m[r * 4 + 3] = 0.0f;
+    }
+    m[12] = t[0];
+    m[13] = t[1];
+    m[14] = t[2];
+    m[15] = 1.0f;
+}
+
+vr::Vec3 rigid_apply(const rigid::Rigid& r, const vr::Vec3& v) {
+    const vr::Vec3 a = rigid::apply_r(r.R, v);
+    return {a[0] + r.t[0], a[1] + r.t[1], a[2] + r.t[2]};
+}
+
+void test_rigid() {
+    const vr::Quat q = vr::multiply(vr::yaw_quat(90.0f), {0.2588190f, 0.0f, 0.0f, 0.9659258f}); // yaw 90 after 30 deg about X
+    const vr::Vec3 t{1.0f, 2.0f, 3.0f};
+    float m[16];
+    granny_matrix(q, t, m);
+    const rigid::Rigid r = rigid::from_matrix(m);
+    // A point through the row-vector matrix (p * M) and through the rigid form agree, and match the quaternion.
+    const vr::Vec3 p{0.3f, -0.4f, 0.5f};
+    const vr::Vec3 row{p[0] * m[0] + p[1] * m[4] + p[2] * m[8] + m[12], p[0] * m[1] + p[1] * m[5] + p[2] * m[9] + m[13],
+                       p[0] * m[2] + p[1] * m[6] + p[2] * m[10] + m[14]};
+    const vr::Vec3 rotated = vr::rotate(q, p);
+    const vr::Vec3 expected{rotated[0] + t[0], rotated[1] + t[1], rotated[2] + t[2]};
+    CHECK(vec_near(rigid_apply(r, p), row));
+    CHECK(vec_near(rigid_apply(r, p), expected));
+    // quat_to_matrix agrees with vr::rotate.
+    float R[3][3];
+    rigid::quat_to_matrix(q, R);
+    CHECK(vec_near(rigid::apply_r(R, p), rotated));
+    // Round trip keeps the matrix (including the untouched column 3).
+    float back[16];
+    std::memcpy(back, m, sizeof(back));
+    rigid::to_matrix(r, back);
+    bool same = true;
+    for (int i = 0; i < 16; ++i) {
+        same = same && near_eq(back[i], m[i]);
+    }
+    CHECK(same);
+    // Carry: a child at a fixed local offset from its parent keeps that offset when the parent moves.
+    const vr::Vec3 local_point{0.0f, 0.1f, 0.25f};
+    const vr::Quat parent_q = vr::yaw_quat(20.0f);
+    const vr::Vec3 parent_t{0.5f, 1.2f, -0.3f};
+    float parent_m[16], child_m[16];
+    granny_matrix(parent_q, parent_t, parent_m);
+    const vr::Vec3 child_t_world = vr::rotate(parent_q, local_point);
+    granny_matrix(parent_q, {parent_t[0] + child_t_world[0], parent_t[1] + child_t_world[1], parent_t[2] + child_t_world[2]},
+                  child_m);
+    const vr::Quat moved_q = vr::multiply(vr::yaw_quat(-70.0f), {0.0f, 0.0f, 0.3826834f, 0.9238795f});
+    const vr::Vec3 moved_t{-1.0f, 0.8f, 2.0f};
+    float moved_m[16];
+    granny_matrix(moved_q, moved_t, moved_m);
+    const rigid::Rigid carried =
+        rigid::carry(rigid::from_matrix(parent_m), rigid::from_matrix(moved_m), rigid::from_matrix(child_m));
+    const vr::Vec3 moved_local = vr::rotate(moved_q, local_point);
+    CHECK(vec_near({carried.t[0], carried.t[1], carried.t[2]},
+                   {moved_t[0] + moved_local[0], moved_t[1] + moved_local[1], moved_t[2] + moved_local[2]}));
+    float child_moved_expected[16];
+    granny_matrix(moved_q, {0, 0, 0}, child_moved_expected);
+    const rigid::Rigid expected_child = rigid::from_matrix(child_moved_expected);
+    bool same_rotation = true;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            same_rotation = same_rotation && near_eq(carried.R[i][j], expected_child.R[i][j]);
+        }
+    }
+    CHECK(same_rotation);
+}
+
 } // namespace
 
 int main() {
@@ -875,6 +953,7 @@ int main() {
     test_stereo();
     test_ik();
     test_grab_math();
+    test_rigid();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }
