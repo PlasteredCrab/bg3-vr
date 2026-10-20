@@ -31,6 +31,7 @@ constexpr std::size_t kVisualTransform = 0x08; // quat, translate +0x10, scale +
 struct Side {
     short upper = -1, lower = -1, hand = -1;
     short dummy = -1; // the weapon bone below the hand
+    short index = -1, middle = -1, pinky = -1; // knuckles (IndexFinger1 / MiddleFinger1 / PinkyFinger1): the hand's own frame
     std::vector<std::pair<short, int>> followers; // bone, chain slot (0 upper, 1 lower, 2 hand)
     bool ok() const { return upper >= 0 && lower >= 0 && hand >= 0; }
 };
@@ -64,6 +65,7 @@ std::atomic<bool> g_recalibrate{true};
 std::atomic<std::uint64_t> g_applied{0};
 std::atomic<std::uint64_t> g_skipped{0};
 std::atomic<int> g_logged{0};
+std::atomic<int> g_logged_hands{0};
 
 int find(const std::vector<Bone>& bones, const std::string& name) {
     for (std::size_t i = 0; i < bones.size(); ++i) {
@@ -79,6 +81,10 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     const auto parent = [&](int b) { return b >= 0 && b < static_cast<int>(bones.size()) ? bones[b].parent : short(-1); };
     const int dummy_bone = find(bones, dummy);
     side.dummy = static_cast<short>(dummy_bone);
+    const std::string suffix = std::string(dummy).find("_R_") != std::string::npos ? "_R" : "_L";
+    side.index = static_cast<short>(find(bones, "IndexFinger1" + suffix));
+    side.middle = static_cast<short>(find(bones, "MiddleFinger1" + suffix));
+    side.pinky = static_cast<short>(find(bones, "PinkyFinger1" + suffix));
     side.hand = static_cast<short>(!overrides[2].empty() ? find(bones, overrides[2]) : parent(dummy_bone));
     side.lower = static_cast<short>(!overrides[1].empty() ? find(bones, overrides[1]) : parent(side.hand));
     side.upper = static_cast<short>(!overrides[0].empty() ? find(bones, overrides[0]) : parent(side.lower));
@@ -103,6 +109,8 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     log::info("ik: {} arm: upper {} '{}', forearm {} '{}', hand {} '{}' (from {} bone {}), {} bones follow", label,
               side.upper, bones[side.upper].name, side.lower, bones[side.lower].name, side.hand, bones[side.hand].name,
               dummy, dummy_bone, side.followers.size());
+    log::info("ik: {} hand frame from knuckles: index {} middle {} pinky {}{}", label, side.index, side.middle, side.pinky,
+              side.index >= 0 && side.middle >= 0 && side.pinky >= 0 ? "" : " (MISSING: weapon hands fall back to the animated hand)");
     return side;
 }
 
@@ -255,36 +263,73 @@ void apply(std::uintptr_t skeleton) {
             cal.valid = true;
         }
 
-        // Weapon hands: the weapon bone's rotation relative to the hand (from this frame's animated pose) gives the hand
-        // rotation that puts the weapon bone at the controller's orientation, and the wrist goal that puts it at the
-        // controller's position.
+        // Weapon hands: the hand turned so that its own frame, taken from the knuckles of this frame's animated pose
+        // (wrist -> middle knuckle = where the fingers point, pinky knuckle -> index knuckle = up the fist), matches the
+        // controller's grip frame (OpenXR: -Z along the pointing index finger, +Y up the fist; game convention after
+        // the Z mirror: fingers +Z, up +Y), times the [ik] weapon angle. A held weapon then sits in the fist the way the
+        // game's animations hold it. The wrist goal is moved so the weapon bone (the grip point) lands on the
+        // controller grip.
         bool weapon = false;
         float weapon_hand[3][3]{};
         vr::Vec3 wrist_goal = goal;
-        if (hands && hands->weapon && side.dummy >= 0) {
-            if (float* md = get(pose, side.dummy)) {
-                const Rigid dummy = from_matrix(md);
-                float hand_t[3][3], local[3][3], local_t[3][3], desired[3][3];
-                transpose(hand.R, hand_t);
-                mul(hand_t, dummy.R, local);
-                transpose(local, local_t);
-                quat_to_matrix(vr::multiply(vr::multiply(inverse, target->orientation), hands->offset[static_cast<std::size_t>(s)]),
-                               desired);
-                mul(desired, local_t, weapon_hand);
-                const float d[3] = {dummy.t[0] - hand.t[0], dummy.t[1] - hand.t[1], dummy.t[2] - hand.t[2]};
-                float in_hand[3]{}, moved[3]{};
-                for (int i = 0; i < 3; ++i) {
-                    for (int j = 0; j < 3; ++j) {
-                        in_hand[i] += hand_t[i][j] * d[j];
+        if (hands && hands->weapon && side.dummy >= 0 && side.index >= 0 && side.middle >= 0 && side.pinky >= 0) {
+            float* md = get(pose, side.dummy);
+            float* mi = get(pose, side.index);
+            float* mm = get(pose, side.middle);
+            float* mp = get(pose, side.pinky);
+            if (md && mi && mm && mp) {
+                const Rigid dummy = from_matrix(md), index = from_matrix(mi), middle = from_matrix(mm), pinky = from_matrix(mp);
+                const auto sub = [](const float* a, const float* b) { return vr::Vec3{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+                const auto dot3 = [](const vr::Vec3& a, const vr::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+                const auto cross3 = [](const vr::Vec3& a, const vr::Vec3& b) {
+                    return vr::Vec3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+                };
+                const auto unit = [&](vr::Vec3 v) {
+                    const float n = std::sqrt(dot3(v, v));
+                    return n > 1e-6f ? vr::Vec3{v[0] / n, v[1] / n, v[2] / n} : vr::Vec3{0.0f, 0.0f, 0.0f};
+                };
+                const vr::Vec3 fingers = unit(sub(middle.t, hand.t));
+                vr::Vec3 up = sub(index.t, pinky.t);
+                const float along = dot3(up, fingers);
+                up = unit({up[0] - along * fingers[0], up[1] - along * fingers[1], up[2] - along * fingers[2]});
+                if (dot3(fingers, fingers) > 0.5f && dot3(up, up) > 0.5f) {
+                    float hand_t[3][3];
+                    transpose(hand.R, hand_t);
+                    const auto local = [&](const vr::Vec3& v) {
+                        return vr::Vec3{hand_t[0][0] * v[0] + hand_t[0][1] * v[1] + hand_t[0][2] * v[2],
+                                        hand_t[1][0] * v[0] + hand_t[1][1] * v[1] + hand_t[1][2] * v[2],
+                                        hand_t[2][0] * v[0] + hand_t[2][1] * v[1] + hand_t[2][2] * v[2]};
+                    };
+                    const vr::Vec3 f_l = local(fingers), u_l = local(up), b_l = cross3(f_l, u_l);
+                    float c[3][3];
+                    quat_to_matrix(vr::multiply(vr::multiply(inverse, target->orientation), hands->offset[static_cast<std::size_t>(s)]), c);
+                    const vr::Vec3 cf{c[0][2], c[1][2], c[2][2]}, cu{c[0][1], c[1][1], c[2][1]};
+                    const vr::Vec3 cb = cross3(cf, cu);
+                    for (int i = 0; i < 3; ++i) {
+                        for (int j = 0; j < 3; ++j) {
+                            weapon_hand[i][j] = cf[static_cast<std::size_t>(i)] * f_l[static_cast<std::size_t>(j)] +
+                                                cu[static_cast<std::size_t>(i)] * u_l[static_cast<std::size_t>(j)] +
+                                                cb[static_cast<std::size_t>(i)] * b_l[static_cast<std::size_t>(j)];
+                        }
+                    }
+                    const vr::Vec3 d = local(sub(dummy.t, hand.t));
+                    vr::Vec3 moved{};
+                    for (int i = 0; i < 3; ++i) {
+                        for (int j = 0; j < 3; ++j) {
+                            moved[static_cast<std::size_t>(i)] += weapon_hand[i][j] * d[static_cast<std::size_t>(j)];
+                        }
+                    }
+                    wrist_goal = {goal[0] - moved[0], goal[1] - moved[1], goal[2] - moved[2]};
+                    weapon = true;
+                    if (g_logged_hands.load(std::memory_order_relaxed) < 6) {
+                        g_logged_hands.fetch_add(1, std::memory_order_relaxed);
+                        log::info("ik: {} hand frame (model): fingers ({:.2f}, {:.2f}, {:.2f}) up ({:.2f}, {:.2f}, {:.2f}); "
+                                  "controller forward ({:.2f}, {:.2f}, {:.2f}) up ({:.2f}, {:.2f}, {:.2f}); grip point "
+                                  "{:.3f} m from the wrist",
+                                  s ? "right" : "left", fingers[0], fingers[1], fingers[2], up[0], up[1], up[2], cf[0],
+                                  cf[1], cf[2], cu[0], cu[1], cu[2], std::sqrt(dot3(d, d)));
                     }
                 }
-                for (int i = 0; i < 3; ++i) {
-                    for (int j = 0; j < 3; ++j) {
-                        moved[i] += weapon_hand[i][j] * in_hand[j];
-                    }
-                }
-                wrist_goal = {goal[0] - moved[0], goal[1] - moved[1], goal[2] - moved[2]};
-                weapon = true;
             }
         }
 

@@ -1424,7 +1424,7 @@ void install(const Config& config) {
     g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
     g_ui_wrist_width = ui_number("wrist_width", 0.3f, 0.1f, 1.0f);
-    g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "world")) == "wrist", std::memory_order_relaxed);
+    g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "wrist")) == "wrist", std::memory_order_relaxed);
     g_menu_enabled = config.get_bool("menu", "enabled", true);
     g_menu_width = ui_number("menu_width", 0.62f, 0.2f, 2.0f);
     g_menu_distance = ui_number("menu_distance", 0.7f, 0.3f, 3.0f);

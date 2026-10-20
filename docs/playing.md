@@ -20,7 +20,7 @@ them; they are marked "(off)".
    - first-person view at your character's eye height;
    - stereo three seconds later;
    - your own head hidden;
-   - the game UI on a panel in front of you;
+   - the game UI on the back of your left wrist (the left stick click moves it in front of you and back);
    - hand pointing, thumbstick walking and the controller bindings.
 
    After a loading screen it starts again, and switching characters moves it to the new one.
@@ -77,7 +77,7 @@ which overrides `bg3vr.ini` (delete it to go back to the ini's values).
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
 | `[vr] eye_offset` | 0.10 | eye height above the head bone, metres |
-| `[ui] placement`, `width`, `distance` | world, 1.1, 1.0 | the UI panel (`wrist` puts it on your left wrist; the left stick click switches) |
+| `[ui] placement`, `width`, `distance` | wrist, 1.1, 1.0 | the UI panel (`world` puts it in front of you; the left stick click switches) |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |
