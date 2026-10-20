@@ -54,14 +54,13 @@ light buzz.
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
 | `[vr] eye_offset` | 0.10 | eye height above the head bone, metres |
-| `[ui] placement`, `width`, `distance` | world, 1.1, 1.0 | the UI panel |
+| `[ui] placement`, `width`, `distance` | world, 1.1, 1.0 | the UI panel (`wrist` puts it on your left wrist; the left stick click switches) |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |
 | `[ik] arms` | false (off) | arms and the held weapon follow your hands |
 | `[grab] probe` / `hold` | false (off) | pick items up with the grips |
 | `[combat] physical` | false (off) | swing the right hand through a character to make your normal weapon attack (the game rolls) |
-| `[ui] placement` | world | `wrist` puts the UI on your left wrist (the left stick click switches) |
 
 ## Console commands (Script Extender console, client context)
 
