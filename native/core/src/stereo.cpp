@@ -81,6 +81,26 @@ bool was_rewritten(std::uintptr_t view) {
     return false;
 }
 
+// The room filter of outline draws (agent R): 0x17E3320(level object, view, position) -> bool; counted per view.
+safetyhook::InlineHook g_room_hook;
+std::array<std::atomic<std::uintptr_t>, 2> g_room_view{};
+std::array<std::atomic<std::uint64_t>, 2> g_room_calls{}, g_room_false{};
+std::atomic<std::uint64_t> g_room_copies{0};
+std::atomic<std::int32_t> g_room_main{-1}, g_room_eye{-1};
+
+bool on_room_filter(std::uintptr_t level_object, std::uintptr_t view, std::uintptr_t position) {
+    const bool visible = g_room_hook.call<bool>(level_object, view, position);
+    for (std::size_t i = 0; i < 2; ++i) {
+        if (view && g_room_view[i].load(std::memory_order_relaxed) == view) {
+            g_room_calls[i].fetch_add(1, std::memory_order_relaxed);
+            if (!visible) {
+                g_room_false[i].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    return visible;
+}
+
 safetyhook::MidHook g_reprojection_hook; // stage 0x1B, 0x3E32C44
 safetyhook::MidHook g_velocity_hook;     // stage 0x40, 0x3E12730
 std::atomic<std::uint64_t> g_reprojections{0};
@@ -300,6 +320,29 @@ void on_camera_built(safetyhook::Context& ctx) {
             *reinterpret_cast<std::uint8_t*>(eye_view + layout::kOutlineGate) = main_gate;
             g_outline_copies.fetch_add(1, std::memory_order_relaxed);
         }
+        // The player's room (agent R): outline draws are filtered by [view+0x2BF8], which the game writes only into
+        // views registered with the player manager; the eye view would stay in room 0 and lose every indoor outline.
+        // Also the see-through (focus) source +0x2CC8..+0x2D87 and the focus constants +0x2C00..+0x2C3F built from it
+        // (zero in the eye otherwise: wall / roof cut-away could differ per eye).
+        g_room_view[0].store(main_view, std::memory_order_relaxed);
+        g_room_view[1].store(eye_view, std::memory_order_relaxed);
+        const auto main_room = mem::read<std::int32_t>(main_view + 0x2BF8);
+        const auto eye_room = mem::read<std::int32_t>(eye_view + 0x2BF8);
+        if (main_room != g_room_main.load(std::memory_order_relaxed) || eye_room != g_room_eye.load(std::memory_order_relaxed)) {
+            log::info("stereo: player room [view+0x2BF8] main {} eye {} (+0x2BFC {} / {}, +0x2BFD {} / {}, +0x2AEA {} / {}); "
+                      "copying the main view's room, player and focus data to the eye",
+                      main_room, eye_room, mem::read<std::uint8_t>(main_view + 0x2BFC), mem::read<std::uint8_t>(eye_view + 0x2BFC),
+                      mem::read<std::uint8_t>(main_view + 0x2BFD), mem::read<std::uint8_t>(eye_view + 0x2BFD),
+                      mem::read<std::uint8_t>(main_view + 0x2AEA), mem::read<std::uint8_t>(eye_view + 0x2AEA));
+            g_room_main.store(main_room, std::memory_order_relaxed);
+            g_room_eye.store(main_room, std::memory_order_relaxed);
+        }
+        std::memcpy(reinterpret_cast<void*>(eye_view + 0x2BE8), reinterpret_cast<const void*>(main_view + 0x2BE8), 0x18);
+        *reinterpret_cast<std::uint8_t*>(eye_view + 0x2AEA) = mem::read<std::uint8_t>(main_view + 0x2AEA);
+        *reinterpret_cast<std::uint8_t*>(eye_view + 0x2258) = mem::read<std::uint8_t>(main_view + 0x2258);
+        std::memcpy(reinterpret_cast<void*>(eye_view + 0x2CC8), reinterpret_cast<const void*>(main_view + 0x2CC8), 0xC0);
+        std::memcpy(reinterpret_cast<void*>(eye_view + 0x2C00), reinterpret_cast<const void*>(main_view + 0x2C00), 0x40);
+        g_room_copies.fetch_add(1, std::memory_order_relaxed);
     }
     g_rewrites[eye].fetch_add(1, std::memory_order_relaxed);
 }
@@ -446,6 +489,14 @@ void install(const Config& config, const ModuleInfo& module) {
     } else {
         log::warn("stereo: stage 0x1B reprojection site doesn't match (or [views] eye_reprojection off); not hooked");
     }
+    // Outline room filter (agent R), for counting what each eye drops.
+    const std::uintptr_t room = module.base + 0x17E3320;
+    if (bytes_at(room, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x57, 0x48, 0x83, 0xEC, 0x60, 0x48, 0x8B, 0x05})) {
+        if (auto h = safetyhook::InlineHook::create(reinterpret_cast<void*>(room), reinterpret_cast<void*>(&on_room_filter))) {
+            g_room_hook = std::move(*h);
+            log::info("stereo: outline room filter hooked at exe+0x17E3320 (counting per eye)");
+        }
+    }
     const std::uintptr_t velocity = module.base + 0x3E12730; // cmp byte [rbx+18h],0 ; jz ; mov rcx,[rbx+2138h]
     if (config.get_bool("views", "eye_velocity", true) &&
         bytes_at(velocity, {0x80, 0x7B, 0x18, 0x00, 0x74, 0x21, 0x48, 0x8B, 0x8B, 0x38, 0x21, 0x00, 0x00})) {
@@ -504,6 +555,10 @@ void report() {
               "velocity blocks {}; outline gate copies {} (main {}, eye {})",
               g_reprojections.load(), g_velocity_rewrites.load(), g_outline_copies.load(), g_outline_main.load(),
               g_outline_eye.load());
+    log::info("stereo: outline room filter: left eye {} calls / {} dropped, right eye {} / {}; room data copied {} times "
+              "(room main {}, eye {})",
+              g_room_calls[0].load(), g_room_false[0].load(), g_room_calls[1].load(), g_room_false[1].load(),
+              g_room_copies.load(), g_room_main.load(), g_room_eye.load());
 }
 
 } // namespace bg3vr::stereo
