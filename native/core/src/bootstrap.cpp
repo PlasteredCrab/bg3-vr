@@ -221,6 +221,13 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.ik) {
         bodyik::set_enabled(*request.ik);
     }
+    if (request.third_person) {
+        // Third person: the game's camera and its mouse picking; first person: the [vr] profile again.
+        const bool third = *request.third_person;
+        vrplay::set_third_person(third);
+        picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
+        bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
+    }
     if (request.move_stick) {
         locomotion::set_enabled(*request.move_stick);
     }

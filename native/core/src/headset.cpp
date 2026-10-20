@@ -429,9 +429,11 @@ float comfort_vignette_now(double dt) {
     return g_vignette;
 }
 float g_frame_vignette = 0.0f; // set once per headset frame
+std::optional<std::array<float, 2>> g_screen_cursor; // third person: the laser dot on the flat screen (uv)
 
 // `rect` (back buffer pixels; width 0 = all of it) into the whole image.
-void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, const blit::Blitter::Rect& rect = {}) {
+void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, const blit::Blitter::Rect& rect = {},
+                      const blit::Blitter::Overlay* overlay_in = nullptr) {
     ID3D11Texture2D* back_buffer = nullptr;
     if (FAILED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
         return;
@@ -442,7 +444,8 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, con
         if (source.Width == g_image_width && source.Height == g_image_height) {
             blit::Blitter::Overlay overlay;
             overlay.vignette = g_frame_vignette;
-            g_blitter.draw(back_buffer, rect, target.view, g_image_width, g_image_height, g_linearize, overlay);
+            g_blitter.draw(back_buffer, rect, target.view, g_image_width, g_image_height, g_linearize,
+                           overlay_in ? *overlay_in : overlay);
         }
         back_buffer->Release();
         return;
@@ -466,7 +469,13 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, con
 void submit_screen(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     if (frame.state.shouldRender) {
         const xr::EyeImage image = g_session->acquire_quad();
-        copy_back_buffer(swapchain, image);
+        blit::Blitter::Overlay overlay; // the flat screen: no vignette; the laser dot in third person
+        if (g_screen_cursor) {
+            overlay.cursor_u = (*g_screen_cursor)[0];
+            overlay.cursor_v = (*g_screen_cursor)[1];
+            overlay.cursor_radius = 0.006f;
+        }
+        copy_back_buffer(swapchain, image, {}, &overlay);
         g_session->release_quad();
     }
     g_session->end_frame_quad(frame, g_screen_width_m, g_screen_distance_m);
@@ -724,6 +733,12 @@ void update_input(const xr::Frame& frame) {
     if (feedback.recenter) {
         g_recenter_request.store(true, std::memory_order_relaxed);
     }
+    if (feedback.toggle_view) {
+        static int request = 0;
+        const bool to_third = !vrplay::third_person();
+        bridge::set_status("request", std::format("{} view_{}", ++request, to_third ? "third" : "first"));
+        log::info("vr: asking the Lua side for {} person", to_third ? "third" : "first");
+    }
     if (feedback.toggle_panel) {
         const bool wrist = !g_ui_wrist.load(std::memory_order_relaxed);
         g_ui_wrist.store(wrist, std::memory_order_relaxed);
@@ -915,8 +930,28 @@ void move_cursor(float u, float v) {
     SetCursorPos(point.x, point.y);
 }
 
+// Third person: the laser points at the flat screen quad (LOCAL, g_screen_distance_m ahead, g_screen_width_m wide).
+void update_screen_laser() {
+    g_screen_cursor.reset();
+    if (!vrplay::active() || !vrplay::third_person() || !g_ui_laser || !g_image_width) {
+        return;
+    }
+    xr::PanelPlacement screen;
+    screen.anchor = xr::PanelPlacement::Anchor::Local;
+    screen.pose.position = {0.0f, 0.0f, -g_screen_distance_m};
+    screen.width_m = g_screen_width_m;
+    const float height = g_screen_width_m * static_cast<float>(g_image_height) / static_cast<float>(g_image_width);
+    const HandState right = hands()[kRightHand];
+    const auto uv = right.aim_valid ? panel_uv(right.aim, screen, height) : std::nullopt;
+    if (uv) {
+        g_screen_cursor = *uv;
+        move_cursor((*uv)[0], (*uv)[1]);
+    }
+}
+
 void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
-    const bool want = g_ui_enabled && !g_ui_failed && vrplay::active() && g_mode != Mode::Screen;
+    update_screen_laser();
+    const bool want = g_ui_enabled && !g_ui_failed && vrplay::active() && !vrplay::third_person() && g_mode != Mode::Screen;
     gpu_trace::watch_ui(want);
     if (!want) {
         if (g_ui_shown) {

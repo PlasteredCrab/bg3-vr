@@ -479,6 +479,7 @@ void test_parse_bridge() {
     CHECK(!bridge::parse("move=fast\n").move_stick);
     CHECK(bridge::parse("vr=start\n").vr == std::string("start") && bridge::parse("vr=STOP\n").vr == std::string("stop"));
     CHECK(bridge::parse("vr=pause\n").vr == std::string("pause") && !bridge::parse("vr=go\n").vr);
+    CHECK(bridge::parse("view=third\n").third_person == true && bridge::parse("view=FIRST\n").third_person == false);
     CHECK(bridge::parse("ik=on\n").ik == true && bridge::parse("ik=OFF\n").ik == false && !bridge::parse("ik=1\n").ik);
     CHECK(bridge::parse("quality=report\n").quality_report && !bridge::parse("ray=off\n").quality_report);
     CHECK(bridge::parse("views=find\n").views_find == true && bridge::parse("views=DUMP\n").views_find == false);

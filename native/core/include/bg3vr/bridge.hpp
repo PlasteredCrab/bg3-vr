@@ -54,6 +54,7 @@ struct Request {
     std::optional<bool> move_stick;                            // thumbstick locomotion on/off
     std::optional<std::string> vr;                             // VR play: start | stop | pause (level unloading)
     std::optional<bool> ik;                                    // arm IK on/off
+    std::optional<bool> third_person;                          // view=third (true) | view=first (false)
 };
 
 // Parses the bridge file:
@@ -79,6 +80,7 @@ struct Request {
 //   move=stick | move=off             (left thumbstick locomotion through the game's movement override)
 //   vr=start | vr=stop | vr=pause     (VR play: [vr] profile, bindings, turning, eye height; pause = loading)
 //   ik=on | ik=off                    (arms follow the controllers)
+//   view=first | view=third           (first person, or the game's camera on a flat screen)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

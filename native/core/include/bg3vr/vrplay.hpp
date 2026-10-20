@@ -42,6 +42,7 @@ struct Hand {
 struct Feedback {
     bool recenter = false;
     bool toggle_panel = false; // switch the UI panel between the world and the wrist
+    bool toggle_view = false;  // switch between first person and the game's own (third-person) camera
     float haptic[2] = {0.0f, 0.0f}; // amplitude for a short pulse per hand (0 = none)
 };
 
@@ -56,6 +57,12 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s);
 
 // Game thread: eye-height calibration from the head bone.
 void on_frame();
+
+// Third person: the game's own camera on a big flat screen in the headset (no head tracking, the UI in the image, the
+// laser on the screen). First person is the default. Set by the Lua side (bridge view=first|third) once it has
+// switched the camera over.
+void set_third_person(bool on);
+bool third_person();
 
 // How hard the right stick is smooth-turning right now, 0..1 (snap turns: 0); and the [vr] comfort_vignette strength.
 float turn_rate();

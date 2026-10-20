@@ -64,6 +64,7 @@ struct Binding {
     bool bound = false;
     bool recenter = false; // hold to recentre
     bool panel = false;    // press to move the UI panel between the world and the wrist
+    bool view = false;     // press to switch first / third person
     std::uint16_t device = 0;
     std::uint16_t id = 0;
     std::string text;      // as configured, for the log
@@ -74,7 +75,7 @@ constexpr const char* kDefaults[kControlCount] = {
     "key:lalt",     // left trigger: hold to highlight items / show tooltips
     "",             // left grip: reserved for grabbing
     "key:m",        // X: map
-    "key:j",        // Y: journal
+    "view",         // Y: first / third person
     "key:escape",   // menu: game menu / cancel
     "panel",        // left stick click: UI panel to the wrist and back
     "mouse_left",   // right trigger: click (move, interact, attack, UI)
@@ -126,6 +127,10 @@ std::optional<Binding> parse_binding(std::string value) {
     }
     if (value == "panel") {
         b.panel = true;
+        return b;
+    }
+    if (value == "view") {
+        b.view = true;
         return b;
     }
     if (value == "mouse_left" || value == "mouse_right" || value == "mouse_middle") {
@@ -202,7 +207,7 @@ void install(const Config& config, const ModuleInfo& module) {
                 bound += std::format("{}{}={}", bound.empty() ? "" : ", ", kControlNames[c], b->text);
             }
         } else {
-            log::warn("vr: [bindings] {} = '{}' is not mouse_left/right/middle, key:<name>, recenter or panel; unbound",
+            log::warn("vr: [bindings] {} = '{}' is not mouse_left/right/middle, key:<name>, recenter, panel or view; unbound",
                       kControlNames[c], value);
         }
     }
@@ -265,7 +270,11 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             feedback.toggle_panel = true;
             feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
         }
-        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !(grips_grab && grip && !g_injected[c])) {
+        if (b.view && now[c] && !g_down[c]) {
+            feedback.toggle_view = true;
+            feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
+        }
+        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !(grips_grab && grip && !g_injected[c])) {
             if (inject(b.device, b.id, now[c])) {
                 g_injected[c] = now[c];
                 if (now[c]) {
@@ -349,6 +358,18 @@ void on_frame() {
     camera::set_follow_height(height);
     log::info("vr: eye height {:.2f} m (head bone {:.2f} m above the character's origin {:+.2f} m)", height, median,
               g_eye_offset);
+}
+
+std::atomic<bool> g_third{false};
+
+void set_third_person(bool on) {
+    if (g_third.exchange(on) != on) {
+        log::info("vr: {} person", on ? "third (the game's camera on a screen)" : "first");
+    }
+}
+
+bool third_person() {
+    return g_third.load(std::memory_order_relaxed);
 }
 
 float turn_rate() {

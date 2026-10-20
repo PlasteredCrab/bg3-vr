@@ -284,6 +284,11 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "view") {
+            const std::string word = text::to_lower(value);
+            if (word == "first" || word == "third") {
+                request.third_person = word == "third";
+            }
         } else if (key == "ik") {
             const std::string word = text::to_lower(value);
             if (word == "on" || word == "off") {

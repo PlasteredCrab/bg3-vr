@@ -18,6 +18,8 @@ local auto = {
     checkIn = 0.0,    -- seconds until the next status read
     suppressed = false, -- stopped by hand: don't restart until the headset goes off
     lastXr = nil,
+    third = false,       -- third person (the game's camera on a screen in the headset)
+    lastRequest = nil,   -- the last request= sequence handled
 }
 
 local function CharacterKey()
@@ -27,7 +29,15 @@ end
 
 -- Everything VR needs for the controlled character, merged into one bridge write by the queue.
 function VRStart(height, reason)
-    local extra = { "views=create", "vr=start" }
+    if auto.third then
+        -- Third person: VR play on, the game keeps its camera.
+        BG3VR.WriteBridge({ "vr=start", "view=third", "stereo=off", "pose=off", "follow=off", "hide=off" })
+        auto.started = true
+        auto.character = CharacterKey()
+        BG3VR.Log("VR started in third person (%s)", reason or "by hand")
+        return true
+    end
+    local extra = { "views=create", "vr=start", "view=first" }
     local skeleton = SkeletonBridgeLine and SkeletonBridgeLine()
     if skeleton then
         extra[#extra + 1] = skeleton
@@ -69,6 +79,30 @@ local function OnCharacterChanged()
     BG3VR.Log("VR: now playing %s", tostring(auto.character))
 end
 
+-- First / third person, asked for by the core (the "view" controller binding) through request=<n> view_<mode>.
+local function HandleRequest(status)
+    local seq, what = string.match(status.request or "", "^(%d+) (%S+)")
+    if not seq or seq == auto.lastRequest then
+        return
+    end
+    if auto.lastRequest == nil then
+        auto.lastRequest = seq -- from before this Lua state: don't replay it
+        return
+    end
+    auto.lastRequest = seq
+    if what == "view_third" or what == "view_first" then
+        auto.third = what == "view_third"
+        if auto.started then
+            if auto.third then
+                BG3VR.WriteBridge({ "view=third", "stereo=off", "pose=off", "follow=off", "hide=off" })
+                BG3VR.Log("VR: third person")
+            else
+                VRStart(1.7, "back to first person")
+            end
+        end
+    end
+end
+
 local function Tick(dt)
     if auto.stereoIn then
         auto.stereoIn = auto.stereoIn - dt
@@ -84,8 +118,9 @@ local function Tick(dt)
     if auto.checkIn > 0 then
         return
     end
-    auto.checkIn = 1.0
+    auto.checkIn = 0.25
     local status = BG3VR.ReadStatus()
+    HandleRequest(status)
     local ready = status.xr == "ready" and status.mode ~= "screen"
     if status.xr ~= auto.lastXr then
         auto.lastXr = status.xr
