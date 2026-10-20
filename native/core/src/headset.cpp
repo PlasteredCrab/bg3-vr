@@ -1368,6 +1368,17 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         return;
     }
     publish_status(true);
+    if (frame.views.size() == 2) {
+        // The interpupillary distance the runtime reports (the headset's IPD setting), applied 1:1 at world scale 1.
+        static float logged_ipd = -1.0f;
+        const auto& a = frame.views[0].pose.position;
+        const auto& b = frame.views[1].pose.position;
+        const float ipd = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+        if (std::abs(ipd - logged_ipd) > 0.0005f) {
+            log::info("xr: IPD {:.1f} mm from the runtime's eye poses (used as is: world scale 1 game unit = 1 m)", ipd * 1000.0f);
+            logged_ipd = ipd;
+        }
+    }
     update_input(frame);
     {
         static XrTime last = 0;

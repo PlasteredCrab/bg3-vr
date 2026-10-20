@@ -34,6 +34,7 @@ std::optional<Head> g_head;
 std::uintptr_t g_visual = 0;
 std::uintptr_t g_skeleton = 0;
 short g_head_bone = -1;
+short g_eye_bones[2] = {-1, -1}; // Dummy_EyeFX_01 / _02
 std::uint64_t g_frames = 0;
 std::uint64_t g_reads = 0;
 std::uint64_t g_failures = 0;
@@ -265,6 +266,7 @@ void attach_now(std::uintptr_t visual) {
     g_visual = 0;
     g_skeleton = 0;
     g_head_bone = -1;
+    g_eye_bones[0] = g_eye_bones[1] = -1;
     g_watched.store(0, std::memory_order_relaxed);
     bodyik::set_rig(0, 0, {});
     {
@@ -297,6 +299,10 @@ void attach_now(std::uintptr_t visual) {
     for (std::size_t i = 0; i < bones.size(); ++i) {
         if (bones[i].name == "Head_M") {
             g_head_bone = static_cast<short>(i);
+        } else if (bones[i].name == "Dummy_EyeFX_01") {
+            g_eye_bones[0] = static_cast<short>(i);
+        } else if (bones[i].name == "Dummy_EyeFX_02") {
+            g_eye_bones[1] = static_cast<short>(i);
         }
     }
     // The visual's attachments (agent K, K_weapons.md 1.1: Visual+0xB8, 0x30 each, count +0xC4): which bone each
@@ -331,7 +337,8 @@ void attach_now(std::uintptr_t visual) {
     if (g_head_bone < 0) {
         log::warn("skeleton: no Head_M bone; head tracking from the skeleton is off");
     } else {
-        log::info("skeleton: Head_M is bone {}", g_head_bone);
+        log::info("skeleton: Head_M is bone {}; eyes {} / {}{}", g_head_bone, g_eye_bones[0], g_eye_bones[1],
+                  g_eye_bones[0] >= 0 && g_eye_bones[1] >= 0 ? "" : " (no eye bones: eye height from the head bone)");
     }
     g_visual = visual;
     g_skeleton = skeleton;
@@ -445,6 +452,19 @@ void on_frame() {
     head.world_rotation = vr::multiply(visual_rotation, rows_to_quat(matrix));
     head.frame = frame;
     head.fresh = fresh;
+    float eye_matrix[2][16];
+    if (g_eye_bones[0] >= 0 && g_eye_bones[1] >= 0 && bone_matrix(g_skeleton, g_eye_bones[0], eye_matrix[0]) &&
+        bone_matrix(g_skeleton, g_eye_bones[1], eye_matrix[1])) {
+        const vr::Vec3 mid{(eye_matrix[0][12] + eye_matrix[1][12]) * 0.5f, (eye_matrix[0][13] + eye_matrix[1][13]) * 0.5f,
+                           (eye_matrix[0][14] + eye_matrix[1][14]) * 0.5f};
+        const vr::Vec3 mid_scaled{mid[0] * transform[7], mid[1] * transform[8], mid[2] * transform[9]};
+        const vr::Vec3 mid_offset = vr::rotate(visual_rotation, mid_scaled);
+        head.eyes_world = {transform[4] + mid_offset[0], transform[5] + mid_offset[1], transform[6] + mid_offset[2]};
+        const float dx = eye_matrix[0][12] - eye_matrix[1][12], dy = eye_matrix[0][13] - eye_matrix[1][13],
+                    dz = eye_matrix[0][14] - eye_matrix[1][14];
+        head.eye_separation = std::sqrt(dx * dx + dy * dy + dz * dz) * transform[7];
+        head.has_eyes = true;
+    }
     {
         std::scoped_lock lock(g_mutex);
         g_head = head;

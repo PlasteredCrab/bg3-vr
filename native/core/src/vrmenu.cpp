@@ -102,9 +102,9 @@ Menu::Menu() {
     on_off("Grab objects", "grab.hold", false);
     on_off("Physical melee", "combat.physical", false);
     choice("Eye height", "vr.eye_offset",
-           {{"−10 cm", "-0.1"}, {"−5 cm", "-0.05"}, {"Head bone", "0"}, {"+5 cm", "0.05"}, {"+10 cm", "0.1"},
+           {{"−10 cm", "-0.1"}, {"−5 cm", "-0.05"}, {"At the eyes", "0"}, {"+5 cm", "0.05"}, {"+10 cm", "0.1"},
             {"+15 cm", "0.15"}, {"+20 cm", "0.2"}},
-           4);
+           2);
     Item buttons;
     buttons.kind = Kind::Buttons;
     buttons.buttons = {"Recentre", "Calibrate height", "Close"};

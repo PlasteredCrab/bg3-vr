@@ -99,7 +99,8 @@ float g_recenter_hold_s = 0.8f;
 
 // Eye height.
 std::atomic<bool> g_auto_eye_height{true};
-std::atomic<float> g_eye_offset{0.10f};
+std::atomic<float> g_eye_offset{0.0f};
+constexpr float kHeadBoneToEyes = 0.10f; // used only when the skeleton has no eye bones
 
 // Presenting thread state.
 std::array<bool, kControlCount> g_down{};
@@ -224,7 +225,7 @@ void install(const Config& config, const ModuleInfo& module) {
               g_snap ? "snap" : "smooth",
               g_snap ? std::format("{:.0f} deg", g_snap_degrees.load()) : std::format("{:.0f} deg/s", g_smooth_degrees_per_s.load()),
               g_wheel ? "on" : "off",
-              g_auto_eye_height ? std::format("from the head bone {:+.2f} m", g_eye_offset.load()) : std::string("fixed"));
+              g_auto_eye_height ? std::format("from the character's eyes {:+.2f} m", g_eye_offset.load()) : std::string("fixed"));
 }
 
 void configure(const Config& config) {
@@ -238,7 +239,7 @@ void configure(const Config& config) {
     g_wheel = config.get_bool("vr", "stick_scroll", true);
     g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
-    g_eye_offset = number("eye_offset", 0.10f, -0.5f, 0.5f);
+    g_eye_offset = number("eye_offset", 0.0f, -0.5f, 0.5f);
 }
 
 void mouse_left(bool down) {
@@ -398,7 +399,8 @@ void on_frame() {
     if (!head || !head->fresh || !feet) {
         return;
     }
-    g_samples.push_back(head->world[1] - (*feet)[1]);
+    // The character's eyes (Dummy_EyeFX bones) when the skeleton has them, else the head bone plus a typical offset.
+    g_samples.push_back((head->has_eyes ? head->eyes_world[1] : head->world[1] + kHeadBoneToEyes) - (*feet)[1]);
     if (g_samples.size() < 45) {
         return;
     }
@@ -408,14 +410,16 @@ void on_frame() {
     g_samples.clear();
     g_calibrated_generation = generation;
     if (median < 0.3f || median > 3.0f) {
-        log::warn("vr: head bone {:.2f} m above the character's origin looks wrong; eye height left as it is", median);
+        log::warn("vr: eyes {:.2f} m above the character's origin looks wrong; eye height left as it is", median);
         return;
     }
     const float offset = g_eye_offset.load();
     const float height = median + offset;
     camera::set_follow_height(height);
-    log::info("vr: eye height {:.2f} m (head bone {:.2f} m above the character's origin {:+.2f} m)", height, median,
-              offset);
+    log::info("vr: eye height {:.2f} m ({} {:.2f} m above the character's origin {:+.2f} m; head bone {:.2f} m; the "
+              "character's eyes are {:.3f} m apart)",
+              height, head->has_eyes ? "eye bones" : "head bone + 0.10 m (no eye bones)", median, offset,
+              head->world[1] - (*feet)[1], head->eye_separation);
 }
 
 std::atomic<bool> g_third{false};

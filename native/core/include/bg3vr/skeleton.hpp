@@ -59,6 +59,11 @@ struct Head {
     vr::Quat world_rotation{0.0f, 0.0f, 0.0f, 1.0f}; // the head bone's orientation in the world
     std::uint32_t frame = 0;                         // game frame counter when read
     bool fresh = false;                              // the pose was built this frame or the last
+    // The eyes (Dummy_EyeFX_01 / _02, children of Head_M), when the skeleton has them: their midpoint in the world
+    // and how far apart they are (game units).
+    bool has_eyes = false;
+    vr::Vec3 eyes_world{};
+    float eye_separation = 0.0f;
 };
 std::optional<Head> head();
 

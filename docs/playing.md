@@ -76,7 +76,7 @@ which overrides `bg3vr.ini` (delete it to go back to the ini's values).
 | `[vr] autostart` | true | start VR by itself (`!vr_go` / `!vr_stop` by hand) |
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
-| `[vr] eye_offset` | 0.10 | eye height above the head bone, metres |
+| `[vr] eye_offset` | 0 | eye height above the character's eyes, metres |
 | `[ui] placement`, `width`, `distance` | wrist, 1.1, 1.0 | the UI panel (`world` puts it in front of you; the left stick click switches) |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
