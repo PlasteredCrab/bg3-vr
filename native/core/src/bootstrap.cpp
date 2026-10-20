@@ -186,6 +186,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     hold::set_hold(g_config.get_bool("grab", "hold", false));
     melee::set_enabled(g_config.get_bool("combat", "physical", false));
     const bool third = vrplay::third_person();
+    bodyik::configure_hands(g_config);
     bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
     if (vrplay::active()) {
         picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));

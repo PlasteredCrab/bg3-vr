@@ -24,9 +24,9 @@ namespace {
 using Kind = Snapshot::Row::Kind;
 
 // Layout (pixels of the kWidth x kHeight image).
-constexpr int kHeaderBottom = 190;
+constexpr int kHeaderBottom = 184;
 constexpr int kSectionHeight = 58;
-constexpr int kChoiceHeight = 62;
+constexpr int kChoiceHeight = 58;
 constexpr int kButtonsHeight = 110;
 constexpr int kFooterTop = kHeight - 62;
 constexpr float kArrowLeft = 600.0f;   // "<" of a choice row
@@ -94,6 +94,10 @@ Menu::Menu() {
     on_off("Stick movement", "vr.stick_locomotion", true);
     section("Hands & Body");
     on_off("Arms follow controllers", "ik.arms", true);
+    choice("Weapon angle", "ik.weapon_pitch",
+           {{"\u221260\u00B0", "-60"}, {"\u221245\u00B0", "-45"}, {"\u221230\u00B0", "-30"}, {"\u221215\u00B0", "-15"},
+            {"Straight", "0"}, {"+15\u00B0", "15"}, {"+30\u00B0", "30"}, {"+45\u00B0", "45"}, {"+60\u00B0", "60"}},
+           4);
     on_off("Point to select", "vr.hand_pointing", true);
     on_off("Grab objects", "grab.hold", false);
     on_off("Physical melee", "combat.physical", false);

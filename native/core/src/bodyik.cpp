@@ -30,6 +30,7 @@ constexpr std::size_t kVisualTransform = 0x08; // quat, translate +0x10, scale +
 
 struct Side {
     short upper = -1, lower = -1, hand = -1;
+    short dummy = -1; // the weapon bone below the hand
     std::vector<std::pair<short, int>> followers; // bone, chain slot (0 upper, 1 lower, 2 hand)
     bool ok() const { return upper >= 0 && lower >= 0 && hand >= 0; }
 };
@@ -39,6 +40,14 @@ struct Rig {
     std::array<Side, 2> sides; // 0 left, 1 right
 };
 std::atomic<std::shared_ptr<const Rig>> g_rig; // replaced on the game thread, read in the hook
+
+// [ik] hands: the weapon bone follows the controller absolutely (weapon) or the hand turns relative to a
+// calibration (relative); the controller -> weapon bone rotation offset per side (0 left, 1 right).
+struct Hands {
+    bool weapon = true;
+    std::array<vr::Quat, 2> offset{vr::Quat{0.0f, 0.0f, 0.0f, 1.0f}, vr::Quat{0.0f, 0.0f, 0.0f, 1.0f}};
+};
+std::atomic<std::shared_ptr<const Hands>> g_hands{std::make_shared<const Hands>()};
 
 std::mutex g_targets_mutex;
 std::array<std::optional<vr::RigidPose>, 2> g_targets{}; // world, game convention
@@ -69,6 +78,7 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     Side side;
     const auto parent = [&](int b) { return b >= 0 && b < static_cast<int>(bones.size()) ? bones[b].parent : short(-1); };
     const int dummy_bone = find(bones, dummy);
+    side.dummy = static_cast<short>(dummy_bone);
     side.hand = static_cast<short>(!overrides[2].empty() ? find(bones, overrides[2]) : parent(dummy_bone));
     side.lower = static_cast<short>(!overrides[1].empty() ? find(bones, overrides[1]) : parent(side.hand));
     side.upper = static_cast<short>(!overrides[0].empty() ? find(bones, overrides[0]) : parent(side.lower));
@@ -118,7 +128,43 @@ void configure(const Config& config, const ModuleInfo& module) {
         return;
     }
     health::set("arm IK", config.get_bool("ik", "arms", true) ? health::State::Ready : health::State::Off, "[ik] arms");
+    configure_hands(config);
     set_enabled(config.get_bool("ik", "arms", true));
+}
+
+void configure_hands(const Config& config) {
+    auto hands = std::make_shared<Hands>();
+    hands->weapon = text::to_lower(config.get("ik", "hands", "weapon")) != "relative";
+    const auto degrees = [&](const char* key, const char* fallback_key) {
+        std::string v = config.get("ik", key);
+        if (v.empty() && fallback_key) {
+            v = config.get("ik", fallback_key);
+        }
+        return v.empty() ? 0.0f : std::clamp(std::strtof(v.c_str(), nullptr), -180.0f, 180.0f);
+    };
+    const auto axis = [](float deg, int a) {
+        const float h = deg * 0.5f * 3.14159265f / 180.0f;
+        vr::Quat q{0.0f, 0.0f, 0.0f, std::cos(h)};
+        q[static_cast<std::size_t>(a)] = std::sin(h);
+        return q;
+    };
+    float logged[2][3]{};
+    for (int s = 0; s < 2; ++s) {
+        const bool left = s == 0;
+        const float pitch = degrees(left ? "left_weapon_pitch" : "weapon_pitch", left ? "weapon_pitch" : nullptr);
+        const float yaw = degrees(left ? "left_weapon_yaw" : "weapon_yaw", left ? "weapon_yaw" : nullptr);
+        const float roll = degrees(left ? "left_weapon_roll" : "weapon_roll", left ? "weapon_roll" : nullptr);
+        // In the grip's own frame: yaw about +Y, then pitch about +X, then roll about the blade (Z).
+        hands->offset[static_cast<std::size_t>(s)] = vr::multiply(vr::multiply(axis(yaw, 1), axis(pitch, 0)), axis(roll, 2));
+        logged[s][0] = pitch;
+        logged[s][1] = yaw;
+        logged[s][2] = roll;
+    }
+    g_hands.store(std::shared_ptr<const Hands>(hands));
+    log::info("ik: hands {} (weapon angle right pitch {:.0f} yaw {:.0f} roll {:.0f}, left {:.0f} {:.0f} {:.0f} deg)",
+              hands->weapon ? "follow the controllers (the weapon bone at the grip)" : "turn relative to a calibration",
+              logged[1][0], logged[1][1], logged[1][2], logged[0][0], logged[0][1], logged[0][2]);
+    g_recalibrate.store(true, std::memory_order_relaxed);
 }
 
 bool enabled() {
@@ -179,6 +225,7 @@ void apply(std::uintptr_t skeleton) {
     const vr::Quat inverse{-vq[0], -vq[1], -vq[2], vq[3]};
     const float scale = visual[7] != 0.0f ? visual[7] : 1.0f;
     const bool recalibrate = g_recalibrate.exchange(false, std::memory_order_relaxed);
+    const std::shared_ptr<const Hands> hands = g_hands.load();
 
     for (int s = 0; s < 2; ++s) {
         const Side& side = rig->sides[static_cast<std::size_t>(s)];
@@ -208,11 +255,44 @@ void apply(std::uintptr_t skeleton) {
             cal.valid = true;
         }
 
+        // Weapon hands: the weapon bone's rotation relative to the hand (from this frame's animated pose) gives the hand
+        // rotation that puts the weapon bone at the controller's orientation, and the wrist goal that puts it at the
+        // controller's position.
+        bool weapon = false;
+        float weapon_hand[3][3]{};
+        vr::Vec3 wrist_goal = goal;
+        if (hands && hands->weapon && side.dummy >= 0) {
+            if (float* md = get(pose, side.dummy)) {
+                const Rigid dummy = from_matrix(md);
+                float hand_t[3][3], local[3][3], local_t[3][3], desired[3][3];
+                transpose(hand.R, hand_t);
+                mul(hand_t, dummy.R, local);
+                transpose(local, local_t);
+                quat_to_matrix(vr::multiply(vr::multiply(inverse, target->orientation), hands->offset[static_cast<std::size_t>(s)]),
+                               desired);
+                mul(desired, local_t, weapon_hand);
+                const float d[3] = {dummy.t[0] - hand.t[0], dummy.t[1] - hand.t[1], dummy.t[2] - hand.t[2]};
+                float in_hand[3]{}, moved[3]{};
+                for (int i = 0; i < 3; ++i) {
+                    for (int j = 0; j < 3; ++j) {
+                        in_hand[i] += hand_t[i][j] * d[j];
+                    }
+                }
+                for (int i = 0; i < 3; ++i) {
+                    for (int j = 0; j < 3; ++j) {
+                        moved[i] += weapon_hand[i][j] * in_hand[j];
+                    }
+                }
+                wrist_goal = {goal[0] - moved[0], goal[1] - moved[1], goal[2] - moved[2]};
+                weapon = true;
+            }
+        }
+
         const vr::Vec3 S{upper.t[0], upper.t[1], upper.t[2]};
         const vr::Vec3 E{lower.t[0], lower.t[1], lower.t[2]};
         const vr::Vec3 W{hand.t[0], hand.t[1], hand.t[2]};
         const vr::Vec3 pole{E[0], E[1] - 0.25f, E[2]}; // elbows bend down
-        const ik::TwoBone solved = ik::solve_two_bone(S, E, W, goal, pole);
+        const ik::TwoBone solved = ik::solve_two_bone(S, E, W, wrist_goal, pole);
 
         Rigid new_upper = upper, new_lower = lower, new_hand = hand;
         float r[3][3];
@@ -224,11 +304,15 @@ void apply(std::uintptr_t skeleton) {
             new_lower.t[i] = solved.elbow[static_cast<std::size_t>(i)];
             new_hand.t[i] = solved.wrist[static_cast<std::size_t>(i)];
         }
-        // Hand rotation: the controller's turn since calibration, on top of the hand's rotation then.
-        float cal_inverse[3][3], turn[3][3];
-        transpose(cal.controller, cal_inverse);
-        mul(controller, cal_inverse, turn);
-        mul(turn, cal.hand, new_hand.R);
+        if (weapon) {
+            std::memcpy(new_hand.R, weapon_hand, sizeof(weapon_hand));
+        } else {
+            // Hand rotation: the controller's turn since calibration, on top of the hand's rotation then.
+            float cal_inverse[3][3], turn[3][3];
+            transpose(cal.controller, cal_inverse);
+            mul(controller, cal_inverse, turn);
+            mul(turn, cal.hand, new_hand.R);
+        }
 
         // Followers first (they need the old chain transforms), then the chain.
         const Rigid* before[3] = {&upper, &lower, &hand};

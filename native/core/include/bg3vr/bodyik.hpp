@@ -14,9 +14,11 @@
 // character only, on the model-space world pose at [skeleton+0xE0], written through Granny GetWorldPose4x4 0x4A11C40:
 //   - arm chain per side: hand = parent of Dummy_R_Hand / Dummy_L_Hand (the weapon bones), forearm = its parent,
 //     upper arm = that one's parent (or names from [ik] in bg3vr.ini);
-//   - two-bone IK (ik.hpp) puts the wrist on the controller grip (model space, through the visual's world transform)
-//     with the elbow bent down; the hand turns with the controller relative to a calibration taken when IK starts
-//     (and on recentre);
+//   - two-bone IK (ik.hpp) with the elbow bent down. [ik] hands = weapon (default): the weapon bone (Dummy_R_Hand /
+//     Dummy_L_Hand, where the game attaches what the hand holds) takes the controller grip's position and orientation
+//     (times the [ik] weapon_pitch / _yaw / _roll offset), so a held weapon sits in the fist at the controller's
+//     angle, and the wrist goes wherever that puts it; hands = relative: the wrist on the grip, the hand turned by
+//     the controller's turn since a calibration taken when IK starts (and on recentre);
 //   - every other bone below a chain bone (fingers, twist bones, the weapon's dummy bones) moves rigidly with its
 //     nearest chain bone, so the held weapon stays in the hand.
 // On by default ([ik] arms); the chain was confirmed in game on 2026-10-20 (Shoulder / Elbow / Wrist, 29 followers).
@@ -28,6 +30,8 @@ struct Bone {
 };
 
 void configure(const Config& config, const ModuleInfo& module);
+// [ik] hands and the weapon angle offsets; again whenever the VR menu changes one (any thread).
+void configure_hands(const Config& config);
 bool enabled();
 void set_enabled(bool on);
 
