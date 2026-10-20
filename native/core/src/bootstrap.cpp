@@ -38,6 +38,12 @@
 
 #include <array>
 #include <filesystem>
+#include <format>
+#include <fstream>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 #include <mutex>
 
 namespace {
@@ -134,8 +140,64 @@ void on_game_frame() {
     melee::on_frame();
 }
 
+// The VR menu's settings (menu.ini next to bg3vr.ini; overrides it). Only touched on the bridge thread after start-up.
+Config g_menu_settings;
+
+void save_menu_settings() {
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> sections;
+    for (const auto& [name, value] : g_menu_settings.values()) {
+        const auto dot = name.find('.');
+        sections[name.substr(0, dot)].emplace_back(name.substr(dot + 1), value);
+    }
+    std::string content = "# Written by the VR menu in the headset. These override bg3vr.ini; delete this file to go back to it.\n";
+    for (const auto& [section, entries] : sections) {
+        content += std::format("\n[{}]\n", section);
+        for (const auto& [key, value] : entries) {
+            content += std::format("{} = {}\n", key, value);
+        }
+    }
+    const std::filesystem::path path = g_root / "menu.ini";
+    const std::filesystem::path temp = g_root / "menu.ini.tmp";
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        out << content;
+        if (!out) {
+            log::warn("menu: couldn't write {}", to_utf8(temp.wstring()));
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(temp, path, ec);
+    if (ec) {
+        log::warn("menu: couldn't save {}: {}", to_utf8(path.wstring()), ec.message());
+    }
+}
+
+// Settings changed in the VR menu: take them now, save them for the next start.
+void apply_settings(const std::vector<std::pair<std::string, std::string>>& settings) {
+    for (const auto& [name, value] : settings) {
+        const auto dot = name.find('.');
+        g_config.set(name.substr(0, dot), name.substr(dot + 1), value);
+        g_menu_settings.set(name.substr(0, dot), name.substr(dot + 1), value);
+        log::info("menu: {} = {}", name, value);
+    }
+    vrplay::configure(g_config);
+    hold::set_hold(g_config.get_bool("grab", "hold", false));
+    melee::set_enabled(g_config.get_bool("combat", "physical", false));
+    const bool third = vrplay::third_person();
+    bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
+    if (vrplay::active()) {
+        picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
+        locomotion::set_enabled(g_config.get_bool("vr", "stick_locomotion", true));
+    }
+    save_menu_settings();
+}
+
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
 void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
+    if (!request.settings.empty()) {
+        apply_settings(request.settings);
+    }
     if (request.controller) {
         camera::attach(*request.controller);
     }
@@ -330,6 +392,15 @@ int init(const wchar_t* root_dir) {
     log::info("BG3 VR core starting (root {})", to_utf8(g_root.wstring()));
     if (!have_config) {
         log::warn("bg3vr.ini not found; using defaults");
+    }
+    if (g_menu_settings.load_file(g_root / "menu.ini") && !g_menu_settings.values().empty()) {
+        std::string list;
+        for (const auto& [name, value] : g_menu_settings.values()) {
+            const auto dot = name.find('.');
+            g_config.set(name.substr(0, dot), name.substr(dot + 1), value);
+            list += std::format("{}{} = {}", list.empty() ? "" : ", ", name, value);
+        }
+        log::info("menu.ini (the VR menu's settings, over bg3vr.ini): {}", list);
     }
 
     const ModuleInfo module = query_main_module();

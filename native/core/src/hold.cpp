@@ -26,7 +26,7 @@ namespace {
 
 ModuleInfo g_module;
 bool g_probe = false;
-bool g_hold = false;
+std::atomic<bool> g_hold{false};
 bool g_ready = false; // every function checked
 float g_reach = 1.5f;
 
@@ -401,13 +401,14 @@ void install(const Config& config, const ModuleInfo& module) {
     g_pull = config.get_bool("grab", "pull", true);
     g_pull_range = number("pull_range", 6.0f, 1.0f, 30.0f);
     g_catch_radius = number("catch_radius", 0.35f, 0.1f, 1.5f);
-    if (!g_probe && !g_hold) {
-        health::set("grabbing", health::State::Off, "[grab] probe / hold");
-        log::info("grab: off ([grab] probe / hold)");
-        return;
-    }
+    // The functions are checked even while grabbing is off, so the VR menu can turn it on later.
     g_ready = check(kEntityToItem) && check(kSetTranslate) && check(kSetRotate) && check(kSuspend) && check(kResume) &&
               check(kSetFlags);
+    if (!g_probe && !g_hold) {
+        health::set("grabbing", g_ready ? health::State::Off : health::State::Unavailable, g_ready ? "[grab] hold (or the VR menu)" : "a function didn't match");
+        log::info("grab: off ([grab] probe / hold, or the VR menu){}", g_ready ? "" : "; UNAVAILABLE: a function didn't match");
+        return;
+    }
     health::set("grabbing", g_ready ? health::State::Ready : health::State::Unavailable, g_ready ? (g_hold ? "hold, throw, pull" : "probe") : "a function didn't match");
     log::info("grab: {} (reach {:.1f} m{}{}){}",
               g_hold ? "picking items up with the grips" : "probe only (logs what a grip hits)", g_reach,
@@ -418,6 +419,15 @@ void install(const Config& config, const ModuleInfo& module) {
 
 bool enabled() {
     return g_ready && (g_probe || g_hold);
+}
+
+void set_hold(bool on) {
+    if (g_hold.exchange(on) != on) {
+        if (!on) {
+            forget(); // let go of anything held
+        }
+        log::info("grab: picking things up {}{}", on ? "on" : "off", on && !g_ready ? " (UNAVAILABLE: a function didn't match)" : "");
+    }
 }
 
 void set_hand(std::size_t hand, bool grip, std::optional<vr::RigidPose> grip_pose, std::optional<vr::RigidPose> aim_pose,

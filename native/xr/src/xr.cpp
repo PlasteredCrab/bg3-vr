@@ -241,33 +241,36 @@ void Session::release_quad() {
     xrReleaseSwapchainImage(quad_.swapchain, nullptr);
 }
 
-bool Session::create_panel(int32_t width, int32_t height, std::string& error) {
-    panel_.width = width;
-    panel_.height = height;
-    return create_swapchain(panel_, error);
+bool Session::create_panel(int32_t width, int32_t height, std::string& error, std::size_t index) {
+    Eye& eye = panels_[index].eye;
+    eye.width = width;
+    eye.height = height;
+    return create_swapchain(eye, error);
 }
 
-EyeImage Session::acquire_panel() {
-    xrAcquireSwapchainImage(panel_.swapchain, nullptr, &panel_.acquired);
+EyeImage Session::acquire_panel(std::size_t index) {
+    Eye& eye = panels_[index].eye;
+    xrAcquireSwapchainImage(eye.swapchain, nullptr, &eye.acquired);
     XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wait.timeout = XR_INFINITE_DURATION;
-    xrWaitSwapchainImage(panel_.swapchain, &wait);
-    return panel_.images[panel_.acquired];
+    xrWaitSwapchainImage(eye.swapchain, &wait);
+    return eye.images[eye.acquired];
 }
 
-void Session::release_panel() {
-    xrReleaseSwapchainImage(panel_.swapchain, nullptr);
-    panel_ready_ = true;
+void Session::release_panel(std::size_t index) {
+    xrReleaseSwapchainImage(panels_[index].eye.swapchain, nullptr);
+    panels_[index].ready = true;
 }
 
-bool Session::panel_layer(XrCompositionLayerQuad& layer) const {
-    if (!panel_placement_ || !panel_ready_ || panel_.swapchain == XR_NULL_HANDLE || panel_.width <= 0) {
+bool Session::panel_layer(std::size_t index, XrCompositionLayerQuad& layer) const {
+    const Panel& p = panels_[index];
+    if (!p.placement || !p.ready || p.eye.swapchain == XR_NULL_HANDLE || p.eye.width <= 0) {
         return false;
     }
     XrSpace space = space_;
-    if (panel_placement_->anchor == PanelPlacement::Anchor::LeftGrip) {
+    if (p.placement->anchor == PanelPlacement::Anchor::LeftGrip) {
         space = grip_spaces_[kLeft];
-    } else if (panel_placement_->anchor == PanelPlacement::Anchor::RightGrip) {
+    } else if (p.placement->anchor == PanelPlacement::Anchor::RightGrip) {
         space = grip_spaces_[kRight];
     }
     if (space == XR_NULL_HANDLE) {
@@ -277,11 +280,11 @@ bool Session::panel_layer(XrCompositionLayerQuad& layer) const {
     layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     layer.space = space;
     layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    layer.subImage.swapchain = panel_.swapchain;
-    layer.subImage.imageRect = {{0, 0}, {panel_.width, panel_.height}};
-    layer.pose = panel_placement_->pose;
-    layer.size = {panel_placement_->width_m,
-                  panel_placement_->width_m * static_cast<float>(panel_.height) / static_cast<float>(panel_.width)};
+    layer.subImage.swapchain = p.eye.swapchain;
+    layer.subImage.imageRect = {{0, 0}, {p.eye.width, p.eye.height}};
+    layer.pose = p.placement->pose;
+    layer.size = {p.placement->width_m,
+                  p.placement->width_m * static_cast<float>(p.eye.height) / static_cast<float>(p.eye.width)};
     return true;
 }
 
@@ -294,14 +297,20 @@ bool Session::end_frame_quad(const Frame& frame, float width_m, float distance_m
     layer.pose.orientation.w = 1.0f;
     layer.pose.position = {0.0f, 0.0f, -distance_m};
     layer.size = {width_m, width_m * static_cast<float>(quad_.height) / static_cast<float>(quad_.width)};
-    XrCompositionLayerQuad panel{};
-    const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer),
-                                                    reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel)};
+    XrCompositionLayerQuad panels[kPanelCount]{};
+    const XrCompositionLayerBaseHeader* layers[1 + kPanelCount] = {
+        reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
+    uint32_t count = 1;
+    for (std::size_t i = 0; i < kPanelCount; ++i) {
+        if (panel_layer(i, panels[i])) {
+            layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panels[i]);
+        }
+    }
 
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
     end.displayTime = frame.state.predictedDisplayTime;
     end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    end.layerCount = frame.state.shouldRender && quad_.swapchain != XR_NULL_HANDLE ? (panel_layer(panel) ? 2 : 1) : 0;
+    end.layerCount = frame.state.shouldRender && quad_.swapchain != XR_NULL_HANDLE ? count : 0;
     end.layers = layers;
     return XR_SUCCEEDED(xrEndFrame(session_, &end));
 }
@@ -554,9 +563,10 @@ void Session::destroy_input() {
 void Session::destroy() {
     destroy_input();
     eyes_.push_back(quad_); // destroyed with the rest
-    eyes_.push_back(panel_);
-    panel_ = {};
-    panel_ready_ = false;
+    for (Panel& p : panels_) {
+        eyes_.push_back(p.eye);
+        p = {};
+    }
     quad_ = {};
     for (Eye& eye : eyes_) {
         for (EyeImage& image : eye.images) {
@@ -669,16 +679,17 @@ bool Session::end_frame(const Frame& frame, const std::vector<XrView>& rendered)
     layer.space = space_;
     layer.viewCount = static_cast<uint32_t>(projection_views.size());
     layer.views = projection_views.data();
-    XrCompositionLayerQuad panel{};
+    XrCompositionLayerQuad panels[kPanelCount]{};
     const bool has_projection = rendered.size() == eyes_.size() && !eyes_.empty();
-    const bool has_panel = panel_layer(panel);
-    const XrCompositionLayerBaseHeader* layers[2];
+    const XrCompositionLayerBaseHeader* layers[1 + kPanelCount];
     uint32_t count = 0;
     if (has_projection) {
         layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
     }
-    if (has_panel) {
-        layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panel);
+    for (std::size_t i = 0; i < kPanelCount; ++i) {
+        if (panel_layer(i, panels[i])) {
+            layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panels[i]);
+        }
     }
 
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};

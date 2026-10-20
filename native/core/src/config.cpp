@@ -48,6 +48,10 @@ void Config::load_string(std::string_view content) {
     }
 }
 
+void Config::set(std::string_view section, std::string_view key, std::string_view value) {
+    values_[make_key(section, key)] = std::string(value);
+}
+
 std::string Config::get(std::string_view section, std::string_view key, std::string_view fallback) const {
     const auto it = values_.find(make_key(section, key));
     return it == values_.end() ? std::string(fallback) : it->second;

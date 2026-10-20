@@ -16,6 +16,7 @@
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
 #include "bg3vr/vr_math.hpp"
+#include "bg3vr/vrmenu.hpp"
 #include "bg3vr/watch.hpp"
 
 #include <windows.h>
@@ -932,6 +933,99 @@ void test_rigid() {
     CHECK(same_rotation);
 }
 
+void test_vrmenu() {
+    using namespace bg3vr::vrmenu;
+    Menu menu;
+    CHECK(menu.value_of("Turning") == "Snap");
+    CHECK(menu.value_of("Snap angle") == "30°");
+    CHECK(menu.value_of("Grab objects") == "Off");
+    CHECK(menu.value_of("Arms follow controllers") == "On");
+    Config config;
+    config.load_string("[vr]\nturn = smooth\nsnap_degrees = 44\neye_offset = 0.1\n[grab]\nhold = yes\n");
+    menu.load(config);
+    CHECK(menu.value_of("Turning") == "Smooth");
+    CHECK(menu.value_of("Snap angle") == "45°");
+    CHECK(menu.value_of("Grab objects") == "On");
+    CHECK(menu.value_of("Eye height") == "+10 cm");
+
+    const auto centre = [&](const std::string& label) {
+        for (const auto& row : menu.snapshot().rows) {
+            if (row.label == label || (label == "#buttons" && row.kind == Snapshot::Row::Kind::Buttons)) {
+                return (static_cast<float>(row.top) + static_cast<float>(row.height) * 0.5f) / static_cast<float>(kHeight);
+            }
+        }
+        return -1.0f;
+    };
+    const Live live{};
+    // Clicking a row steps it forward (wrapping); clicking its left arrow steps back.
+    const float turning = centre("Turning");
+    CHECK(turning > 0.0f && menu.row_at(turning) >= 0);
+    Actions a = menu.update(std::array<float, 2>{0.8f, turning}, true, 0.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].first == "vr.turn" && a.settings[0].second == "snap");
+    CHECK(menu.value_of("Turning") == "Snap");
+    a = menu.update(std::array<float, 2>{620.0f / kWidth, turning}, true, 0.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].second == "smooth");
+    // The stick steps once per push.
+    const float snap = centre("Snap angle");
+    a = menu.update(std::array<float, 2>{0.5f, snap}, false, 1.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].first == "vr.snap_degrees" && a.settings[0].second == "60");
+    a = menu.update(std::array<float, 2>{0.5f, snap}, false, 1.0f, live);
+    CHECK(a.settings.empty());
+    a = menu.update(std::array<float, 2>{0.5f, snap}, false, 0.0f, live);
+    a = menu.update(std::array<float, 2>{0.5f, snap}, false, -1.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].second == "45");
+    // Eye height changes ask for a new calibration.
+    a = menu.update(std::array<float, 2>{0.8f, centre("Eye height")}, true, 0.0f, live);
+    CHECK(a.recalibrate && a.settings.size() == 1 && a.settings[0].first == "vr.eye_offset" && a.settings[0].second == "0.15");
+    // Live rows ask the owner instead of changing a setting, and show the owner's state.
+    a = menu.update(std::array<float, 2>{0.8f, centre("Perspective")}, true, 0.0f, live);
+    CHECK(a.toggle_view && a.settings.empty());
+    const std::uint64_t before = menu.revision();
+    a = menu.update(std::nullopt, false, 0.0f, Live{true, true});
+    CHECK(menu.revision() != before && menu.value_of("Perspective") == "Third person" &&
+          menu.value_of("Game interface") == "On your wrist");
+    // Buttons: recentre, calibrate, close (left to right); a click off the buttons does nothing.
+    const float buttons = centre("#buttons");
+    CHECK(menu.update(std::array<float, 2>{0.15f, buttons}, true, 0.0f, live).recenter);
+    CHECK(menu.update(std::array<float, 2>{0.5f, buttons}, true, 0.0f, live).recalibrate);
+    CHECK(menu.update(std::array<float, 2>{0.85f, buttons}, true, 0.0f, live).close);
+    a = menu.update(std::array<float, 2>{0.01f, buttons}, true, 0.0f, live);
+    CHECK(!a.close && !a.recenter && !a.recalibrate);
+    // Section headings and the header aren't rows.
+    CHECK(menu.row_at(0.05f) == -1 && menu.row_at(centre("Comfort")) == -1);
+
+    // The renderer draws a premultiplied image: transparent outside the rounded frame, opaque inside.
+    Renderer renderer;
+    CHECK(renderer.start());
+    menu.update(std::array<float, 2>{0.8f, centre("Turning")}, false, 0.0f, live); // hover a row
+    renderer.submit(menu.snapshot());
+    std::vector<std::uint32_t> pixels;
+    bool got = false;
+    for (int i = 0; i < 300 && !(got = renderer.take(pixels)); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(got && pixels.size() == static_cast<std::size_t>(kWidth) * kHeight);
+    if (got) {
+        CHECK((pixels[0] >> 24) == 0);
+        CHECK((pixels[static_cast<std::size_t>(kHeight / 2) * kWidth + kWidth / 2] >> 24) > 0xF0);
+        CHECK(!renderer.take(pixels)); // nothing new
+        char path[MAX_PATH] = {};
+        if (GetEnvironmentVariableA("BG3VR_MENU_PREVIEW", path, MAX_PATH) > 0) {
+            // 32-bit top-down BMP for a look at the design.
+            FILE* f = nullptr;
+            if (fopen_s(&f, path, "wb") == 0 && f) {
+                const std::uint32_t size = static_cast<std::uint32_t>(pixels.size() * 4);
+                BITMAPFILEHEADER fh{0x4D42, 54 + size, 0, 0, 54};
+                BITMAPINFOHEADER ih{sizeof(BITMAPINFOHEADER), kWidth, -kHeight, 1, 32, BI_RGB, size, 0, 0, 0, 0};
+                std::fwrite(&fh, sizeof(fh), 1, f);
+                std::fwrite(&ih, sizeof(ih), 1, f);
+                std::fwrite(pixels.data(), 4, pixels.size(), f);
+                std::fclose(f);
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -955,6 +1049,7 @@ int main() {
     test_ik();
     test_grab_math();
     test_rigid();
+    test_vrmenu();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

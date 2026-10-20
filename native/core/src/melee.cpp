@@ -7,6 +7,7 @@
 #include "bg3vr/vrplay.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <format>
@@ -17,7 +18,7 @@ namespace bg3vr::melee {
 
 namespace {
 
-bool g_enabled = false;
+std::atomic<bool> g_enabled{false};
 float g_blade = 0.9f;
 float g_min_speed = 2.5f;
 float g_cooldown = 0.8f;
@@ -56,6 +57,12 @@ void install(const Config& config) {
 
 bool enabled() {
     return g_enabled;
+}
+
+void set_enabled(bool on) {
+    if (g_enabled.exchange(on) != on) {
+        log::info("combat: physical melee {}", on ? "on" : "off");
+    }
 }
 
 void set_hand(std::optional<vr::RigidPose> aim, double time_s) {

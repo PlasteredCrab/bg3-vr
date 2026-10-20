@@ -27,6 +27,8 @@ namespace bg3vr::hold {
 
 void install(const Config& config, const ModuleInfo& module);
 bool enabled(); // probe or hold
+// Picking things up on / off at runtime (the VR menu); [grab] hold at start-up.
+void set_hold(bool on);
 
 // From the headset (presenting thread): grip state, the hand's grip and aim poses in the game world, and the sample
 // time in seconds (for the hand's velocity: throws and flicks).

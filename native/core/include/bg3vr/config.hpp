@@ -18,6 +18,10 @@ public:
     [[nodiscard]] bool get_bool(std::string_view section, std::string_view key, bool fallback) const;
     [[nodiscard]] long long get_int(std::string_view section, std::string_view key, long long fallback) const;
 
+    void set(std::string_view section, std::string_view key, std::string_view value);
+    // Every value, keyed "section.key" (lower case).
+    [[nodiscard]] const std::map<std::string, std::string>& values() const { return values_; }
+
 private:
     std::map<std::string, std::string> values_;
 };

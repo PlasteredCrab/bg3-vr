@@ -40,11 +40,23 @@ them; they are marked "(off)".
 | Left stick click | Move the UI panel to your left wrist and back |
 | Left trigger (hold) | Highlight items |
 | X | Map |
-| Y | Journal |
-| Menu | Game menu |
+| Y | Switch between first person and third person (the game's own camera on a big screen in front of you; the laser works as the mouse there) |
+| Menu | The VR menu (B is the game's Escape / game menu) |
 
 The key bindings assume BG3's default PC keys; change any of them in `[bindings]`. Every button press gives a
 light buzz.
+
+## The VR menu
+
+Press the left menu button. A panel opens in front of you with the settings you'd want to change while playing:
+first or third person, where the game UI sits (in front of you or on your wrist), snap or smooth turning, snap
+angle, smooth turn speed, comfort vignette, stick movement, arms following the controllers, pointing to select,
+grabbing, physical melee and eye height, plus Recentre, Calibrate height and Close buttons.
+
+Point at a row with the right hand and pull the trigger to change it (the left arrow steps back), push the right
+stick left or right while pointing at a row, or touch the panel with the tip of the controller. While it is open
+your buttons and sticks don't reach the game. Changes take effect at once and are saved to `bing3vr\menu.ini`,
+which overrides `bg3vr.ini` (delete it to go back to the ini's values).
 
 ## Settings worth knowing
 
@@ -58,7 +70,7 @@ light buzz.
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |
-| `[ik] arms` | false (off) | arms and the held weapon follow your hands |
+| `[ik] arms` | true | arms and the held weapon follow your hands |
 | `[grab] probe` / `hold` | false (off) | pick items up with the grips; with `hold`, throw by letting go mid-swing and pull far items by flicking the hand back while aiming and holding the grip |
 | `[combat] physical` | false (off) | swing the right hand through a character to make your normal weapon attack (the game rolls) |
 

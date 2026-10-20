@@ -65,6 +65,7 @@ struct Binding {
     bool recenter = false; // hold to recentre
     bool panel = false;    // press to move the UI panel between the world and the wrist
     bool view = false;     // press to switch first / third person
+    bool menu = false;     // press to open / close the VR menu
     std::uint16_t device = 0;
     std::uint16_t id = 0;
     std::string text;      // as configured, for the log
@@ -76,7 +77,7 @@ constexpr const char* kDefaults[kControlCount] = {
     "",             // left grip: reserved for grabbing
     "key:m",        // X: map
     "view",         // Y: first / third person
-    "key:escape",   // menu: game menu / cancel
+    "vrmenu",       // menu: the VR menu (B is the game's Escape)
     "panel",        // left stick click: UI panel to the wrist and back
     "mouse_left",   // right trigger: click (move, interact, attack, UI)
     "mouse_right",  // right grip: context menu
@@ -86,17 +87,19 @@ constexpr const char* kDefaults[kControlCount] = {
 };
 
 // Comfort.
-bool g_snap = true;
-float g_snap_degrees = 30.0f;
-float g_smooth_degrees_per_s = 120.0f;
-bool g_wheel = true;
-float g_vignette = 0.5f;
+std::atomic<bool> g_snap{true};
+std::atomic<float> g_snap_degrees{30.0f};
+std::atomic<float> g_smooth_degrees_per_s{120.0f};
+std::atomic<bool> g_wheel{true};
+std::atomic<float> g_vignette{0.5f};
+std::atomic<bool> g_menu_open{false};
+std::atomic<bool> g_recalibrate{false};
 std::atomic<float> g_turn_rate{0.0f};
 float g_recenter_hold_s = 0.8f;
 
 // Eye height.
-bool g_auto_eye_height = true;
-float g_eye_offset = 0.10f;
+std::atomic<bool> g_auto_eye_height{true};
+std::atomic<float> g_eye_offset{0.10f};
 
 // Presenting thread state.
 std::array<bool, kControlCount> g_down{};
@@ -131,6 +134,10 @@ std::optional<Binding> parse_binding(std::string value) {
     }
     if (value == "view") {
         b.view = true;
+        return b;
+    }
+    if (value == "vrmenu") {
+        b.menu = true;
         return b;
     }
     if (value == "mouse_left" || value == "mouse_right" || value == "mouse_middle") {
@@ -211,6 +218,16 @@ void install(const Config& config, const ModuleInfo& module) {
                       kControlNames[c], value);
         }
     }
+    configure(config);
+    health::set("controller bindings", g_inject ? health::State::Ready : health::State::Unavailable, g_inject ? "" : "signature input_inject_raw");
+    log::info("vr: bindings {}; turn {} ({}), right stick scroll {}, eye height {}", bound.empty() ? "none" : bound,
+              g_snap ? "snap" : "smooth",
+              g_snap ? std::format("{:.0f} deg", g_snap_degrees.load()) : std::format("{:.0f} deg/s", g_smooth_degrees_per_s.load()),
+              g_wheel ? "on" : "off",
+              g_auto_eye_height ? std::format("from the head bone {:+.2f} m", g_eye_offset.load()) : std::string("fixed"));
+}
+
+void configure(const Config& config) {
     g_snap = text::to_lower(config.get("vr", "turn", "snap")) != "smooth";
     const auto number = [&](const char* key, float fallback, float lo, float hi) {
         const std::string v = config.get("vr", key);
@@ -222,12 +239,16 @@ void install(const Config& config, const ModuleInfo& module) {
     g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
     g_eye_offset = number("eye_offset", 0.10f, -0.5f, 0.5f);
-    health::set("controller bindings", g_inject ? health::State::Ready : health::State::Unavailable, g_inject ? "" : "signature input_inject_raw");
-    log::info("vr: bindings {}; turn {} ({}), right stick scroll {}, eye height {}", bound.empty() ? "none" : bound,
-              g_snap ? "snap" : "smooth",
-              g_snap ? std::format("{:.0f} deg", g_snap_degrees) : std::format("{:.0f} deg/s", g_smooth_degrees_per_s),
-              g_wheel ? "on" : "off",
-              g_auto_eye_height ? std::format("from the head bone {:+.2f} m", g_eye_offset) : std::string("fixed"));
+}
+
+void recalibrate() {
+    g_recalibrate.store(true, std::memory_order_relaxed);
+}
+
+void set_menu_open(bool open) {
+    if (g_menu_open.exchange(open) != open) {
+        log::info("vr: menu {}", open ? "open (the controllers drive it)" : "closed");
+    }
 }
 
 void set_active(bool on) {
@@ -263,9 +284,21 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         r.active && analog(r.trigger, g_down[RightTrigger]), r.active && analog(r.squeeze, g_down[RightGrip]),
         r.active && r.primary, r.active && r.secondary, r.active && r.stick_click};
     const bool grips_grab = hold::enabled(); // the grips pick things up instead
+    const bool menu_open = g_menu_open.load(std::memory_order_relaxed);
+    if (menu_open && std::any_of(g_injected.begin(), g_injected.end(), [](bool b) { return b; })) {
+        release_all();
+    }
     for (int c = 0; c < kControlCount; ++c) {
         const Binding& b = g_bindings[c];
         const bool grip = c == LeftGrip || c == RightGrip;
+        if (b.menu && now[c] && !g_down[c]) {
+            feedback.toggle_menu = true;
+            feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
+        }
+        if (menu_open) {
+            g_down[c] = now[c];
+            continue;
+        }
         if (b.panel && now[c] && !g_down[c]) {
             feedback.toggle_panel = true;
             feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
@@ -274,7 +307,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             feedback.toggle_view = true;
             feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
         }
-        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !(grips_grab && grip && !g_injected[c])) {
+        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !b.menu && !(grips_grab && grip && !g_injected[c])) {
             if (inject(b.device, b.id, now[c])) {
                 g_injected[c] = now[c];
                 if (now[c]) {
@@ -298,11 +331,11 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
 
     // Right stick: x turns, y scrolls.
     g_turn_rate.store(0.0f, std::memory_order_relaxed);
-    if (r.active) {
+    if (r.active && !menu_open) {
         const float x = r.stick_x;
         if (g_snap) {
             if (g_snap_armed && std::abs(x) > 0.7f) {
-                camera::add_yaw(x > 0.0f ? g_snap_degrees : -g_snap_degrees);
+                camera::add_yaw(x > 0.0f ? g_snap_degrees.load() : -g_snap_degrees.load());
                 g_snap_armed = false;
                 feedback.haptic[1] = std::max(feedback.haptic[1], 0.1f);
             } else if (std::abs(x) < 0.3f) {
@@ -332,6 +365,10 @@ void on_frame() {
     if (!g_active.load(std::memory_order_relaxed) || !g_auto_eye_height) {
         return;
     }
+    if (g_recalibrate.exchange(false, std::memory_order_relaxed)) {
+        g_calibrated_generation = 0;
+        g_samples.clear();
+    }
     const std::uint64_t generation = skeleton::generation();
     if (generation == 0 || generation == g_calibrated_generation) {
         return;
@@ -354,10 +391,11 @@ void on_frame() {
         log::warn("vr: head bone {:.2f} m above the character's origin looks wrong; eye height left as it is", median);
         return;
     }
-    const float height = median + g_eye_offset;
+    const float offset = g_eye_offset.load();
+    const float height = median + offset;
     camera::set_follow_height(height);
     log::info("vr: eye height {:.2f} m (head bone {:.2f} m above the character's origin {:+.2f} m)", height, median,
-              g_eye_offset);
+              offset);
 }
 
 std::atomic<bool> g_third{false};

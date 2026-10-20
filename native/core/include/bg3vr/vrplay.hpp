@@ -43,10 +43,19 @@ struct Feedback {
     bool recenter = false;
     bool toggle_panel = false; // switch the UI panel between the world and the wrist
     bool toggle_view = false;  // switch between first person and the game's own (third-person) camera
+    bool toggle_menu = false;  // open / close the VR menu
     float haptic[2] = {0.0f, 0.0f}; // amplitude for a short pulse per hand (0 = none)
 };
 
 void install(const Config& config, const ModuleInfo& module);
+// Turning, comfort and eye-height settings ([vr]); again whenever the VR menu changes one (any thread).
+void configure(const Config& config);
+// Calibrate the eye height from the head bone again (e.g. after the eye offset changed).
+void recalibrate();
+
+// While the VR menu is open the controllers belong to it: no bindings reach the game (held ones are released), no
+// turning or scrolling. The "vrmenu" binding still closes it.
+void set_menu_open(bool open);
 
 // VR play on/off (bridge vr=start / vr=stop). Turning it off releases every held key and button.
 void set_active(bool on);

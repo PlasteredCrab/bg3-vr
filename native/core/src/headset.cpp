@@ -16,6 +16,7 @@
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
+#include "bg3vr/vrmenu.hpp"
 #include "bg3vr/vrplay.hpp"
 #include "bg3vr/win_util.hpp"
 #include "bg3vr/xr.hpp"
@@ -111,6 +112,8 @@ constexpr std::uint64_t kHandLogEvery = 900; // samples between periodic pose li
 std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
 std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist (toggled by the "panel" binding)
+std::atomic<bool> g_menu_toggle_request{false}; // the "vrmenu" binding was pressed
+std::atomic<bool> g_menu_is_open{false};        // the VR menu is up: the controllers drive it
 HWND g_window = nullptr;                    // the game window (the laser moves the mouse cursor in it)
 bool g_was_driven = false;
 
@@ -669,6 +672,25 @@ HandState hand_state(const xr::Hand& hand, std::uint64_t sample) {
 }
 
 // Once per submitted frame: sample the controllers, publish them, log changes, run queued haptics.
+// First <-> third person: the Lua side switches the camera, then tells the core (bridge view=).
+void request_view_toggle() {
+    static int request = 0;
+    const bool to_third = !vrplay::third_person();
+    bridge::set_status("request", std::format("{} view_{}", ++request, to_third ? "third" : "first"));
+    log::info("vr: asking the Lua side for {} person", to_third ? "third" : "first");
+}
+
+// The game UI panel between the world and the left wrist; returns true when it is now on the wrist.
+bool toggle_ui_wrist() {
+    const bool wrist = !g_ui_wrist.load(std::memory_order_relaxed);
+    g_ui_wrist.store(wrist, std::memory_order_relaxed);
+    if (!wrist) {
+        g_ui_place_request.store(true, std::memory_order_relaxed); // back in front of the head
+    }
+    log::info("ui: panel {}", wrist ? "on the left wrist" : "in front of you");
+    return wrist;
+}
+
 void update_input(const xr::Frame& frame) {
     if (!g_input) {
         return;
@@ -709,19 +731,21 @@ void update_input(const xr::Frame& frame) {
         if (now[h].aim_valid) {
             aim_world = camera::tracked_to_world(now[h].aim);
         }
-        hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f,
+        hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f && !g_menu_is_open.load(std::memory_order_relaxed),
                        now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world,
                        static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     }
     // The right hand's swing for physical melee.
-    melee::set_hand(now[kRightHand].aim_valid ? camera::tracked_to_world(now[kRightHand].aim) : std::nullopt,
+    melee::set_hand(now[kRightHand].aim_valid && !g_menu_is_open.load(std::memory_order_relaxed)
+                        ? camera::tracked_to_world(now[kRightHand].aim)
+                        : std::nullopt,
                     static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     // The grips for the arm IK (world, game convention).
     bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
                         now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);
     // The left stick drives locomotion (when it is on); zero while the hand isn't active.
-    locomotion::set_stick(now[kLeftHand].active ? now[kLeftHand].stick_x : 0.0f,
-                          now[kLeftHand].active ? now[kLeftHand].stick_y : 0.0f);
+    const bool stick = now[kLeftHand].active && !g_menu_is_open.load(std::memory_order_relaxed);
+    locomotion::set_stick(stick ? now[kLeftHand].stick_x : 0.0f, stick ? now[kLeftHand].stick_y : 0.0f);
     // Buttons, turning and recentring while VR play is on.
     vrplay::Hand play[2];
     for (std::size_t h = 0; h < 2; ++h) {
@@ -734,18 +758,13 @@ void update_input(const xr::Frame& frame) {
         g_recenter_request.store(true, std::memory_order_relaxed);
     }
     if (feedback.toggle_view) {
-        static int request = 0;
-        const bool to_third = !vrplay::third_person();
-        bridge::set_status("request", std::format("{} view_{}", ++request, to_third ? "third" : "first"));
-        log::info("vr: asking the Lua side for {} person", to_third ? "third" : "first");
+        request_view_toggle();
     }
     if (feedback.toggle_panel) {
-        const bool wrist = !g_ui_wrist.load(std::memory_order_relaxed);
-        g_ui_wrist.store(wrist, std::memory_order_relaxed);
-        if (!wrist) {
-            g_ui_place_request.store(true, std::memory_order_relaxed); // back in front of the head
-        }
-        log::info("ui: panel {}", wrist ? "on the left wrist" : "in front of you");
+        toggle_ui_wrist();
+    }
+    if (feedback.toggle_menu) {
+        g_menu_toggle_request.store(true, std::memory_order_relaxed);
     }
     for (std::size_t h = 0; h < 2; ++h) {
         if (feedback.haptic[h] > 0.0f) {
@@ -933,7 +952,8 @@ void move_cursor(float u, float v) {
 // Third person: the laser points at the flat screen quad (LOCAL, g_screen_distance_m ahead, g_screen_width_m wide).
 void update_screen_laser() {
     g_screen_cursor.reset();
-    if (!vrplay::active() || !vrplay::third_person() || !g_ui_laser || !g_image_width) {
+    if (!vrplay::active() || !vrplay::third_person() || !g_ui_laser || !g_image_width ||
+        g_menu_is_open.load(std::memory_order_relaxed)) {
         return;
     }
     xr::PanelPlacement screen;
@@ -1040,7 +1060,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     overlay.keep_alpha = true;
     const float height_m =
         place.width_m * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
-    if (g_ui_laser) {
+    if (g_ui_laser && !g_menu_is_open.load(std::memory_order_relaxed)) {
         const HandState& right = both[kRightHand];
         std::optional<xr::PanelPlacement> target;
         if (!wrist) {
@@ -1075,6 +1095,206 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     }
     g_ui_shown = true;
     ++g_ui_frames;
+}
+
+// The VR menu (vrmenu.hpp) on panel 1: world-locked in front of the head where it was opened, drawn by its renderer
+// thread, uploaded when a new image is ready. The right hand points (laser + trigger) or touches it.
+bool g_menu_enabled = true;    // [menu] enabled
+float g_menu_width = 0.62f;    // [ui] menu_width (m)
+float g_menu_distance = 0.7f;  // [ui] menu_distance (m)
+vrmenu::Menu g_menu;
+std::unique_ptr<vrmenu::Renderer> g_menu_renderer;
+bool g_menu_open = false;
+bool g_menu_failed = false;
+bool g_menu_image = false; // an image has been uploaded
+std::optional<xr::PanelPlacement> g_menu_place;
+std::uint64_t g_menu_submitted = 0; // the Menu revision last handed to the renderer
+ID3D11Texture2D* g_menu_texture = nullptr;
+blit::Blitter g_menu_blitter;
+std::vector<std::uint32_t> g_menu_pixels;
+bool g_menu_trigger = false;
+bool g_menu_touching = false;
+std::uint64_t g_menu_clicks = 0;
+std::uint64_t g_menu_frames = 0;
+
+bool create_menu() {
+    std::string error;
+    g_menu_renderer = std::make_unique<vrmenu::Renderer>();
+    if (!g_menu_renderer->start()) {
+        error = "the menu renderer didn't start (see above)";
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = vrmenu::kWidth;
+    desc.Height = vrmenu::kHeight;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if (error.empty() && FAILED(render::device()->CreateTexture2D(&desc, nullptr, &g_menu_texture))) {
+        error = "CreateTexture2D failed";
+    }
+    if (error.empty()) {
+        g_menu_blitter.create(render::device(), desc.Width, desc.Height, desc.Format, error);
+    }
+    if (error.empty()) {
+        g_session->create_panel(vrmenu::kWidth, vrmenu::kHeight, error, 1);
+    }
+    if (!error.empty()) {
+        log::error("menu: can't show the VR menu: {}", error);
+        health::set("VR menu", health::State::Unavailable, error);
+        return false;
+    }
+    log::info("menu: ready ({}x{} image, {:.2f} m wide, {:.2f} m away)", vrmenu::kWidth, vrmenu::kHeight, g_menu_width,
+              g_menu_distance);
+    return true;
+}
+
+void set_menu_open(bool open) {
+    g_menu_open = open;
+    g_menu_is_open.store(open, std::memory_order_relaxed);
+    vrplay::set_menu_open(open);
+    g_menu_place.reset(); // placed in front of the head each time it opens
+    g_menu_trigger = true; // the press that opened it must not click
+    g_menu_touching = false;
+    if (!open) {
+        g_session->set_panel(std::nullopt, 1);
+    }
+}
+
+// Where `position` is on the panel: uv and the distance in front of its face (metres; negative = behind).
+std::optional<std::array<float, 3>> panel_point(const vr::Vec3& position, const xr::PanelPlacement& place, float height_m) {
+    const vr::Quat q{place.pose.orientation.x, place.pose.orientation.y, place.pose.orientation.z, place.pose.orientation.w};
+    const vr::Vec3 local{position[0] - place.pose.position.x, position[1] - place.pose.position.y,
+                         position[2] - place.pose.position.z};
+    const auto dot = [](const vr::Vec3& a, const vr::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    const float u = dot(local, vr::rotate(q, {1.0f, 0.0f, 0.0f})) / place.width_m + 0.5f;
+    const float v = 0.5f - dot(local, vr::rotate(q, {0.0f, 1.0f, 0.0f})) / height_m;
+    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+        return std::nullopt;
+    }
+    return std::array<float, 3>{u, v, dot(local, vr::rotate(q, {0.0f, 0.0f, 1.0f}))};
+}
+
+void update_menu(const xr::Frame& frame) {
+    if (g_menu_toggle_request.exchange(false, std::memory_order_relaxed)) {
+        if (!g_menu_open && g_menu_enabled && !g_menu_failed && !g_menu_renderer) {
+            g_menu_failed = !create_menu();
+        }
+        if (g_menu_open || (g_menu_enabled && !g_menu_failed)) {
+            set_menu_open(!g_menu_open);
+        } else {
+            log::info("menu: not available ({})", g_menu_enabled ? "it failed to start" : "[menu] enabled = false");
+        }
+    }
+    if (g_menu_open && !vrplay::active()) {
+        set_menu_open(false);
+    }
+    if (!g_menu_open) {
+        return;
+    }
+    if (!g_menu_place && frame.views.size() == 2) {
+        const vr::RigidPose head = centre_view(frame.views).pose;
+        const vr::Vec3 forward = vr::rotate(head.orientation, {0.0f, 0.0f, -1.0f});
+        const float yaw = std::atan2(-forward[0], -forward[2]);
+        xr::PanelPlacement place;
+        place.anchor = xr::PanelPlacement::Anchor::Local;
+        place.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+        place.pose.position = {head.position[0] - std::sin(yaw) * g_menu_distance, head.position[1] - 0.12f,
+                               head.position[2] - std::cos(yaw) * g_menu_distance};
+        place.width_m = g_menu_width;
+        g_menu_place = place;
+    }
+    if (!g_menu_place) {
+        return;
+    }
+    const float height_m = g_menu_width * static_cast<float>(vrmenu::kHeight) / static_cast<float>(vrmenu::kWidth);
+    const HandState right = hands()[kRightHand];
+    // Touch: the controller's tip within 3 cm in front of the face (or 2 cm through it); pressing in past 5 mm clicks.
+    std::optional<std::array<float, 2>> pointer;
+    bool click = false;
+    if (right.aim_valid) {
+        if (const auto p = panel_point(right.aim.position, *g_menu_place, height_m); p && (*p)[2] < 0.03f && (*p)[2] > -0.02f) {
+            pointer = std::array<float, 2>{(*p)[0], (*p)[1]};
+            const bool in = (*p)[2] < 0.005f;
+            click = in && !g_menu_touching;
+            g_menu_touching = in;
+        } else {
+            g_menu_touching = false;
+        }
+        if (!pointer) {
+            pointer = panel_uv(right.aim, *g_menu_place, height_m);
+        }
+    }
+    const bool trigger = right.active && right.trigger > (g_menu_trigger ? 0.4f : 0.6f);
+    click = click || (trigger && !g_menu_trigger && pointer);
+    g_menu_trigger = trigger;
+    const vrmenu::Actions actions = g_menu.update(pointer, click, right.active ? right.stick_x : 0.0f,
+                                                  {vrplay::third_person(), g_ui_wrist.load(std::memory_order_relaxed)});
+    if (click) {
+        ++g_menu_clicks;
+    }
+    if (!actions.settings.empty()) {
+        std::string lines;
+        for (const auto& [name, value] : actions.settings) {
+            lines += std::format("set={} {}\n", name, value);
+        }
+        bridge::post(std::move(lines));
+    }
+    if (actions.toggle_view) {
+        request_view_toggle();
+    }
+    if (actions.toggle_ui) {
+        bridge::post(std::format("set=ui.placement {}\n", toggle_ui_wrist() ? "wrist" : "world"));
+    }
+    if (actions.recenter) {
+        g_recenter_request.store(true, std::memory_order_relaxed);
+        g_menu_place.reset(); // and the menu comes along
+        log::info("menu: recentre");
+    }
+    if (actions.recalibrate) {
+        vrplay::recalibrate();
+        log::info("menu: calibrating the eye height again");
+    }
+    if (actions.haptic > 0.0f) {
+        g_session->haptic(kRightHand, actions.haptic, 0.015f);
+    }
+    if (actions.close) {
+        set_menu_open(false);
+        return;
+    }
+    if (g_menu.revision() != g_menu_submitted) {
+        g_menu_submitted = g_menu.revision();
+        g_menu_renderer->submit(g_menu.snapshot());
+    }
+    if (g_menu_renderer->take(g_menu_pixels)) {
+        ID3D11DeviceContext* context = nullptr;
+        render::device()->GetImmediateContext(&context);
+        if (context) {
+            context->UpdateSubresource(g_menu_texture, 0, nullptr, g_menu_pixels.data(), vrmenu::kWidth * 4, 0);
+            context->Release();
+            g_menu_image = true;
+        }
+    }
+    if (!g_menu_image || !g_menu_place) {
+        return;
+    }
+    if (frame.state.shouldRender) {
+        blit::Blitter::Overlay overlay;
+        overlay.keep_alpha = true;
+        if (pointer) {
+            overlay.cursor_u = (*pointer)[0];
+            overlay.cursor_v = (*pointer)[1];
+            overlay.cursor_radius = g_menu_touching ? 0.004f : 0.006f;
+        }
+        const xr::EyeImage image = g_session->acquire_panel(1);
+        g_menu_blitter.draw(g_menu_texture, {}, image.view, vrmenu::kWidth, vrmenu::kHeight,
+                            blit::is_srgb(g_session->format()), overlay);
+        g_session->release_panel(1);
+    }
+    g_session->set_panel(g_menu_place, 1);
+    ++g_menu_frames;
 }
 
 // Just before the game's Present.
@@ -1113,6 +1333,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         last = frame.state.predictedDisplayTime;
         g_frame_vignette = comfort_vignette_now(std::clamp(dt, 0.0, 0.1));
     }
+    update_menu(frame);
     update_ui_panel(swapchain, frame);
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
@@ -1162,6 +1383,10 @@ void install(const Config& config) {
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
     g_ui_wrist_width = ui_number("wrist_width", 0.3f, 0.1f, 1.0f);
     g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "world")) == "wrist", std::memory_order_relaxed);
+    g_menu_enabled = config.get_bool("menu", "enabled", true);
+    g_menu_width = ui_number("menu_width", 0.62f, 0.2f, 2.0f);
+    g_menu_distance = ui_number("menu_distance", 0.7f, 0.3f, 3.0f);
+    g_menu.load(config);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));

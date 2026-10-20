@@ -16,6 +16,7 @@ namespace bg3vr::melee {
 
 void install(const Config& config);
 bool enabled();
+void set_enabled(bool on); // the VR menu; [combat] physical at start-up
 
 // From the headset: the right hand's aim in the game world (game convention, forward +Z) and the sample time.
 void set_hand(std::optional<vr::RigidPose> aim, double time_s);

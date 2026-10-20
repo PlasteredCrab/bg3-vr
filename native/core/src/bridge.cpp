@@ -68,6 +68,9 @@ void write_status_file() {
     MoveFileExW(temp.c_str(), g_status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
+std::mutex g_posted_mutex;
+std::string g_posted;
+
 struct WatchArgs {
     std::filesystem::path path;
     std::function<void(const Request&)> on_request;
@@ -86,6 +89,14 @@ DWORD WINAPI watch(void* param) {
     }
     for (;;) {
         Sleep(250);
+        std::string posted;
+        {
+            std::scoped_lock lock(g_posted_mutex);
+            posted.swap(g_posted);
+        }
+        if (!posted.empty()) {
+            args->on_request(parse(posted));
+        }
         std::error_code ec;
         const auto write_time = std::filesystem::last_write_time(args->path, ec);
         if (ec || write_time == last_write) {
@@ -284,6 +295,14 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "set") {
+            const auto space = value.find_first_of(" \t");
+            const std::string name = text::to_lower(value.substr(0, space));
+            if (name.find('.') != std::string::npos && name.front() != '.' && name.back() != '.') {
+                request.settings.emplace_back(name, space == std::string_view::npos
+                                                        ? std::string()
+                                                        : std::string(text::trim(value.substr(space + 1))));
+            }
         } else if (key == "view") {
             const std::string word = text::to_lower(value);
             if (word == "first" || word == "third") {
@@ -386,6 +405,14 @@ void set_status(std::string_view key, std::string_view value) {
         g_status[std::string(key)] = std::string(value);
     }
     write_status_file();
+}
+
+void post(std::string lines) {
+    std::scoped_lock lock(g_posted_mutex);
+    if (!g_posted.empty() && g_posted.back() != '\n') {
+        g_posted += '\n';
+    }
+    g_posted += lines;
 }
 
 void reset_status() {
