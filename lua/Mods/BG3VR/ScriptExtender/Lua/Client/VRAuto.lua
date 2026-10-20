@@ -82,10 +82,10 @@ end
 -- What the core asks for, through request=<n> <text>|<n> <text>|... (the last 16, numbered): first / third person
 -- (the "view" controller binding, the VR menu), holster events (Client/Holster.lua).
 local function HandleOne(what)
-    local holster, zone, hand = string.match(what, "^holster (%S+) (%S+) (%S+)")
+    local holster, zone, hand, holds = string.match(what, "^holster (%S+) (%S+) (%S+) ?(%S*)")
     if holster then
         if auto.started and BG3VR.OnHolster then
-            BG3VR.OnHolster(holster, zone, hand)
+            BG3VR.OnHolster(holster, zone, hand, holds ~= "" and holds or nil)
         end
         return
     end

@@ -33,6 +33,7 @@
 #include "bg3vr/trace.hpp"
 #include "bg3vr/views.hpp"
 #include "bg3vr/watchdog.hpp"
+#include "bg3vr/weaponset.hpp"
 #include "bg3vr/win_util.hpp"
 
 #include <windows.h>
@@ -199,6 +200,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
 void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (!request.settings.empty()) {
         apply_settings(request.settings);
+    }
+    if (request.weapon_set) {
+        weaponset::request(request.weapon_set->first, request.weapon_set->second);
     }
     if (request.controller) {
         camera::attach(*request.controller);
@@ -380,6 +384,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     hold::report();
     melee::report();
     holster::report();
+    weaponset::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -438,6 +443,7 @@ int init(const wchar_t* root_dir) {
     hold::install(g_config, module);
     melee::install(g_config);
     holster::install(g_config);
+    weaponset::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
     bridge::reset_status(); // a fresh start: nothing from a previous run counts

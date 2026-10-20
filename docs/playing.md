@@ -49,10 +49,12 @@ light buzz.
 
 ## Holsters
 
-Reach over your right or left shoulder, or to either hip, squeeze the grip and pull your hand away: your character
-draws their weapon. Bring the hand back to a holster and let go to put it away. You feel a light tick when your hand
-is over a holster. Squeezing low behind your back is reserved for the inventory. (Which weapon set each holster
-holds, the inventory and the torch are still being worked out; `holster:` lines in the log show what was detected.)
+Reach over a shoulder or to a hip, squeeze the grip and pull your hand away: your character draws the weapons kept
+there. Right shoulder and both hips: the melee set. Left shoulder: the ranged set (bow, crossbow); the game switches
+sets first, and without a ranged weapon you get the melee set. Bring the hand back to a holster and let go to put the
+weapon away; squeeze and let go in place to draw or put away without pulling. Squeeze low behind your back, between
+the shoulder blades, to open the inventory. You feel a light tick when your hand is over a holster. What each holster
+holds is set in `[holster]` (melee, ranged, inventory, none).
 
 ## The VR menu
 

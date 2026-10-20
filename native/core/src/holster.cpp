@@ -3,6 +3,8 @@
 #include "bg3vr/bridge.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
+#include "bg3vr/text.hpp"
+#include "bg3vr/vrplay.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -58,6 +60,12 @@ Settings load_settings(const Config& config) {
     s.back_radius = number("back_radius", s.back_radius, 0.05f, 0.5f);
     s.hip[1] = -number("hip_drop", -s.hip[1], 0.3f, 1.3f);
     s.hip[0] = number("hip_width", s.hip[0], 0.05f, 0.5f);
+    for (int z = 0; z < static_cast<int>(Zone::kCount); ++z) {
+        const std::string v = text::to_lower(config.get("holster", zone_name(static_cast<Zone>(z))));
+        if (v == "melee" || v == "ranged" || v == "inventory" || v == "none") {
+            s.holds[static_cast<std::size_t>(z)] = v;
+        }
+    }
     return s;
 }
 
@@ -159,8 +167,14 @@ Output on_frame(const vr::RigidPose& head, const Hand (&hands)[2]) {
     for (const Event& e : out.events) {
         const char* kind = e.kind == Event::Kind::Grab ? "grab" : e.kind == Event::Kind::Stow ? "stow" : "tap";
         g_events[static_cast<int>(e.kind)].fetch_add(1, std::memory_order_relaxed);
-        bridge::push_request(std::format("holster {} {} {}", kind, zone_name(e.zone), e.hand == 0 ? "left" : "right"));
+        bridge::push_request(std::format("holster {} {} {} {}", kind, zone_name(e.zone), e.hand == 0 ? "left" : "right",
+                                         g_settings.holds[static_cast<std::size_t>(e.zone)]));
         log::info("holster: {} {} with the {} hand", kind, zone_name(e.zone), e.hand == 0 ? "left" : "right");
+        if (e.kind == Event::Kind::Grab && g_settings.holds[static_cast<std::size_t>(e.zone)] == "inventory") {
+            // The game's default inventory key (Engine.pak PlayerProfiles/Eoc/keyboard_1.json: I; agent L 1.5).
+            const bool ok = vrplay::tap_key("i");
+            log::info("holster: inventory key {}", ok ? "pressed" : "NOT pressed (VR play off or input unavailable)");
+        }
     }
     return out;
 }

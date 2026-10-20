@@ -37,6 +37,7 @@ add_library(bg3vr_base STATIC
     src/vrplay.cpp
     src/vr_math.cpp
     src/watchdog.cpp
+    src/weaponset.cpp
     src/watch.cpp
     src/win_util.cpp
 )

@@ -297,6 +297,13 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "weaponset") {
+            const auto space = value.find(' ');
+            const auto entity = parse_address(value.substr(0, space));
+            const std::string set = space == std::string_view::npos ? std::string() : text::to_lower(text::trim(value.substr(space + 1)));
+            if (entity && (set == "melee" || set == "ranged")) {
+                request.weapon_set = std::pair<std::uint64_t, std::uint8_t>{*entity, set == "ranged" ? 1 : 0};
+            }
         } else if (key == "set") {
             const auto space = value.find_first_of(" \t");
             const std::string name = text::to_lower(value.substr(0, space));

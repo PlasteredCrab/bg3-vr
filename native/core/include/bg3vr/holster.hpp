@@ -17,6 +17,7 @@
 //                                fires as soon as the grip closes
 //   holster stow <zone> <hand>   a hand that pulled something out carried it into a zone and opened there
 //   holster tap <zone> <hand>    the grip closed and opened again without leaving the zone
+// each followed by what the zone holds ([holster] <zone> = melee | ranged | inventory | none).
 // Zones: shoulder_right, shoulder_left, hip_right, hip_left, back.
 namespace bg3vr::holster {
 
@@ -32,6 +33,8 @@ struct Settings {
     float hip_radius = 0.15f;
     vr::Vec3 back{0.0f, -0.40f, 0.20f};
     float back_radius = 0.13f;
+    // What each zone holds ([holster] <zone> = melee | ranged | inventory | none), passed to Lua with the event.
+    std::array<std::string, static_cast<std::size_t>(Zone::kCount)> holds{"melee", "ranged", "melee", "melee", "inventory"};
 };
 Settings load_settings(const Config& config);
 

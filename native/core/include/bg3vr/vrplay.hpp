@@ -4,6 +4,7 @@
 #include "bg3vr/module_info.hpp"
 
 #include <cstdint>
+#include <string_view>
 
 // Playing with the motion controllers once VR is started (bridge vr=start, sent automatically by the Lua side when
 // the headset is ready): controller buttons become the game's own mouse/keyboard raw input (InputManager::InjectRaw
@@ -60,6 +61,8 @@ void set_menu_open(bool open);
 
 // The left mouse button from elsewhere on the presenting thread (touching the UI panel with the controller tip).
 void mouse_left(bool down);
+// Press and release a key by name (kKeys: "i", "escape", ...) while VR play is on; false if unknown or not active.
+bool tap_key(std::string_view name);
 
 // VR play on/off (bridge vr=start / vr=stop). Turning it off releases every held key and button.
 void set_active(bool on);

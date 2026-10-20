@@ -247,6 +247,18 @@ void mouse_left(bool down) {
     }
 }
 
+bool tap_key(std::string_view name) {
+    if (!g_active.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    for (const KeyName& k : kKeys) {
+        if (name == k.name) {
+            return inject(layout::kDeviceKeyboard, k.id, true) && inject(layout::kDeviceKeyboard, k.id, false);
+        }
+    }
+    return false;
+}
+
 void recalibrate() {
     g_recalibrate.store(true, std::memory_order_relaxed);
 }
