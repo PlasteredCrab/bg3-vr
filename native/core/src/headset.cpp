@@ -108,6 +108,7 @@ std::atomic<bool> g_hands_buzz{false};
 constexpr std::uint64_t kHandLogEvery = 900; // samples between periodic pose lines (~10 s at 90 Hz)
 std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
+std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist (toggled by the "panel" binding)
 HWND g_window = nullptr;                    // the game window (the laser moves the mouse cursor in it)
 bool g_was_driven = false;
 
@@ -710,6 +711,14 @@ void update_input(const xr::Frame& frame) {
     if (feedback.recenter) {
         g_recenter_request.store(true, std::memory_order_relaxed);
     }
+    if (feedback.toggle_panel) {
+        const bool wrist = !g_ui_wrist.load(std::memory_order_relaxed);
+        g_ui_wrist.store(wrist, std::memory_order_relaxed);
+        if (!wrist) {
+            g_ui_place_request.store(true, std::memory_order_relaxed); // back in front of the head
+        }
+        log::info("ui: panel {}", wrist ? "on the left wrist" : "in front of you");
+    }
     for (std::size_t h = 0; h < 2; ++h) {
         if (feedback.haptic[h] > 0.0f) {
             g_session->haptic(h, feedback.haptic[h], 0.02f);
@@ -762,6 +771,7 @@ void publish_status(bool ready) {
 bool g_ui_enabled = true;          // [ui] panel
 bool g_ui_remove_from_eyes = true; // [ui] remove_from_eyes
 bool g_ui_laser = true;            // [ui] laser
+float g_ui_wrist_width = 0.3f;     // [ui] wrist_width (m)
 float g_ui_distance = 1.0f;        // [ui] distance (m)
 float g_ui_width = 1.1f;           // [ui] width (m)
 float g_ui_drop = 0.15f;           // [ui] below_eyes (m)
@@ -824,6 +834,29 @@ xr::PanelPlacement place_in_front(const vr::RigidPose& head) {
                            head.position[2] - std::cos(yaw) * g_ui_distance};
     place.width_m = g_ui_width;
     return place;
+}
+
+// The panel on the back of the left wrist, facing the eyes when the forearm is raised like reading a watch (left grip
+// space: -Z along the index finger, +Y up).
+xr::PanelPlacement wrist_place() {
+    xr::PanelPlacement place;
+    place.anchor = xr::PanelPlacement::Anchor::LeftGrip;
+    place.pose.position = {0.0f, 0.06f, 0.10f};
+    place.pose.orientation = {-0.5f, 0.0f, 0.0f, 0.8660254f}; // 60 degrees up about X
+    place.width_m = g_ui_wrist_width;
+    return place;
+}
+
+// A grip-anchored placement as a LOCAL-space one, from the hand's current grip pose (OpenXR convention).
+xr::PanelPlacement in_local(const xr::PanelPlacement& place, const vr::RigidPose& grip) {
+    const vr::Quat q{place.pose.orientation.x, place.pose.orientation.y, place.pose.orientation.z, place.pose.orientation.w};
+    const vr::Vec3 offset = vr::rotate(grip.orientation, {place.pose.position.x, place.pose.position.y, place.pose.position.z});
+    const vr::Quat r = vr::multiply(grip.orientation, q);
+    xr::PanelPlacement local = place;
+    local.anchor = xr::PanelPlacement::Anchor::Local;
+    local.pose.position = {grip.position[0] + offset[0], grip.position[1] + offset[1], grip.position[2] + offset[2]};
+    local.pose.orientation = {r[0], r[1], r[2], r[3]};
+    return local;
 }
 
 // Where the aim ray meets the panel's front face, in panel uv (0..1, v down), or nullopt.
@@ -947,13 +980,24 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         ui->Release();
         return;
     }
+    // Where it is this frame: the world panel, or on the left wrist.
+    const std::array<HandState, 2> both = hands();
+    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed);
+    const xr::PanelPlacement place = wrist ? wrist_place() : *g_ui_place;
     // The laser.
     blit::Blitter::Overlay overlay;
     overlay.keep_alpha = true;
-    const float height_m = g_ui_width * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
+    const float height_m =
+        place.width_m * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
     if (g_ui_laser) {
-        const HandState right = hands()[kRightHand];
-        const auto uv = right.aim_valid ? panel_uv(right.aim, *g_ui_place, height_m) : std::nullopt;
+        const HandState& right = both[kRightHand];
+        std::optional<xr::PanelPlacement> target;
+        if (!wrist) {
+            target = place;
+        } else if (both[kLeftHand].tracked) {
+            target = in_local(place, both[kLeftHand].grip);
+        }
+        const auto uv = right.aim_valid && target ? panel_uv(right.aim, *target, height_m) : std::nullopt;
         if (uv) {
             overlay.cursor_u = (*uv)[0];
             overlay.cursor_v = (*uv)[1];
@@ -972,7 +1016,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         g_session->release_panel();
     }
     ui->Release();
-    g_session->set_panel(g_ui_place);
+    g_session->set_panel(place);
     ui_set_in_eyes(!g_ui_remove_from_eyes);
     if (!g_ui_shown) {
         log::info("ui: panel shown");
@@ -1062,6 +1106,8 @@ void install(const Config& config) {
     g_ui_distance = ui_number("distance", 1.0f, 0.3f, 5.0f);
     g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
+    g_ui_wrist_width = ui_number("wrist_width", 0.3f, 0.1f, 1.0f);
+    g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "world")) == "wrist", std::memory_order_relaxed);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));

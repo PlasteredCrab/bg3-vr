@@ -62,6 +62,7 @@ constexpr const char* kControlNames[kControlCount] = {"left_trigger",  "left_gri
 struct Binding {
     bool bound = false;
     bool recenter = false; // hold to recentre
+    bool panel = false;    // press to move the UI panel between the world and the wrist
     std::uint16_t device = 0;
     std::uint16_t id = 0;
     std::string text;      // as configured, for the log
@@ -74,7 +75,7 @@ constexpr const char* kDefaults[kControlCount] = {
     "key:m",        // X: map
     "key:j",        // Y: journal
     "key:escape",   // menu: game menu / cancel
-    "",             // left stick click
+    "panel",        // left stick click: UI panel to the wrist and back
     "mouse_left",   // right trigger: click (move, interact, attack, UI)
     "mouse_right",  // right grip: context menu
     "key:i",        // A: inventory
@@ -120,6 +121,10 @@ std::optional<Binding> parse_binding(std::string value) {
     b.bound = true;
     if (value == "recenter") {
         b.recenter = true;
+        return b;
+    }
+    if (value == "panel") {
+        b.panel = true;
         return b;
     }
     if (value == "mouse_left" || value == "mouse_right" || value == "mouse_middle") {
@@ -196,7 +201,7 @@ void install(const Config& config, const ModuleInfo& module) {
                 bound += std::format("{}{}={}", bound.empty() ? "" : ", ", kControlNames[c], b->text);
             }
         } else {
-            log::warn("vr: [bindings] {} = '{}' is not mouse_left/right/middle, key:<name> or recenter; unbound",
+            log::warn("vr: [bindings] {} = '{}' is not mouse_left/right/middle, key:<name>, recenter or panel; unbound",
                       kControlNames[c], value);
         }
     }
@@ -254,7 +259,11 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     for (int c = 0; c < kControlCount; ++c) {
         const Binding& b = g_bindings[c];
         const bool grip = c == LeftGrip || c == RightGrip;
-        if (now[c] != g_down[c] && b.bound && !b.recenter && !(grips_grab && grip && !g_injected[c])) {
+        if (b.panel && now[c] && !g_down[c]) {
+            feedback.toggle_panel = true;
+            feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
+        }
+        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !(grips_grab && grip && !g_injected[c])) {
             if (inject(b.device, b.id, now[c])) {
                 g_injected[c] = now[c];
                 if (now[c]) {

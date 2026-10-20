@@ -41,6 +41,7 @@ struct Hand {
 // What the headset should do in response (haptics and recentring live there).
 struct Feedback {
     bool recenter = false;
+    bool toggle_panel = false; // switch the UI panel between the world and the wrist
     float haptic[2] = {0.0f, 0.0f}; // amplitude for a short pulse per hand (0 = none)
 };
 
