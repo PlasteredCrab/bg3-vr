@@ -255,6 +255,19 @@ bool Session::create_panel(int32_t width, int32_t height, std::string& error, st
     return create_swapchain(eye, error);
 }
 
+void Session::destroy_panel(std::size_t index) {
+    Panel& p = panels_[index];
+    for (EyeImage& image : p.eye.images) {
+        if (image.view) {
+            image.view->Release();
+        }
+    }
+    if (p.eye.swapchain != XR_NULL_HANDLE) {
+        xrDestroySwapchain(p.eye.swapchain);
+    }
+    p = {};
+}
+
 EyeImage Session::acquire_panel(std::size_t index) {
     Eye& eye = panels_[index].eye;
     xrAcquireSwapchainImage(eye.swapchain, nullptr, &eye.acquired);

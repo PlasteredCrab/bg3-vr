@@ -22,6 +22,7 @@ add_library(bg3vr_base STATIC
     src/picking.cpp
     src/quality.cpp
     src/rayprobe.cpp
+    src/resolution.cpp
     src/skeleton.cpp
     src/dialogue.cpp
     src/eyefix.cpp

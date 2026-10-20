@@ -166,6 +166,8 @@ public:
         panels_[index].placement = placement;
     }
     bool has_panel(std::size_t index = 0) const { return panels_[index].eye.swapchain != XR_NULL_HANDLE; }
+    // Removes a panel's swapchain (to make it again at another size).
+    void destroy_panel(std::size_t index = 0);
 
     std::size_t view_count() const { return eyes_.size(); }
     int32_t width(std::size_t index) const { return eyes_[index].width; }

@@ -127,6 +127,10 @@ Menu::Menu() {
     section("View");
     live("Perspective", Item::Live::View, {{"First person", "first"}, {"Third person", "third"}});
     live("Game interface", Item::Live::Ui, {{"In front of you", "world"}, {"On your wrist", "wrist"}});
+    choice("Render resolution", "render.vr_resolution",
+           {{"Game's own", "0", true}, {"60%", "60"}, {"70%", "70"}, {"80%", "80"}, {"90%", "90"}, {"100%", "100"},
+            {"120%", "120"}},
+           3);
     choice("Wrist interface size", "ui.wrist_width",
            {{"Small", "0.24"}, {"Medium", "0.3"}, {"Large", "0.36"}, {"Huge", "0.44"}}, 1);
     section("Comfort");

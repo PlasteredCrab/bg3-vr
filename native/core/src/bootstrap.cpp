@@ -13,6 +13,7 @@
 #endif
 #include "bg3vr/probe.hpp"
 #include "bg3vr/render.hpp"
+#include "bg3vr/resolution.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
@@ -186,6 +187,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     vrplay::configure(g_config);
     vrplay::configure_bindings(g_config);
     stereo::configure(g_config);
+    resolution::configure(g_config);
     const std::string scale = g_config.get("xr", "world_scale");
     camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));
 #if BG3VR_HAVE_OPENXR
@@ -301,6 +303,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         // Third person: the game's camera and its mouse picking; first person: the [vr] profile again.
         const bool third = *request.third_person;
         vrplay::set_third_person(third);
+        resolution::set_suspended(third);
         picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
         bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
     }
@@ -393,6 +396,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     melee::report();
     holster::report();
     weaponset::report();
+    resolution::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -452,6 +456,7 @@ int init(const wchar_t* root_dir) {
     melee::install(g_config);
     holster::install(g_config);
     weaponset::install(g_config, module);
+    resolution::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
     bridge::reset_status(); // a fresh start: nothing from a previous run counts

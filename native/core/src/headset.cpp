@@ -14,6 +14,7 @@
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/render.hpp"
+#include "bg3vr/resolution.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
@@ -63,7 +64,12 @@ bool g_failed = false;
 bool g_ready = false;
 xr::System g_system;
 std::unique_ptr<xr::Session> g_session;
-UINT g_image_width = 0;
+UINT g_image_width = 0;  // the back buffer the blitter was made for (it follows resizes)
+UINT g_eye_width = 0;    // the eye images (the headset's recommended size when the blitter scales)
+UINT g_eye_height = 0;
+UINT g_quad_width = 0;   // the flat screen image
+UINT g_quad_height = 0;
+DXGI_FORMAT g_back_format = DXGI_FORMAT_UNKNOWN;
 // The back buffer goes into the images through the blitter (any format, sRGB-decoded, sub-rectangles);
 // a plain copy only when it can't be set up and the formats allow.
 blit::Blitter g_blitter;
@@ -369,10 +375,12 @@ void start(IDXGISwapChain* swapchain) {
         return;
     }
 
-    // Every image the game hands us is a whole back buffer, so the eye images and the screen are
-    // made the same size.
+    // The screen image is the back buffer's size. The eye images are the headset's recommended size when the blitter
+    // scales (each eye's half of the back buffer, at whatever resolution the game renders, is drawn into it), else
+    // the back buffer's for a plain copy.
     const auto width = static_cast<int32_t>(desc.BufferDesc.Width);
     const auto height = static_cast<int32_t>(desc.BufferDesc.Height);
+    g_back_format = desc.BufferDesc.Format;
     std::string blit_error;
     const bool blitting = g_blitter.create(device, desc.BufferDesc.Width, desc.BufferDesc.Height,
                                            desc.BufferDesc.Format, blit_error);
@@ -382,7 +390,9 @@ void start(IDXGISwapChain* swapchain) {
     g_session = std::make_unique<xr::Session>();
     // With the blitter the images can be 8-bit sRGB whatever the back buffer is.
     const DXGI_FORMAT wanted = blitting ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : desc.BufferDesc.Format;
-    if (!g_session->create(g_system, device, error, wanted, width, height) ||
+    const auto eye_width = blitting ? static_cast<int32_t>(g_system.views[0].recommendedImageRectWidth) : width;
+    const auto eye_height = blitting ? static_cast<int32_t>(g_system.views[0].recommendedImageRectHeight) : height;
+    if (!g_session->create(g_system, device, error, wanted, eye_width, eye_height) ||
         !g_session->create_quad(width, height, error)) {
         log::error("xr: {}", error);
         g_session.reset();
@@ -402,6 +412,13 @@ void start(IDXGISwapChain* swapchain) {
     }
     g_image_width = desc.BufferDesc.Width;
     g_image_height = desc.BufferDesc.Height;
+    g_eye_width = static_cast<UINT>(eye_width);
+    g_eye_height = static_cast<UINT>(eye_height);
+    g_quad_width = static_cast<UINT>(width);
+    g_quad_height = static_cast<UINT>(height);
+    // The render resolution follows the headset (resolution.cpp): both eyes side by side in the back buffer.
+    resolution::set_window(desc.OutputWindow);
+    resolution::set_headset_eye(g_system.views[0].recommendedImageRectWidth, g_system.views[0].recommendedImageRectHeight);
     g_rendered.assign(2, {XR_TYPE_VIEW});
     if (g_input_wanted) {
         std::string input_error;
@@ -451,8 +468,31 @@ float g_frame_vignette = 0.0f; // set once per headset frame
 std::optional<std::array<float, 2>> g_screen_cursor; // third person: the laser dot on the flat screen (uv)
 
 // `rect` (back buffer pixels; width 0 = all of it) into the whole image.
-void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, const blit::Blitter::Rect& rect = {},
-                      const blit::Blitter::Overlay* overlay_in = nullptr) {
+// The back buffer changed size (the VR resolution, a window resize): the blitter's copy is remade to match.
+void follow_back_buffer(IDXGISwapChain* swapchain) {
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (!g_blitter.ready() || FAILED(swapchain->GetDesc(&desc)) ||
+        (desc.BufferDesc.Width == g_image_width && desc.BufferDesc.Height == g_image_height)) {
+        return;
+    }
+    std::string error;
+    g_blitter.destroy();
+    if (g_blitter.create(render::device(), desc.BufferDesc.Width, desc.BufferDesc.Height, desc.BufferDesc.Format, error)) {
+        log::info("xr: the back buffer is now {}x{} (was {}x{}); each eye gets {}x{} into a {}x{} image",
+                  desc.BufferDesc.Width, desc.BufferDesc.Height, g_image_width, g_image_height,
+                  desc.BufferDesc.Width / 2, desc.BufferDesc.Height, g_eye_width, g_eye_height);
+        g_image_width = desc.BufferDesc.Width;
+        g_image_height = desc.BufferDesc.Height;
+        g_back_format = desc.BufferDesc.Format;
+    } else {
+        log::error("xr: couldn't remake the copy for a {}x{} back buffer: {}", desc.BufferDesc.Width,
+                   desc.BufferDesc.Height, error);
+    }
+}
+
+// `rect` (back buffer pixels; width 0 = all of it) into the whole `target_width` x `target_height` image.
+void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, UINT target_width, UINT target_height,
+                      const blit::Blitter::Rect& rect = {}, const blit::Blitter::Overlay* overlay_in = nullptr) {
     ID3D11Texture2D* back_buffer = nullptr;
     if (FAILED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
         return;
@@ -463,7 +503,7 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, con
         if (source.Width == g_image_width && source.Height == g_image_height) {
             blit::Blitter::Overlay overlay;
             overlay.vignette = g_frame_vignette;
-            g_blitter.draw(back_buffer, rect, target.view, g_image_width, g_image_height, g_linearize,
+            g_blitter.draw(back_buffer, rect, target.view, target_width, target_height, g_linearize,
                            overlay_in ? *overlay_in : overlay);
         }
         back_buffer->Release();
@@ -494,7 +534,7 @@ void submit_screen(IDXGISwapChain* swapchain, const xr::Frame& frame) {
             overlay.cursor_v = (*g_screen_cursor)[1];
             overlay.cursor_radius = 0.006f;
         }
-        copy_back_buffer(swapchain, image, {}, &overlay);
+        copy_back_buffer(swapchain, image, g_quad_width, g_quad_height, {}, &overlay);
         g_session->release_quad();
     }
     g_session->end_frame_quad(frame, g_screen_width_m, g_screen_distance_m);
@@ -554,7 +594,7 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
                 const blit::Blitter::Rect rect{eye == 0 ? 0u : half, 0u, eye == 0 ? half : g_image_width - half,
                                                g_image_height};
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
-                copy_back_buffer(swapchain, image, rect);
+                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
                 g_has_image[eye] = true;
@@ -565,7 +605,7 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
             const int last = g_mode == Mode::Mono ? 1 : rendered->head.eye;
             for (int eye = first; eye <= last; ++eye) {
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
-                copy_back_buffer(swapchain, image);
+                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head);
                 g_has_image[eye] = true;
@@ -1124,6 +1164,14 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
             ui->Release();
             return;
         }
+        // A UI texture of another shape (the render resolution changed): the panel is made again to match.
+        if (g_session->has_panel() && g_ui_panel_width &&
+            std::abs(static_cast<float>(desc.Width) / static_cast<float>(std::max<UINT>(desc.Height, 1)) -
+                     static_cast<float>(g_ui_panel_width) / static_cast<float>(std::max<UINT>(g_ui_panel_height, 1))) > 0.01f) {
+            log::info("ui: the UI texture is now {}x{}; making the panel again", desc.Width, desc.Height);
+            g_session->set_panel(std::nullopt);
+            g_session->destroy_panel();
+        }
         if (!g_session->has_panel()) {
             g_ui_panel_width = std::min<UINT>(desc.Width, kUiMaxWidth);
             g_ui_panel_height = desc.Height * g_ui_panel_width / std::max<UINT>(desc.Width, 1);
@@ -1459,6 +1507,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         return;
     }
     publish_status(true);
+    follow_back_buffer(swapchain);
     if (frame.views.size() == 2) {
         // The interpupillary distance the runtime reports (the headset's IPD setting), applied 1:1 at world scale 1.
         static float logged_ipd = -1.0f;
