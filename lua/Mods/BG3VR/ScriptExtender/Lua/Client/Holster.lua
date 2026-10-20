@@ -39,7 +39,7 @@ function BG3VR.OnHolster(kind, zone, hand, holds)
         return
     end
     BG3VR.Log("holster: %s %s with the %s hand (holds %s)", kind, zone, hand, tostring(holds))
-    if holds == "inventory" or holds == "none" then
+    if holds == "inventory" or holds == "none" or holds == nil then
         return -- the core opens the inventory itself (the game's I key)
     end
     SendToServer({ Character = uuid, Kind = kind, Zone = zone, Hand = hand, Holds = holds })

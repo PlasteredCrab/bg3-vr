@@ -3,13 +3,19 @@
 --     have the core switch it (bridge weaponset=, a hook on esv::WeaponSetSystem: agent L, L_weapon_sets.md 1.4; no
 --     Osiris call can pick a set), and the draw waits until the set has changed (at most 0.8 s: without a ranged
 --     weapon the game refuses the ranged set and the melee set is drawn). stow puts it away; tap toggles.
+--   light: a torch flame with its light in the hand that squeezed (the game's torch effect, looping on the hand's FX
+--     bone: Osiris PlayLoopEffect(target, effect, bone, scale) -> handle, 0x367C490; agent M 3.4); again to put it
+--     out (StopLoopEffect 0x367C680). The flame follows the hand because the IK moves the hand bones.
 --   Drawing and sheathing: Osiris SetWeaponUnsheathed(character, bool, _) (0x36512C0; only the second argument is
 --   read, L 2.3), which plays the game's own draw / sheathe animation.
 
 local kChannel = "BG3VR_Holster"
 local kSetWait = 0.8
 
+local kTorchEffect = "VFX_LightSources_WPN_Torch_A_01_b6314fa1-8ac0-7a52-5865-5a4e9f98ddad"
+
 local drawn = {}    -- character -> true while drawn by a holster
+local lights = {}   -- character -> loop effect handle of the hand flame
 local pending = {}  -- character -> { set = "melee"|"ranged", left = seconds }
 
 local function Entity(character)
@@ -60,6 +66,26 @@ local function OnHolster(message, user)
     end
     if Osi.IsPlayer(character) ~= 1 then
         BG3VR.Log("holster: %s isn't a player character; ignored", character)
+        return {}
+    end
+    if holds == "light" then
+        if kind ~= "grab" then
+            return {}
+        end
+        if lights[character] then
+            BG3VR.Log("holster: %s's hand flame goes out", character)
+            pcall(Osi.StopLoopEffect, lights[character])
+            lights[character] = nil
+        else
+            local bone = message.Hand == "left" and "Dummy_L_HandFX" or "Dummy_R_HandFX"
+            local ok, handle = pcall(Osi.PlayLoopEffect, character, kTorchEffect, bone, 1.0)
+            if ok and handle then
+                lights[character] = handle
+                BG3VR.Log("holster: %s lights a flame in the %s hand (%s)", character, tostring(message.Hand), bone)
+            else
+                BG3VR.Warn("holster: PlayLoopEffect failed for %s: %s", character, tostring(handle))
+            end
+        end
         return {}
     end
     if holds ~= "melee" and holds ~= "ranged" then

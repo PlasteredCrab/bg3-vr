@@ -43,6 +43,8 @@ const char* zone_name(Zone zone) {
         return "hip_left";
     case Zone::Back:
         return "back";
+    case Zone::Chest:
+        return "chest";
     default:
         return "none";
     }
@@ -58,11 +60,12 @@ Settings load_settings(const Config& config) {
     s.shoulder_radius = number("shoulder_radius", s.shoulder_radius, 0.05f, 0.5f);
     s.hip_radius = number("hip_radius", s.hip_radius, 0.05f, 0.5f);
     s.back_radius = number("back_radius", s.back_radius, 0.05f, 0.5f);
+    s.chest_radius = number("chest_radius", s.chest_radius, 0.0f, 0.3f);
     s.hip[1] = -number("hip_drop", -s.hip[1], 0.3f, 1.3f);
     s.hip[0] = number("hip_width", s.hip[0], 0.05f, 0.5f);
     for (int z = 0; z < static_cast<int>(Zone::kCount); ++z) {
         const std::string v = text::to_lower(config.get("holster", zone_name(static_cast<Zone>(z))));
-        if (v == "melee" || v == "ranged" || v == "inventory" || v == "none") {
+        if (v == "melee" || v == "ranged" || v == "inventory" || v == "light" || v == "none") {
             s.holds[static_cast<std::size_t>(z)] = v;
         }
     }
@@ -86,12 +89,13 @@ Zone classify(const Settings& settings, const vr::RigidPose& head, const vr::Vec
         {Zone::HipRight, settings.hip, settings.hip_radius},
         {Zone::HipLeft, mirrored(settings.hip), settings.hip_radius},
         {Zone::Back, settings.back, settings.back_radius},
+        {Zone::Chest, settings.chest, settings.chest_radius},
     };
     Zone best = Zone::None;
     float best_fraction = 1.0f;
     for (const Candidate& c : candidates) {
         const float fraction = distance(local, c.centre) / c.radius;
-        if (fraction >= best_fraction) {
+        if (c.radius <= 0.0f || fraction >= best_fraction) {
             continue;
         }
         // Over the shoulder means behind the face: not a hand held up in front of the shoulder.
@@ -114,8 +118,9 @@ Output Tracker::update(const Settings& settings, const vr::RigidPose& head, cons
             out.haptic[h] = std::max(out.haptic[h], 0.12f); // you feel the holster under your hand
         }
         if (grip && !grip_[h]) {
-            // Closed: in a zone, take hold of what is kept there. The back opens at once (nothing to pull out).
-            if (zone == Zone::Back) {
+            // Closed: in a zone, take hold of what is kept there. Zones without a weapon act at once.
+            const std::string& holds = zone != Zone::None ? settings.holds[static_cast<std::size_t>(zone)] : std::string();
+            if (zone != Zone::None && holds != "melee" && holds != "ranged") {
                 out.events.push_back({Event::Kind::Grab, zone, h});
                 out.haptic[h] = 0.4f;
             } else if (zone != Zone::None) {
@@ -133,14 +138,18 @@ Output Tracker::update(const Settings& settings, const vr::RigidPose& head, cons
             if (armed_[h] != Zone::None) {
                 out.events.push_back({Event::Kind::Tap, armed_[h], h});
                 out.haptic[h] = 0.25f;
-            } else if (carrying_[h] != Zone::None && zone != Zone::None && zone != Zone::Back) {
+            } else if (carrying_[h] != Zone::None && zone != Zone::None &&
+                       (settings.holds[static_cast<std::size_t>(zone)] == "melee" ||
+                        settings.holds[static_cast<std::size_t>(zone)] == "ranged")) {
                 out.events.push_back({Event::Kind::Stow, zone, h});
                 out.haptic[h] = 0.4f;
             }
             armed_[h] = Zone::None;
             carrying_[h] = Zone::None;
         }
-        out.grip_taken[h] = grip && (armed_[h] != Zone::None || carrying_[h] != Zone::None || zone == Zone::Back);
+        out.grip_taken[h] = grip && (armed_[h] != Zone::None || carrying_[h] != Zone::None ||
+                                     (zone != Zone::None && settings.holds[static_cast<std::size_t>(zone)] != "melee" &&
+                                      settings.holds[static_cast<std::size_t>(zone)] != "ranged"));
         inside_[h] = zone;
         grip_[h] = grip;
     }

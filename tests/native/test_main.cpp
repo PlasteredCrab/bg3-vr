@@ -1045,6 +1045,7 @@ void test_holster() {
     CHECK(classify(settings, head, {-0.22f, 0.82f, 0.02f}) == Zone::HipLeft);
     CHECK(classify(settings, head, {0.0f, 1.2f, 0.2f}) == Zone::Back);
     CHECK(classify(settings, head, {0.0f, 1.3f, -0.4f}) == Zone::None); // hands out in front
+    CHECK(classify(settings, head, {0.0f, 1.27f, -0.10f}) == Zone::Chest);
     // The zones turn with the head: facing -X, the right shoulder is towards -Z and behind is +X.
     vr::RigidPose turned = head;
     turned.orientation = vr::yaw_quat(90.0f);
@@ -1079,6 +1080,10 @@ void test_holster() {
     o = step({0.0f, 1.2f, 0.2f}, true); // the back opens at once
     CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Grab && o.events[0].zone == Zone::Back);
     o = step({0.0f, 1.2f, 0.2f}, false);
+    CHECK(o.events.empty());
+    o = step({0.0f, 1.27f, -0.10f}, true); // the chest (light) also acts at once
+    CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Grab && o.events[0].zone == Zone::Chest && o.grip_taken[1]);
+    o = step({0.0f, 1.27f, -0.10f}, false);
     CHECK(o.events.empty());
 }
 

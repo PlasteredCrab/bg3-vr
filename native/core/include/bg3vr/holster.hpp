@@ -13,15 +13,15 @@
 // fixed to the body (the head's position and facing, yaw only, in tracked space), so they move with you. The core
 // only says which zone a grip closed or opened in; the Lua side decides what that means for the character's
 // equipment (draw the weapon kept there, open the inventory, ...), through to_lua requests:
-//   holster grab <zone> <hand>   the grip closed in a zone and the hand pulled out of it (drawing); the back zone
-//                                fires as soon as the grip closes
+//   holster grab <zone> <hand>   the grip closed in a zone and the hand pulled out of it (drawing); zones that hold
+//                                no weapon (the back: inventory, the chest: light) fire as soon as the grip closes
 //   holster stow <zone> <hand>   a hand that pulled something out carried it into a zone and opened there
 //   holster tap <zone> <hand>    the grip closed and opened again without leaving the zone
-// each followed by what the zone holds ([holster] <zone> = melee | ranged | inventory | none).
-// Zones: shoulder_right, shoulder_left, hip_right, hip_left, back.
+// each followed by what the zone holds ([holster] <zone> = melee | ranged | inventory | light | none).
+// Zones: shoulder_right, shoulder_left, hip_right, hip_left, back, chest.
 namespace bg3vr::holster {
 
-enum class Zone : int { None = -1, ShoulderRight, ShoulderLeft, HipRight, HipLeft, Back, kCount };
+enum class Zone : int { None = -1, ShoulderRight, ShoulderLeft, HipRight, HipLeft, Back, Chest, kCount };
 const char* zone_name(Zone zone);
 
 struct Settings {
@@ -33,8 +33,11 @@ struct Settings {
     float hip_radius = 0.15f;
     vr::Vec3 back{0.0f, -0.40f, 0.20f};
     float back_radius = 0.13f;
-    // What each zone holds ([holster] <zone> = melee | ranged | inventory | none), passed to Lua with the event.
-    std::array<std::string, static_cast<std::size_t>(Zone::kCount)> holds{"melee", "ranged", "melee", "melee", "inventory"};
+    vr::Vec3 chest{0.0f, -0.33f, -0.10f};
+    float chest_radius = 0.09f;
+    // What each zone holds ([holster] <zone> = melee | ranged | inventory | light | none), passed to Lua with the
+    // event. Zones that don't hold a weapon act as soon as the grip closes (nothing to pull out).
+    std::array<std::string, static_cast<std::size_t>(Zone::kCount)> holds{"melee", "ranged", "melee", "melee", "inventory", "light"};
 };
 Settings load_settings(const Config& config);
 

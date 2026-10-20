@@ -53,8 +53,9 @@ Reach over a shoulder or to a hip, squeeze the grip and pull your hand away: you
 there. Right shoulder and both hips: the melee set. Left shoulder: the ranged set (bow, crossbow); the game switches
 sets first, and without a ranged weapon you get the melee set. Bring the hand back to a holster and let go to put the
 weapon away; squeeze and let go in place to draw or put away without pulling. Squeeze low behind your back, between
-the shoulder blades, to open the inventory. You feel a light tick when your hand is over a holster. What each holster
-holds is set in `[holster]` (melee, ranged, inventory, none).
+the shoulder blades, to open the inventory. Squeeze at the middle of your chest to light a torch flame in that hand
+(it lights the area around you and moves with your hand); squeeze there again to put it out. You feel a light tick when your hand is over a holster. What each holster
+holds is set in `[holster]` (melee, ranged, inventory, light, none).
 
 ## The VR menu
 
