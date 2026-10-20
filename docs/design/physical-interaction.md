@@ -271,6 +271,18 @@ Answered from agent C's report; the parts our code uses are re-checked in `docs/
   `(-sin yaw, 0, -cos yaw)`. Root motion is applied through 0x3C78110 (set entity world transform; its
   server-side effects are unconfirmed).
 
+## 3b. Status (2026-10-20; everything built, nothing run in game yet)
+
+| Piece | Code | Default |
+|---|---|---|
+| Hands tracked in the world | `headset::hands()`, `camera::tracked_to_world` | on with the headset |
+| Pointing (the game's picking from the hand) | `picking.cpp`, `!vr_pick` | on with VR |
+| Physics raycast from the hand | `rayprobe.cpp` (`raycast()`, `!vr_ray`) | probe off |
+| Arms and the held weapon follow the controllers | `bodyik.cpp` (slot 30), `!vr_ik` | off (`[ik] arms`) until the chain is confirmed |
+| Grab / hold / put down items | `hold.cpp` (client item setters, report on release) | off (`[grab] probe` / `hold`) |
+| Velocity hold, throw, gravity pull math | `grab_math.cpp` | not wired yet |
+| Physics bodies of held items, throwing, ragdolls | wrapper calls from section 2a | not built yet |
+
 ## 4. Order of work
 
 1. Hand presence: controllers tracked in game space (done in code: logged as `xr input:` lines with world
