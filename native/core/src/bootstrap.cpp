@@ -184,6 +184,13 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         log::info("menu: {} = {}", name, value);
     }
     vrplay::configure(g_config);
+    stereo::configure(g_config);
+    const std::string scale = g_config.get("xr", "world_scale");
+    camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));
+#if BG3VR_HAVE_OPENXR
+    headset::configure_ui(g_config);
+#endif
+    holster::set_enabled(g_config.get_bool("holster", "enabled", true));
     hold::set_hold(g_config.get_bool("grab", "hold", false));
     melee::set_enabled(g_config.get_bool("combat", "physical", false));
     const bool third = vrplay::third_person();

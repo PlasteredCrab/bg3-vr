@@ -79,6 +79,8 @@ struct Follow {
 void set_follow(std::optional<Follow> follow);
 // Changes the height above the followed transform (e.g. calibrated from the head bone); no-op when not following.
 void set_follow_height(float height);
+// [xr] world_scale (game units per real metre of head and hand movement); live from the VR menu.
+void set_world_scale(float scale);
 // The followed transform's last accepted position (game world), or nullopt when not following.
 std::optional<vr::Vec3> follow_position();
 // Turns the held pose's yaw (snap / smooth turn): with head tracking this rotates the whole tracked space around

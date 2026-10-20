@@ -74,6 +74,9 @@ void rewrite_block(std::uint8_t* block, const vr::RigidPose& eye_in_head, const 
 
 // Installs the hook (signature render_view_camera_built); [xr] world_scale as the camera module.
 void install(const Config& config, const ModuleInfo& module);
+// [xr] world_scale and [xr] ipd_mm (0 = the headset's own IPD, else the eyes are moved apart to that distance, in
+// millimetres of the real world); again whenever the VR menu changes one (any thread).
+void configure(const Config& config);
 
 // The eyes for the frames being rendered: the head centre and both eyes as OpenXR located them (same
 // space and time), and each eye's field of view. nullopt: leave the views alone.

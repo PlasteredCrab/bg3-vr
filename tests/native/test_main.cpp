@@ -28,6 +28,7 @@
 #include <cmath>
 #include <numbers>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <string>
@@ -956,7 +957,13 @@ void test_vrmenu() {
     CHECK(menu.value_of("Eye height") == "+10 cm");
 
     const auto centre = [&](const std::string& label) {
+        if (label != "#buttons" && label != "#tabs") {
+            menu.show_page(menu.page_of(label)); // rows are on pages (tabs)
+        }
         for (const auto& row : menu.snapshot().rows) {
+            if (label == "#tabs" && row.kind == Snapshot::Row::Kind::Tabs) {
+                return (static_cast<float>(row.top) + static_cast<float>(row.height) * 0.5f) / static_cast<float>(kHeight);
+            }
             if (row.label == label || (label == "#buttons" && row.kind == Snapshot::Row::Kind::Buttons)) {
                 return (static_cast<float>(row.top) + static_cast<float>(row.height) * 0.5f) / static_cast<float>(kHeight);
             }
@@ -998,13 +1005,30 @@ void test_vrmenu() {
     CHECK(menu.update(std::array<float, 2>{0.85f, buttons}, true, 0.0f, live).close);
     a = menu.update(std::array<float, 2>{0.01f, buttons}, true, 0.0f, live);
     CHECK(!a.close && !a.recenter && !a.recalibrate);
-    // Section headings and the header aren't rows.
-    CHECK(menu.row_at(0.05f) == -1 && menu.row_at(centre("Comfort")) == -1);
+    // The header isn't a row; the tabs switch pages (click or stick), and rows of other pages aren't drawn.
+    CHECK(menu.row_at(0.05f) == -1);
+    menu.show_page(0);
+    const float tabs = centre("#tabs");
+    CHECK(menu.update(std::array<float, 2>{0.9f, tabs}, true, 0.0f, live).haptic > 0.0f && menu.page() == 3);
+    bool other_page = false;
+    for (const auto& row : menu.snapshot().rows) {
+        other_page = other_page || row.label == "Turning";
+    }
+    CHECK(!other_page && menu.page_of("IPD (eye distance)") == 3 && menu.page_of("Turning") == 1);
+    menu.update(std::array<float, 2>{0.5f, tabs}, false, 1.0f, live); // stick right on the tabs: next page (wraps)
+    CHECK(menu.page() == 0);
+    a = menu.update(std::array<float, 2>{0.8f, centre("IPD (eye distance)")}, true, 0.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].first == "xr.ipd_mm" && a.settings[0].second == "56");
+    CHECK(menu.value_of("World scale") == "100% (true)" && menu.value_of("Holsters") == "On");
 
     // The renderer draws a premultiplied image: transparent outside the rounded frame, opaque inside.
     Renderer renderer;
     CHECK(renderer.start());
     menu.update(std::array<float, 2>{0.8f, centre("Turning")}, false, 0.0f, live); // hover a row
+    char preview_page[8] = {};
+    if (GetEnvironmentVariableA("BG3VR_MENU_PREVIEW_PAGE", preview_page, sizeof(preview_page)) > 0) {
+        menu.show_page(std::atoi(preview_page));
+    }
     renderer.submit(menu.snapshot());
     std::vector<std::uint32_t> pixels;
     bool got = false;

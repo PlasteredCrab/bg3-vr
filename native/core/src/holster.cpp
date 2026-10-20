@@ -17,6 +17,7 @@ namespace bg3vr::holster {
 namespace {
 
 Settings g_settings;
+std::atomic<bool> g_enabled{true};
 Tracker g_tracker;
 std::atomic<std::uint64_t> g_events[3]{}; // grab, stow, tap
 
@@ -158,6 +159,7 @@ Output Tracker::update(const Settings& settings, const vr::RigidPose& head, cons
 
 void install(const Config& config) {
     g_settings = load_settings(config);
+    g_enabled.store(g_settings.enabled, std::memory_order_relaxed);
     health::set("holsters", g_settings.enabled ? health::State::Ready : health::State::Off, "[holster] enabled");
     log::info("holster: {} (shoulders r {:.2f} m, hips r {:.2f} m {:.2f} m below the eyes, back r {:.2f} m)",
               g_settings.enabled ? "on" : "off ([holster] enabled)", g_settings.shoulder_radius, g_settings.hip_radius,
@@ -165,11 +167,17 @@ void install(const Config& config) {
 }
 
 bool enabled() {
-    return g_settings.enabled;
+    return g_enabled.load(std::memory_order_relaxed);
+}
+
+void set_enabled(bool on) {
+    if (g_enabled.exchange(on) != on) {
+        log::info("holster: {}", on ? "on" : "off");
+    }
 }
 
 Output on_frame(const vr::RigidPose& head, const Hand (&hands)[2]) {
-    if (!g_settings.enabled) {
+    if (!enabled()) {
         return {};
     }
     Output out = g_tracker.update(g_settings, head, hands);

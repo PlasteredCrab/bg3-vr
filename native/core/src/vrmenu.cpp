@@ -25,10 +25,12 @@ using Kind = Snapshot::Row::Kind;
 
 // Layout (pixels of the kWidth x kHeight image).
 constexpr int kHeaderBottom = 184;
-constexpr int kSectionHeight = 58;
-constexpr int kChoiceHeight = 58;
+constexpr int kTabsHeight = 78;
+constexpr int kChoiceHeight = 62;
 constexpr int kButtonsHeight = 110;
 constexpr int kFooterTop = kHeight - 62;
+constexpr int kButtonsTop = kFooterTop - kButtonsHeight - 8;
+constexpr float kTabGap = 12.0f;
 constexpr float kArrowLeft = 600.0f;   // "<" of a choice row
 constexpr float kArrowRight = 916.0f;  // ">" of a choice row
 constexpr float kArrowWidth = 40.0f;
@@ -53,14 +55,12 @@ bool truthy(const std::string& s) {
 } // namespace
 
 Menu::Menu() {
-    const auto section = [&](const char* label) {
-        Item item;
-        item.kind = Kind::Section;
-        item.label = label;
-        items_.push_back(std::move(item));
-    };
+    // Each section is a page, shown by its tab.
+    const auto section = [&](const char* label) { pages_.push_back(label); };
+    const auto page = [&] { return static_cast<int>(pages_.size()) - 1; };
     const auto choice = [&](const char* label, const char* setting, std::vector<Option> options, int fallback) {
         Item item;
+        item.page = page();
         item.label = label;
         item.setting = setting;
         item.options = std::move(options);
@@ -73,6 +73,7 @@ Menu::Menu() {
     };
     const auto live = [&](const char* label, Item::Live which, std::vector<Option> options) {
         Item item;
+        item.page = page();
         item.label = label;
         item.live = which;
         item.options = std::move(options);
@@ -82,6 +83,8 @@ Menu::Menu() {
     section("View");
     live("Perspective", Item::Live::View, {{"First person", "first"}, {"Third person", "third"}});
     live("Game interface", Item::Live::Ui, {{"In front of you", "world"}, {"On your wrist", "wrist"}});
+    choice("Wrist interface size", "ui.wrist_width",
+           {{"Small", "0.24"}, {"Medium", "0.3"}, {"Large", "0.36"}, {"Huge", "0.44"}}, 1);
     section("Comfort");
     choice("Turning", "vr.turn", {{"Snap", "snap"}, {"Smooth", "smooth"}}, 0);
     choice("Snap angle", "vr.snap_degrees",
@@ -92,7 +95,7 @@ Menu::Menu() {
     choice("Comfort vignette", "vr.comfort_vignette",
            {{"Off", "0", true}, {"Light", "0.25"}, {"Medium", "0.5"}, {"Strong", "0.8"}}, 2);
     on_off("Stick movement", "vr.stick_locomotion", true);
-    section("Hands & Body");
+    section("Body");
     on_off("Arms follow controllers", "ik.arms", true);
     choice("Weapon angle", "ik.weapon_pitch",
            {{"\u221260\u00B0", "-60"}, {"\u221245\u00B0", "-45"}, {"\u221230\u00B0", "-30"}, {"\u221215\u00B0", "-15"},
@@ -101,6 +104,16 @@ Menu::Menu() {
     on_off("Point to select", "vr.hand_pointing", true);
     on_off("Grab objects", "grab.hold", false);
     on_off("Physical melee", "combat.physical", false);
+    on_off("Holsters", "holster.enabled", true);
+    section("Scale");
+    choice("IPD (eye distance)", "xr.ipd_mm",
+           {{"Headset", "0"}, {"56 mm", "56"}, {"58 mm", "58"}, {"60 mm", "60"}, {"62 mm", "62"}, {"64 mm", "64"},
+            {"66 mm", "66"}, {"68 mm", "68"}, {"70 mm", "70"}, {"72 mm", "72"}},
+           0);
+    choice("World scale", "xr.world_scale",
+           {{"80%", "0.8"}, {"90%", "0.9"}, {"95%", "0.95"}, {"100% (true)", "1"}, {"105%", "1.05"}, {"110%", "1.1"},
+            {"120%", "1.2"}},
+           3);
     choice("Eye height", "vr.eye_offset",
            {{"−10 cm", "-0.1"}, {"−5 cm", "-0.05"}, {"At the eyes", "0"}, {"+5 cm", "0.05"}, {"+10 cm", "0.1"},
             {"+15 cm", "0.15"}, {"+20 cm", "0.2"}},
@@ -109,16 +122,49 @@ Menu::Menu() {
     buttons.kind = Kind::Buttons;
     buttons.buttons = {"Recentre", "Calibrate height", "Close"};
     items_.push_back(std::move(buttons));
+    Item tabs;
+    tabs.kind = Kind::Tabs;
+    tabs.buttons = pages_;
+    items_.insert(items_.begin(), std::move(tabs));
     layout();
 }
 
 void Menu::layout() {
     int y = kHeaderBottom;
     for (Item& item : items_) {
-        item.top = y;
-        item.height = item.kind == Kind::Section ? kSectionHeight : item.kind == Kind::Buttons ? kButtonsHeight : kChoiceHeight;
-        y += item.height;
+        if (item.kind == Kind::Tabs) {
+            item.top = kHeaderBottom;
+            item.height = kTabsHeight;
+            y = kHeaderBottom + kTabsHeight + 8;
+        } else if (item.kind == Kind::Buttons) {
+            item.top = kButtonsTop;
+            item.height = kButtonsHeight;
+        } else if (item.page == page_) {
+            item.top = y;
+            item.height = kChoiceHeight;
+            y += kChoiceHeight;
+        } else {
+            item.top = -10000; // on another page
+            item.height = 0;
+        }
     }
+}
+
+void Menu::show_page(int page) {
+    if (page >= 0 && page < static_cast<int>(pages_.size()) && page != page_) {
+        page_ = page;
+        layout();
+        ++revision_;
+    }
+}
+
+int Menu::page_of(const std::string& label) const {
+    for (const Item& item : items_) {
+        if (item.label == label) {
+            return item.page;
+        }
+    }
+    return -1;
 }
 
 void Menu::load(const Config& config) {
@@ -170,7 +216,8 @@ int Menu::row_at(float v) const {
     const float y = v * static_cast<float>(kHeight);
     for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
         const Item& item = items_[i];
-        if (item.kind != Kind::Section && y >= static_cast<float>(item.top) && y < static_cast<float>(item.top + item.height)) {
+        if (item.kind != Kind::Section && item.height > 0 && y >= static_cast<float>(item.top) &&
+            y < static_cast<float>(item.top + item.height)) {
             return i;
         }
     }
@@ -178,14 +225,16 @@ int Menu::row_at(float v) const {
 }
 
 int Menu::button_at(int row, float u) const {
-    if (row < 0 || row >= static_cast<int>(items_.size()) || items_[row].kind != Kind::Buttons) {
+    if (row < 0 || row >= static_cast<int>(items_.size()) ||
+        (items_[row].kind != Kind::Buttons && items_[row].kind != Kind::Tabs)) {
         return -1;
     }
     const int count = static_cast<int>(items_[row].buttons.size());
+    const float gap = items_[row].kind == Kind::Tabs ? kTabGap : kButtonGap;
     const float x = u * static_cast<float>(kWidth);
-    const float width = (kButtonsRight - kButtonsLeft - kButtonGap * static_cast<float>(count - 1)) / static_cast<float>(count);
+    const float width = (kButtonsRight - kButtonsLeft - gap * static_cast<float>(count - 1)) / static_cast<float>(count);
     for (int b = 0; b < count; ++b) {
-        const float left = kButtonsLeft + static_cast<float>(b) * (width + kButtonGap);
+        const float left = kButtonsLeft + static_cast<float>(b) * (width + gap);
         if (x >= left && x < left + width) {
             return b;
         }
@@ -224,7 +273,8 @@ Actions Menu::update(std::optional<std::array<float, 2>> pointer, bool click, fl
     const int row = pointer ? row_at((*pointer)[1]) : -1;
     const int button = pointer ? button_at(row, (*pointer)[0]) : -1;
     if (row != hovered_ || button != hovered_button_) {
-        if (row >= 0 && (row != hovered_ || button != hovered_button_) && (items_[row].kind != Kind::Buttons || button >= 0)) {
+        if (row >= 0 && (row != hovered_ || button != hovered_button_) &&
+            ((items_[row].kind != Kind::Buttons && items_[row].kind != Kind::Tabs) || button >= 0)) {
             actions.haptic = 0.08f;
         }
         hovered_ = row;
@@ -233,7 +283,12 @@ Actions Menu::update(std::optional<std::array<float, 2>> pointer, bool click, fl
     }
     if (click && row >= 0) {
         const Item& item = items_[row];
-        if (item.kind == Kind::Buttons) {
+        if (item.kind == Kind::Tabs) {
+            if (button >= 0) {
+                show_page(button);
+                actions.haptic = 0.25f;
+            }
+        } else if (item.kind == Kind::Buttons) {
             switch (button) {
             case 0:
                 actions.recenter = true;
@@ -257,10 +312,15 @@ Actions Menu::update(std::optional<std::array<float, 2>> pointer, bool click, fl
             actions.haptic = 0.25f;
         }
     }
-    // The stick changes the row under the laser.
-    if (row >= 0 && items_[row].kind == Kind::Choice) {
+    // The stick changes the row under the laser (on the tabs: the page).
+    if (row >= 0 && (items_[row].kind == Kind::Choice || items_[row].kind == Kind::Tabs)) {
         if (stick_armed_ && std::abs(stick_x) > 0.7f) {
-            step(row, stick_x > 0.0f ? 1 : -1, actions);
+            if (items_[row].kind == Kind::Tabs) {
+                const int count = static_cast<int>(pages_.size());
+                show_page((page_ + (stick_x > 0.0f ? 1 : -1) + count) % count);
+            } else {
+                step(row, stick_x > 0.0f ? 1 : -1, actions);
+            }
             actions.haptic = 0.2f;
             stick_armed_ = false;
         }
@@ -275,6 +335,9 @@ Snapshot Menu::snapshot() const {
     Snapshot s;
     for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
         const Item& item = items_[i];
+        if (item.height <= 0) {
+            continue; // on another page
+        }
         Snapshot::Row row;
         row.kind = item.kind;
         row.label = item.label;
@@ -286,9 +349,10 @@ Snapshot Menu::snapshot() const {
             row.value = option.text;
             row.off = option.off;
         }
-        if (item.kind == Kind::Buttons) {
+        if (item.kind == Kind::Buttons || item.kind == Kind::Tabs) {
             row.buttons = item.buttons;
             row.hovered_button = i == hovered_ ? hovered_button_ : -1;
+            row.selected_button = item.kind == Kind::Tabs ? page_ : -1;
         }
         s.rows.push_back(std::move(row));
     }
@@ -584,6 +648,29 @@ void Renderer::Impl::draw(const Snapshot& s) {
             text(L"›", arrow, {kArrowRight, top - 4.0f, kArrowRight + kArrowWidth, bottom - 4.0f}, arrows);
             text(widen(row.value), value, {kArrowLeft + kArrowWidth, top, kArrowRight, bottom},
                  row.off ? rgb(kTextDim) : rgb(kGoldBright));
+            break;
+        }
+        case Kind::Tabs: {
+            const int count = static_cast<int>(row.buttons.size());
+            const float bw = (kButtonsRight - kButtonsLeft - kTabGap * static_cast<float>(count - 1)) / static_cast<float>(count);
+            for (int b = 0; b < count; ++b) {
+                const float left = kButtonsLeft + static_cast<float>(b) * (bw + kTabGap);
+                const D2D1_RECT_F r{left, top + 10.0f, left + bw, bottom - 12.0f};
+                const bool selected = row.selected_button == b;
+                const bool hot = row.hovered_button == b;
+                if (selected || hot) {
+                    brush->SetColor(rgb(kGold, selected ? 0.20f : 0.10f));
+                    target->FillRoundedRectangle({r, 10.0f, 10.0f}, brush);
+                }
+                if (selected) {
+                    brush->SetColor(rgb(kGoldBright));
+                    target->FillRectangle({left + 18.0f, r.bottom - 4.0f, left + bw - 18.0f, r.bottom - 1.0f}, brush);
+                }
+                std::wstring caption = widen(row.buttons[static_cast<std::size_t>(b)]);
+                std::transform(caption.begin(), caption.end(), caption.begin(), [](wchar_t c) { return static_cast<wchar_t>(towupper(c)); });
+                text(caption, button, r, rgb(selected ? kGoldBright : hot ? kGold : kSection));
+            }
+            line(64.0f, bottom, w - 64.0f, bottom, rgb(kGoldDim, 0.55f), 1.0f);
             break;
         }
         case Kind::Buttons: {

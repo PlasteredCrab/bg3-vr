@@ -59,10 +59,14 @@ holds is set in `[holster]` (melee, ranged, inventory, light, none).
 
 ## The VR menu
 
-Press the left menu button. A panel opens in front of you with the settings you'd want to change while playing:
-first or third person, where the game UI sits (in front of you or on your wrist), snap or smooth turning, snap
-angle, smooth turn speed, comfort vignette, stick movement, arms following the controllers, pointing to select,
-grabbing, physical melee and eye height, plus Recentre, Calibrate height and Close buttons.
+Press the left menu button. A panel opens in front of you with tabs along the top:
+
+- View: first or third person, where the game UI sits (in front of you or on your wrist), the wrist UI size.
+- Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement.
+- Body: arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
+- Scale: IPD (the headset's own, or a fixed 56-72 mm), world scale (100% is true scale), eye height.
+
+Recentre, Calibrate height and Close buttons sit at the bottom.
 
 Point at a row with the right hand and pull the trigger to change it (the left arrow steps back), push the right
 stick left or right while pointing at a row, or touch the panel with the tip of the controller. While it is open

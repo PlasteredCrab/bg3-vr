@@ -19,6 +19,8 @@
 namespace bg3vr::headset {
 
 void install(const Config& config);
+// [ui] wrist_width and the like, again whenever the VR menu changes one (any thread).
+void configure_ui(const Config& config);
 
 // Frames between the camera update a frame was rendered from and its Present: 0..7, or -1 to find
 // it by looking for the applied view matrix in the presenting RenderFrame (the default).

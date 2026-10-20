@@ -62,7 +62,7 @@ std::atomic<std::uint64_t> g_projection_overrides{0};
 // the Transform (what the setter check compares against), and the history of applied head views.
 // Under g_mutex.
 std::optional<HeadView> g_head;
-float g_world_scale = 1.0f;
+std::atomic<float> g_world_scale{1.0f};
 // Recentering origin in game convention: head views are taken relative to it (yaw only).
 vr::Vec3 g_recenter_position{0.0f, 0.0f, 0.0f};
 float g_recenter_yaw_deg = 0.0f;
@@ -363,7 +363,7 @@ void install(const Config& config, const ModuleInfo& module) {
     }
     const std::string scale = config.get("xr", "world_scale");
     if (!scale.empty()) {
-        g_world_scale = std::strtof(scale.c_str(), nullptr);
+        g_world_scale = std::clamp(std::strtof(scale.c_str(), nullptr), 0.25f, 4.0f);
     }
     g_teleport_turn = config.get_bool("vr", "teleport_turn", true);
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
@@ -438,6 +438,13 @@ void set_mouselook(bool enabled) {
     g_dragging = false;
     log::info("camera: mouse look {} (hold the middle mouse button and drag; {:.2f} deg per pixel)",
               enabled ? "on" : "off", g_mouselook_sensitivity);
+}
+
+void set_world_scale(float scale) {
+    const float clamped = std::clamp(scale, 0.25f, 4.0f);
+    if (g_world_scale.exchange(clamped) != clamped) {
+        log::info("camera: world scale {:.2f}", clamped);
+    }
 }
 
 void set_follow_height(float height) {
@@ -530,7 +537,7 @@ void report() {
               g_view_checks.load(std::memory_order_relaxed), g_view_max_error.load(std::memory_order_relaxed),
               g_force_view ? " (force_view on)" : "", g_projection_overrides.load(std::memory_order_relaxed));
     log::info("camera: head-tracked writes {} (world scale {:.2f})", g_head_writes.load(std::memory_order_relaxed),
-              g_world_scale);
+              g_world_scale.load());
     log::info("camera: follow reads {}, rejected {}, teleports followed {}", g_follow_reads.load(std::memory_order_relaxed),
               g_follow_rejects.load(std::memory_order_relaxed), g_follow_teleports.load(std::memory_order_relaxed));
     g_view_max_error.store(0.0f, std::memory_order_relaxed);

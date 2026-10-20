@@ -23,7 +23,7 @@
 namespace bg3vr::vrmenu {
 
 inline constexpr int kWidth = 1024;
-inline constexpr int kHeight = 1280;
+inline constexpr int kHeight = 880;
 
 // State owned elsewhere that the menu shows and can ask to toggle.
 struct Live {
@@ -44,13 +44,14 @@ struct Actions {
 // What to draw (copied to the render thread).
 struct Snapshot {
     struct Row {
-        enum class Kind { Section, Choice, Buttons } kind = Kind::Choice;
+        enum class Kind { Section, Choice, Buttons, Tabs } kind = Kind::Choice;
         std::string label;
         std::string value;     // Choice: the current option's text
         bool off = false;      // Choice: the current option means "off" (drawn dimmer)
         bool hovered = false;
-        int hovered_button = -1;           // Buttons: which one is under the laser
-        std::vector<std::string> buttons;  // Buttons: their captions
+        int hovered_button = -1;           // Buttons / Tabs: which one is under the laser
+        int selected_button = -1;          // Tabs: the page shown
+        std::vector<std::string> buttons;  // Buttons / Tabs: their captions
         int top = 0, height = 0;           // pixels
     };
     std::vector<Row> rows;
@@ -74,9 +75,13 @@ public:
 
     // For tests and the log: the current value text of the row labelled `label` ("" if none).
     std::string value_of(const std::string& label) const;
-    // The row index under v (or -1), and for a Buttons row which button is under u (or -1).
+    // The row index under v (or -1), and for a Buttons / Tabs row which button is under u (or -1).
     int row_at(float v) const;
     int button_at(int row, float u) const;
+    // Pages (the tabs along the top): which is shown, show another, and the page a row is on (-1 if none).
+    int page() const { return page_; }
+    void show_page(int page);
+    int page_of(const std::string& label) const;
 
 private:
     struct Option {
@@ -92,10 +97,13 @@ private:
         std::vector<Option> options;
         int current = 0;
         std::vector<std::string> buttons;
+        int page = -1;    // the tab it is on; -1: always shown (the tabs, the buttons)
         int fallback = 0; // the option used when the setting isn't configured (the module's own default)
         int top = 0, height = 0;
     };
     std::vector<Item> items_;
+    std::vector<std::string> pages_;
+    int page_ = 0;
     int hovered_ = -1;
     int hovered_button_ = -1;
     Live live_{};

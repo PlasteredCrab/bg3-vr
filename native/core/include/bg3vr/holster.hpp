@@ -76,6 +76,7 @@ private:
 
 void install(const Config& config);
 bool enabled();
+void set_enabled(bool on); // the VR menu; [holster] enabled at start-up
 // Presenting thread, once per headset frame while VR play is on: posts the events as to_lua requests.
 Output on_frame(const vr::RigidPose& head, const Hand (&hands)[2]);
 void report();

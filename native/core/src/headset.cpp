@@ -836,7 +836,7 @@ void publish_status(bool ready) {
 bool g_ui_enabled = true;          // [ui] panel
 bool g_ui_remove_from_eyes = true; // [ui] remove_from_eyes
 bool g_ui_laser = true;            // [ui] laser
-float g_ui_wrist_width = 0.3f;     // [ui] wrist_width (m)
+std::atomic<float> g_ui_wrist_width{0.3f}; // [ui] wrist_width (m)
 float g_ui_distance = 1.0f;        // [ui] distance (m)
 float g_ui_width = 1.1f;           // [ui] width (m)
 float g_ui_drop = 0.15f;           // [ui] below_eyes (m)
@@ -1446,6 +1446,14 @@ void install(const Config& config) {
     }
     render::set_present_callback(&on_present);
     log::info("xr: enabled, mode {}; the session opens on the first presented frame", mode_name(g_mode));
+}
+
+void configure_ui(const Config& config) {
+    const std::string v = config.get("ui", "wrist_width");
+    const float width = v.empty() ? 0.3f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 1.0f);
+    if (g_ui_wrist_width.exchange(width) != width) {
+        log::info("ui: wrist panel {:.2f} m wide", width);
+    }
 }
 
 void recenter() {

@@ -47,6 +47,7 @@ std::mutex g_mutex;
 std::optional<Eyes> g_eyes;
 std::array<std::uintptr_t, 2> g_views{}; // the view drawing each eye, 0 for none
 float g_world_scale = 1.0f;
+float g_ipd_override_m = 0.0f; // 0 = the runtime's IPD
 
 safetyhook::MidHook g_hook;
 ModuleInfo g_module;
@@ -88,8 +89,10 @@ void on_camera_built(safetyhook::Context& ctx) {
     int eye = -1;
     std::optional<Eyes> eyes;
     float scale = 1.0f;
+    float ipd_override = 0.0f;
     {
         std::scoped_lock lock(g_mutex);
+        ipd_override = g_ipd_override_m;
         if (view == g_views[0]) {
             eye = 0;
         } else if (view == g_views[1]) {
@@ -132,16 +135,31 @@ void on_camera_built(safetyhook::Context& ctx) {
     // found, of the latest located eyes).
     vr::RigidPose offset;
     camera::EyeFov fov;
+    const std::array<vr::RigidPose, 2>* both = nullptr;
     if (head) {
         offset = eye_in_head(head->pose, head->eye_pose[eye], scale);
         fov = head->eye_fov[eye];
+        both = &head->eye_pose;
     } else if (eyes) {
         offset = eye_in_head(eyes->centre_xr, eyes->eye_xr[eye], scale);
         fov = eyes->fov[eye];
+        both = &eyes->eye_xr;
         g_unmatched.fetch_add(1, std::memory_order_relaxed);
     } else {
         g_without_eyes.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+    if (ipd_override > 0.0f && both) {
+        // A chosen IPD: the eye offset stretched so the eyes sit that far apart (the runtime's direction kept).
+        const auto& a = (*both)[0].position;
+        const auto& b = (*both)[1].position;
+        const float runtime = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+        if (runtime > 0.01f) {
+            const float factor = ipd_override / runtime;
+            for (float& axis : offset.position) {
+                axis *= factor;
+            }
+        }
     }
     rewrite_block(block0, offset, fov, false);
     rewrite_block(block1, offset, fov, true);
@@ -212,12 +230,20 @@ void rewrite_block(std::uint8_t* block, const vr::RigidPose& eye_in_head, const 
     std::memcpy(block + layout::kPosition, position.data(), sizeof(position));
 }
 
+void configure(const Config& config) {
+    const std::string scale = config.get("xr", "world_scale");
+    const std::string ipd = config.get("xr", "ipd_mm");
+    std::scoped_lock lock(g_mutex);
+    g_world_scale = scale.empty() ? 1.0f : std::clamp(std::strtof(scale.c_str(), nullptr), 0.25f, 4.0f);
+    const float mm = ipd.empty() ? 0.0f : std::strtof(ipd.c_str(), nullptr);
+    g_ipd_override_m = mm >= 40.0f && mm <= 90.0f ? mm / 1000.0f : 0.0f;
+    log::info("stereo: world scale {:.2f}, IPD {}", g_world_scale,
+              g_ipd_override_m > 0.0f ? std::format("{:.0f} mm (set)", mm) : std::string("from the headset"));
+}
+
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
-    const std::string scale = config.get("xr", "world_scale");
-    if (!scale.empty()) {
-        g_world_scale = std::strtof(scale.c_str(), nullptr);
-    }
+    configure(config);
     const auto site = sig::lookup("render_view_camera_built");
     if (!site) {
         health::set("same-frame stereo", health::State::Unavailable, "signature render_view_camera_built");
