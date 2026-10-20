@@ -693,7 +693,8 @@ void update_input(const xr::Frame& frame) {
             aim_world = camera::tracked_to_world(now[h].aim);
         }
         hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f,
-                       now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world);
+                       now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world,
+                       static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     }
     // The right hand's swing for physical melee.
     melee::set_hand(now[kRightHand].aim_valid ? camera::tracked_to_world(now[kRightHand].aim) : std::nullopt,

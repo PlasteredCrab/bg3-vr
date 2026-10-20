@@ -59,7 +59,7 @@ light buzz.
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |
 | `[ik] arms` | false (off) | arms and the held weapon follow your hands |
-| `[grab] probe` / `hold` | false (off) | pick items up with the grips |
+| `[grab] probe` / `hold` | false (off) | pick items up with the grips; with `hold`, throw by letting go mid-swing and pull far items by flicking the hand back while aiming and holding the grip |
 | `[combat] physical` | false (off) | swing the right hand through a character to make your normal weapon attack (the game rolls) |
 
 ## Console commands (Script Extender console, client context)
