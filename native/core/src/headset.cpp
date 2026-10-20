@@ -114,6 +114,15 @@ std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
 std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist (toggled by the "panel" binding)
 std::atomic<bool> g_menu_toggle_request{false}; // the "vrmenu" binding was pressed
+// [vr] dominant_hand: the hand that points (laser, poke, menu, picking, melee) and gets the "right_*" bindings; the
+// other hand carries the wrist UI and walks with its stick. Right by default.
+std::atomic<std::size_t> g_dominant{kRightHand};
+std::size_t pointer_hand() {
+    return g_dominant.load(std::memory_order_relaxed);
+}
+std::size_t wrist_hand() {
+    return 1 - g_dominant.load(std::memory_order_relaxed);
+}
 std::atomic<bool> g_menu_is_open{false};        // the VR menu is up: the controllers drive it
 HWND g_window = nullptr;                    // the game window (the laser moves the mouse cursor in it)
 bool g_was_driven = false;
@@ -721,8 +730,8 @@ void update_input(const xr::Frame& frame) {
     g_logged = now;
     // The right hand's pointing ray in the world, for the raycast probe (and later the grab candidates).
     std::optional<vr::RigidPose> aim;
-    if (now[kRightHand].aim_valid) {
-        aim = camera::tracked_to_world(now[kRightHand].aim);
+    if (now[pointer_hand()].aim_valid) {
+        aim = camera::tracked_to_world(now[pointer_hand()].aim);
     }
     rayprobe::set_hand_aim(aim);
     // Holsters on the body (first person, VR play on, menu closed): a grip closing over a shoulder, at a hip or behind
@@ -753,21 +762,24 @@ void update_input(const xr::Frame& frame) {
                        static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     }
     // The right hand's swing for physical melee.
-    melee::set_hand(now[kRightHand].aim_valid && !g_menu_is_open.load(std::memory_order_relaxed)
-                        ? camera::tracked_to_world(now[kRightHand].aim)
+    melee::set_hand(now[pointer_hand()].aim_valid && !g_menu_is_open.load(std::memory_order_relaxed)
+                        ? camera::tracked_to_world(now[pointer_hand()].aim)
                         : std::nullopt,
                     static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     // The grips for the arm IK (world, game convention).
     bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
                         now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);
     // The left stick drives locomotion (when it is on); zero while the hand isn't active.
-    const bool stick = now[kLeftHand].active && !g_menu_is_open.load(std::memory_order_relaxed);
-    locomotion::set_stick(stick ? now[kLeftHand].stick_x : 0.0f, stick ? now[kLeftHand].stick_y : 0.0f);
-    // Buttons, turning and recentring while VR play is on.
+    const std::size_t walk = wrist_hand();
+    const bool stick = now[walk].active && !g_menu_is_open.load(std::memory_order_relaxed);
+    locomotion::set_stick(stick ? now[walk].stick_x : 0.0f, stick ? now[walk].stick_y : 0.0f);
+    // Buttons, turning and recentring while VR play is on. vrplay's "right" hand is the dominant one (left-handed: the
+    // controllers swap roles).
     vrplay::Hand play[2];
-    for (std::size_t h = 0; h < 2; ++h) {
-        play[h] = {now[h].active, now[h].trigger, now[h].squeeze, now[h].stick_x, now[h].stick_y,
-                   now[h].stick_click, now[h].primary, now[h].secondary, now[h].menu, holsters.grip_taken[h]};
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+        const std::size_t h = slot == 1 ? pointer_hand() : wrist_hand();
+        play[slot] = {now[h].active, now[h].trigger, now[h].squeeze, now[h].stick_x, now[h].stick_y,
+                      now[h].stick_click, now[h].primary, now[h].secondary, now[h].menu, holsters.grip_taken[h]};
     }
     const vrplay::Feedback feedback =
         vrplay::on_controllers(play, static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
@@ -783,9 +795,9 @@ void update_input(const xr::Frame& frame) {
     if (feedback.toggle_menu) {
         g_menu_toggle_request.store(true, std::memory_order_relaxed);
     }
-    for (std::size_t h = 0; h < 2; ++h) {
-        if (feedback.haptic[h] > 0.0f) {
-            g_session->haptic(h, feedback.haptic[h], 0.02f);
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+        if (feedback.haptic[slot] > 0.0f) {
+            g_session->haptic(slot == 1 ? pointer_hand() : wrist_hand(), feedback.haptic[slot], 0.02f);
         }
     }
     if (g_hand_samples % kHandLogEvery == 1) {
@@ -907,7 +919,7 @@ xr::PanelPlacement place_in_front(const vr::RigidPose& head) {
 // space: -Z along the index finger, +Y up).
 xr::PanelPlacement wrist_place() {
     xr::PanelPlacement place;
-    place.anchor = xr::PanelPlacement::Anchor::LeftGrip;
+    place.anchor = wrist_hand() == kLeftHand ? xr::PanelPlacement::Anchor::LeftGrip : xr::PanelPlacement::Anchor::RightGrip;
     place.pose.position = {0.0f, 0.06f, 0.10f};
     place.pose.orientation = {-0.5f, 0.0f, 0.0f, 0.8660254f}; // 60 degrees up about X
     place.width_m = g_ui_wrist_width;
@@ -994,7 +1006,7 @@ void update_screen_laser() {
     screen.pose.position = {0.0f, 0.0f, -g_screen_distance_m};
     screen.width_m = g_screen_width_m;
     const float height = g_screen_width_m * static_cast<float>(g_image_height) / static_cast<float>(g_image_width);
-    const HandState right = hands()[kRightHand];
+    const HandState right = hands()[pointer_hand()];
     const auto uv = right.aim_valid ? panel_uv(right.aim, screen, height) : std::nullopt;
     if (uv) {
         g_screen_cursor = *uv;
@@ -1094,12 +1106,12 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     const float height_m =
         place.width_m * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
     if (g_ui_laser && !g_menu_is_open.load(std::memory_order_relaxed)) {
-        const HandState& right = both[kRightHand];
+        const HandState& right = both[pointer_hand()];
         std::optional<xr::PanelPlacement> target;
         if (!wrist) {
             target = place;
-        } else if (both[kLeftHand].tracked) {
-            target = in_local(place, both[kLeftHand].grip);
+        } else if (both[wrist_hand()].tracked) {
+            target = in_local(place, both[wrist_hand()].grip);
         }
         // Touch: the right controller's tip within 3 cm of the face (or up to 3 cm through it) points there; pushing in
         // past 5 mm holds the left mouse button until the tip comes back out past 12 mm or leaves the panel.
@@ -1115,7 +1127,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
                     g_ui_touch_down = in;
                     if (in) {
                         ++g_ui_touches;
-                        g_session->haptic(kRightHand, 0.3f, 0.015f);
+                        g_session->haptic(pointer_hand(), 0.3f, 0.015f);
                     }
                 }
             }
@@ -1252,7 +1264,7 @@ void update_menu(const xr::Frame& frame) {
         return;
     }
     const float height_m = g_menu_width * static_cast<float>(vrmenu::kHeight) / static_cast<float>(vrmenu::kWidth);
-    const HandState right = hands()[kRightHand];
+    const HandState right = hands()[pointer_hand()];
     // Touch: the controller's tip within 3 cm in front of the face (or 2 cm through it); pressing in past 5 mm clicks.
     std::optional<std::array<float, 2>> pointer;
     bool click = false;
@@ -1272,8 +1284,28 @@ void update_menu(const xr::Frame& frame) {
     const bool trigger = right.active && right.trigger > (g_menu_trigger ? 0.4f : 0.6f);
     click = click || (trigger && !g_menu_trigger && pointer);
     g_menu_trigger = trigger;
+    // Which controllers are in use (the Controls page and the Guide name their buttons).
+    std::string profile = "other";
+    {
+        const std::string bound = g_session->interaction_profile(pointer_hand());
+        if (bound.find("oculus/touch") != std::string::npos) {
+            profile = "touch";
+        } else if (bound.find("valve/index") != std::string::npos) {
+            profile = "index";
+        } else if (bound.find("htc/vive") != std::string::npos) {
+            profile = "vive";
+        } else if (bound.empty() && !right.active) {
+            profile = "hands";
+        }
+    }
+    {
+        static XrTime last = 0;
+        const XrTime now_time = frame.state.predictedDisplayTime;
+        g_menu.tick(last ? std::clamp(static_cast<float>(static_cast<double>(now_time - last) * 1e-9), 0.0f, 0.1f) : 0.0f);
+        last = now_time;
+    }
     const vrmenu::Actions actions = g_menu.update(pointer, click, right.active ? right.stick_x : 0.0f,
-                                                  {vrplay::third_person(), g_ui_wrist.load(std::memory_order_relaxed)});
+                                                  {vrplay::third_person(), g_ui_wrist.load(std::memory_order_relaxed), profile});
     if (click) {
         ++g_menu_clicks;
     }
@@ -1300,7 +1332,7 @@ void update_menu(const xr::Frame& frame) {
         log::info("menu: calibrating the eye height again");
     }
     if (actions.haptic > 0.0f) {
-        g_session->haptic(kRightHand, actions.haptic, 0.015f);
+        g_session->haptic(pointer_hand(), actions.haptic, 0.015f);
     }
     if (actions.close) {
         set_menu_open(false);
@@ -1440,6 +1472,7 @@ void install(const Config& config) {
     g_menu_width = ui_number("menu_width", 0.62f, 0.2f, 2.0f);
     g_menu_distance = ui_number("menu_distance", 0.7f, 0.3f, 3.0f);
     g_menu.load(config);
+    configure_ui(config);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));
@@ -1449,6 +1482,11 @@ void install(const Config& config) {
 }
 
 void configure_ui(const Config& config) {
+    const std::size_t dominant = text::to_lower(config.get("vr", "dominant_hand", "right")) == "left" ? kLeftHand : kRightHand;
+    if (g_dominant.exchange(dominant) != dominant) {
+        log::info("vr: dominant hand {} (points and gets the right_* bindings); the wrist UI is on the {} wrist",
+                  dominant == kLeftHand ? "left" : "right", dominant == kLeftHand ? "right" : "left");
+    }
     const std::string v = config.get("ui", "wrist_width");
     const float width = v.empty() ? 0.3f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 1.0f);
     if (g_ui_wrist_width.exchange(width) != width) {

@@ -184,6 +184,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         log::info("menu: {} = {}", name, value);
     }
     vrplay::configure(g_config);
+    vrplay::configure_bindings(g_config);
     stereo::configure(g_config);
     const std::string scale = g_config.get("xr", "world_scale");
     camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));

@@ -52,6 +52,8 @@ struct Feedback {
 void install(const Config& config, const ModuleInfo& module);
 // Turning, comfort and eye-height settings ([vr]); again whenever the VR menu changes one (any thread).
 void configure(const Config& config);
+// [bindings] again (the VR menu's Controls page); taken on the next controller sample.
+void configure_bindings(const Config& config);
 // Calibrate the eye height from the head bone again (e.g. after the eye offset changed).
 void recalibrate();
 

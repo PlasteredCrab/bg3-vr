@@ -71,6 +71,11 @@ struct Binding {
     std::string text;      // as configured, for the log
 };
 std::array<Binding, kControlCount> g_bindings{};
+// New bindings from the VR menu (any thread), taken by on_controllers (held inputs are released first).
+std::mutex g_pending_mutex;
+std::optional<std::array<Binding, kControlCount>> g_pending_bindings;
+
+std::array<Binding, kControlCount> parse_bindings(const Config& config, std::string& bound);
 // Defaults (BG3's default PC key bindings for the keys; every one is overridable in [bindings]).
 constexpr const char* kDefaults[kControlCount] = {
     "key:lalt",     // left trigger: hold to highlight items / show tooltips
@@ -196,6 +201,24 @@ bool analog(float value, bool was) {
     return was ? value > 0.4f : value > 0.6f;
 }
 
+std::array<Binding, kControlCount> parse_bindings(const Config& config, std::string& bound) {
+    std::array<Binding, kControlCount> bindings{};
+    for (int c = 0; c < kControlCount; ++c) {
+        const std::string value = config.get("bindings", kControlNames[c], kDefaults[c]);
+        if (const auto b = parse_binding(value)) {
+            bindings[c] = *b;
+            if (b->bound) {
+                bound += std::format("{}{}={}", bound.empty() ? "" : ", ", kControlNames[c], b->text);
+            }
+        } else {
+            log::warn("vr: [bindings] {} = '{}' is not mouse_left/right/middle, key:<name>, recenter, panel, view or "
+                      "vrmenu; unbound",
+                      kControlNames[c], value);
+        }
+    }
+    return bindings;
+}
+
 } // namespace
 
 void install(const Config& config, const ModuleInfo& module) {
@@ -207,18 +230,7 @@ void install(const Config& config, const ModuleInfo& module) {
         log::warn("vr: signature input_inject_raw not resolved; controller buttons won't reach the game");
     }
     std::string bound;
-    for (int c = 0; c < kControlCount; ++c) {
-        const std::string value = config.get("bindings", kControlNames[c], kDefaults[c]);
-        if (const auto b = parse_binding(value)) {
-            g_bindings[c] = *b;
-            if (b->bound) {
-                bound += std::format("{}{}={}", bound.empty() ? "" : ", ", kControlNames[c], b->text);
-            }
-        } else {
-            log::warn("vr: [bindings] {} = '{}' is not mouse_left/right/middle, key:<name>, recenter, panel or view; unbound",
-                      kControlNames[c], value);
-        }
-    }
+    g_bindings = parse_bindings(config, bound);
     configure(config);
     health::set("controller bindings", g_inject ? health::State::Ready : health::State::Unavailable, g_inject ? "" : "signature input_inject_raw");
     log::info("vr: bindings {}; turn {} ({}), right stick scroll {}, eye height {}", bound.empty() ? "none" : bound,
@@ -260,6 +272,16 @@ bool tap_key(std::string_view name) {
     return false;
 }
 
+void configure_bindings(const Config& config) {
+    std::string bound;
+    auto bindings = parse_bindings(config, bound);
+    {
+        std::scoped_lock lock(g_pending_mutex);
+        g_pending_bindings = bindings;
+    }
+    log::info("vr: bindings now {}", bound.empty() ? "none" : bound);
+}
+
 void recalibrate() {
     g_recalibrate.store(true, std::memory_order_relaxed);
 }
@@ -294,6 +316,14 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             release_all();
         }
         return feedback;
+    }
+    {
+        std::scoped_lock lock(g_pending_mutex);
+        if (g_pending_bindings) {
+            release_all(); // with the old bindings
+            g_bindings = *g_pending_bindings;
+            g_pending_bindings.reset();
+        }
     }
     const Hand& l = hands[0];
     const Hand& r = hands[1];

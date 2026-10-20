@@ -1009,17 +1009,52 @@ void test_vrmenu() {
     CHECK(menu.row_at(0.05f) == -1);
     menu.show_page(0);
     const float tabs = centre("#tabs");
-    CHECK(menu.update(std::array<float, 2>{0.9f, tabs}, true, 0.0f, live).haptic > 0.0f && menu.page() == 3);
+    CHECK(menu.update(std::array<float, 2>{0.573f, tabs}, true, 0.0f, live).haptic > 0.0f && menu.page() == 3);
     bool other_page = false;
     for (const auto& row : menu.snapshot().rows) {
         other_page = other_page || row.label == "Turning";
     }
     CHECK(!other_page && menu.page_of("IPD (eye distance)") == 3 && menu.page_of("Turning") == 1);
-    menu.update(std::array<float, 2>{0.5f, tabs}, false, 1.0f, live); // stick right on the tabs: next page (wraps)
-    CHECK(menu.page() == 0);
+    menu.update(std::array<float, 2>{0.5f, tabs}, false, 1.0f, live); // stick right on the tabs: the next page
+    CHECK(menu.page() == 4);
     a = menu.update(std::array<float, 2>{0.8f, centre("IPD (eye distance)")}, true, 0.0f, live);
     CHECK(a.settings.size() == 1 && a.settings[0].first == "xr.ipd_mm" && a.settings[0].second == "56");
     CHECK(menu.value_of("World scale") == "100% (true)" && menu.value_of("Holsters") == "On");
+    // Controls: every button's action, named for the controller in hand; the Guide follows the bindings.
+    CHECK(menu.value_of("Trigger") == "Click / select" && menu.value_of("A") == "Inventory");
+    a = menu.update(std::array<float, 2>{0.8f, centre("A")}, true, 0.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].first == "bindings.right_a" && a.settings[0].second == "key:m");
+    {
+        const auto lessons = menu.lessons();
+        CHECK(!lessons.empty() && lessons.front().text.find("right trigger") != std::string::npos);
+        bool listed = false;
+        for (const auto& l : lessons) {
+            listed = listed || (l.title == "Your buttons" && l.text.find("A: Map") != std::string::npos);
+        }
+        CHECK(listed);
+        menu.update(std::nullopt, false, 0.0f, Live{false, false, "hands"});
+        CHECK(menu.lessons().front().text.find("fist") != std::string::npos);
+        menu.update(std::nullopt, false, 0.0f, live);
+    }
+    // The Guide: Previous / Next along its bottom strip step through the lessons.
+    menu.show_page(5);
+    {
+        float guide_bottom = 0.0f;
+        for (const auto& row : menu.snapshot().rows) {
+            if (row.kind == Snapshot::Row::Kind::Guide) {
+                guide_bottom = static_cast<float>(row.top + row.height - 20) / static_cast<float>(kHeight);
+            }
+        }
+        CHECK(guide_bottom > 0.0f);
+        menu.update(std::array<float, 2>{0.8f, guide_bottom}, true, 0.0f, live);
+        CHECK(menu.lesson() == 1);
+        menu.update(std::array<float, 2>{0.2f, guide_bottom}, true, 0.0f, live);
+        menu.update(std::array<float, 2>{0.2f, guide_bottom}, true, 0.0f, live);
+        CHECK(menu.lesson() == static_cast<int>(menu.lessons().size()) - 1);
+        const std::uint64_t r0 = menu.revision();
+        menu.tick(0.1f);
+        CHECK(menu.revision() != r0); // the animation redraws while the Guide is shown
+    }
 
     // The renderer draws a premultiplied image: transparent outside the rounded frame, opaque inside.
     Renderer renderer;
@@ -1028,6 +1063,11 @@ void test_vrmenu() {
     char preview_page[8] = {};
     if (GetEnvironmentVariableA("BG3VR_MENU_PREVIEW_PAGE", preview_page, sizeof(preview_page)) > 0) {
         menu.show_page(std::atoi(preview_page));
+    }
+    char preview_lesson[8] = {}, preview_time[16] = {};
+    if (GetEnvironmentVariableA("BG3VR_MENU_PREVIEW_LESSON", preview_lesson, sizeof(preview_lesson)) > 0) {
+        GetEnvironmentVariableA("BG3VR_MENU_PREVIEW_TIME", preview_time, sizeof(preview_time));
+        menu.show_lesson(std::atoi(preview_lesson), static_cast<float>(std::atof(preview_time)));
     }
     renderer.submit(menu.snapshot());
     std::vector<std::uint32_t> pixels;

@@ -63,8 +63,13 @@ Press the left menu button. A panel opens in front of you with tabs along the to
 
 - View: first or third person, where the game UI sits (in front of you or on your wrist), the wrist UI size.
 - Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement.
-- Body: arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
+- Body: dominant hand (which hand points; the wrist UI goes on the other), arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
 - Scale: IPD (the headset's own, or a fixed 56-72 mm), world scale (100% is true scale), eye height.
+- Controls: what every controller button does, named for the controllers in your hands (Touch, Index, Vive) and
+  your dominant hand; pick from the game's actions (click, inventory, map, journal, spellbook, end turn, sneak,
+  jump, shove, weapon set, draw/sheathe, ...) or the VR ones (first/third person, wrist UI, VR menu, recentre).
+- Guide: animated lessons for pointing, walking, turning, the wrist, weapons, light and bags, grabbing, fighting,
+  your buttons and this menu, written for your current settings and bindings.
 
 Recentre, Calibrate height and Close buttons sit at the bottom.
 
