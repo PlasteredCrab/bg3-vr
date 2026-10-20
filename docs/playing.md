@@ -60,6 +60,19 @@ is tracked instead:
 
 The log says at start-up whether hand tracking is available (`xr input: ... hand tracking`).
 
+## Fighting
+
+Every attack is the game's own click, so its rules decide everything: attack rolls, range, action costs, the
+weapon ability or spell you prepared.
+
+- Melee: with a melee weapon drawn, look at an enemy within reach (2.5 m) and swing your pointing hand quickly. That
+  clicks on who you are looking at: your weapon attack, or the ability you prepared. Swinging at nothing does nothing.
+  (VR menu Body page, Swing attacks: off, at who you look at, or blade contact, where the blade has to pass through
+  the enemy.)
+- Bows: with a bow drawn, bring your pointing hand's grip to the bow hand to nock, pull it back (the controller
+  creaks as you draw), aim along the arrow and let go. The shot is a click on the character the arrow points at.
+- Crossbows and spells: aim with your pointing hand and click (the trigger, or a closed hand after pointing).
+
 ## Holsters
 
 Reach over a shoulder or to a hip, squeeze the grip and pull your hand away: your character draws the weapons kept

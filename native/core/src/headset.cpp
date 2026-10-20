@@ -3,6 +3,7 @@
 #include "bg3vr/blit.hpp"
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
+#include "bg3vr/combat.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/holster.hpp"
@@ -871,6 +872,35 @@ void update_input(const xr::Frame& frame) {
                         ? camera::tracked_to_world(now[pointer_hand()].aim)
                         : std::nullopt,
                     static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
+    // Combat: swings and the bow (combat.cpp), from the head and both grips.
+    if (frame.views.size() == 2) {
+        combat::Frame cf;
+        cf.head_world = camera::tracked_to_world(centre_view(frame.views).pose);
+        const HandState& ph = now[pointer_hand()];
+        const HandState& oh = now[wrist_hand()];
+        if (ph.world_valid) {
+            cf.pointing_world = ph.world_grip;
+            cf.pointing_tracked = ph.grip.position;
+        }
+        if (oh.world_valid) {
+            cf.other_world = oh.world_grip;
+            cf.other_tracked = oh.grip.position;
+        }
+        cf.pointing_speed = ph.velocity_valid ? std::sqrt(ph.velocity[0] * ph.velocity[0] + ph.velocity[1] * ph.velocity[1] +
+                                                          ph.velocity[2] * ph.velocity[2])
+                                              : 0.0f;
+        cf.pointing_grip = ph.squeeze > 0.5f;
+        cf.time_s = static_cast<double>(frame.state.predictedDisplayTime) * 1e-9;
+        if (!g_menu_is_open.load(std::memory_order_relaxed)) {
+            const combat::Feedback cfb = combat::on_headset(cf);
+            if (cfb.haptic_pointing > 0.0f) {
+                g_session->haptic(pointer_hand(), cfb.haptic_pointing, 0.02f);
+            }
+            if (cfb.haptic_other > 0.0f) {
+                g_session->haptic(wrist_hand(), cfb.haptic_other, 0.02f);
+            }
+        }
+    }
     // The grips for the arm IK (world, game convention).
     bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
                         now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);

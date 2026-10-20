@@ -297,6 +297,8 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "wield") {
+            request.wield = text::to_lower(value);
         } else if (key == "weaponset") {
             const auto space = value.find(' ');
             const auto entity = parse_address(value.substr(0, space));

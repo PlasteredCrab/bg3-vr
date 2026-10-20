@@ -4,6 +4,7 @@ add_library(bg3vr_base STATIC
     src/bodyik.cpp
     src/bridge.cpp
     src/camera.cpp
+    src/combat.cpp
     src/config.cpp
     src/cull.cpp
     src/events.cpp

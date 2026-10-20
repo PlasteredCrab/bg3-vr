@@ -59,6 +59,7 @@ struct Request {
     std::optional<bool> third_person;                          // view=third (true) | view=first (false)
     std::vector<std::pair<std::string, std::string>> settings; // set=<section>.<key> <value> (the VR menu)
     std::optional<std::pair<std::uint64_t, std::uint8_t>> weapon_set; // weaponset=<hex server entity> melee|ranged
+    std::optional<std::string> wield;                          // wield=melee|bow|crossbow|none (what is in hand)
 };
 
 // Parses the bridge file:
@@ -87,6 +88,7 @@ struct Request {
 //   view=first | view=third           (first person, or the game's camera on a flat screen)
 //   set=<section>.<key> <value>       (change a setting now and save it to menu.ini; may repeat)
 //   weaponset=<hex entity> melee|ranged   (switch a character's weapon set on the server)
+//   wield=melee | bow | crossbow | none     (what the controlled character has drawn; combat.cpp)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

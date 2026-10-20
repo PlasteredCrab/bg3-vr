@@ -4,6 +4,7 @@
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/bridge.hpp"
 #include "bg3vr/camera.hpp"
+#include "bg3vr/combat.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/cull.hpp"
 #include "bg3vr/events.hpp"
@@ -141,6 +142,7 @@ void on_game_frame() {
     vrplay::on_frame();
     hold::on_frame();
     melee::on_frame();
+    combat::on_frame();
 }
 
 // The VR menu's settings (menu.ini next to bg3vr.ini; overrides it). Only touched on the bridge thread after start-up.
@@ -195,7 +197,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
 #endif
     holster::set_enabled(g_config.get_bool("holster", "enabled", true));
     hold::set_hold(g_config.get_bool("grab", "hold", false));
-    melee::set_enabled(g_config.get_bool("combat", "physical", false));
+    combat::configure(g_config);
+    // Swings: "hit" is the physical blade contact (melee.cpp); "gaze" clicks on who you look at (combat.cpp).
+    melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
     const bool third = vrplay::third_person();
     bodyik::configure_hands(g_config);
     bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
@@ -210,6 +214,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
 void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (!request.settings.empty()) {
         apply_settings(request.settings);
+    }
+    if (request.wield) {
+        combat::set_wield(*request.wield);
     }
     if (request.weapon_set) {
         weaponset::request(request.weapon_set->first, request.weapon_set->second);
@@ -395,6 +402,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     hold::report();
     melee::report();
     holster::report();
+    combat::report();
     weaponset::report();
     resolution::report();
     render::report();
@@ -455,6 +463,8 @@ int init(const wchar_t* root_dir) {
     hold::install(g_config, module);
     melee::install(g_config);
     holster::install(g_config);
+    combat::install(g_config);
+    melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
     weaponset::install(g_config, module);
     resolution::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);

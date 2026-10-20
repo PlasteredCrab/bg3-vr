@@ -2,6 +2,7 @@
 
 #include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
+#include "bg3vr/vr_math.hpp"
 
 #include <cstdint>
 
@@ -24,6 +25,10 @@ void install(const Config& config, const ModuleInfo& module);
 
 // Hand pointing on or off (also [pick] hand in bg3vr.ini; bridge pick=hand|off).
 void set_hand(bool on);
+
+// For a moment (`seconds`), the picking ray is this one (world, game convention) whatever the hand or mouse does:
+// combat aims the game's own click along the head's gaze or a drawn arrow (combat.cpp). Any thread.
+void override_ray(const vr::Vec3& from, const vr::Vec3& direction, float seconds);
 
 void report();
 

@@ -92,8 +92,69 @@ local function Tick()
     end
 end
 
-Ext.Events.Tick:Subscribe(function()
+-- What the controlled character has drawn, for the core's swing and bow handling (combat.cpp): bridge
+-- wield=melee|bow|crossbow|none. eoc::unsheath::StateComponent (SE "Unsheath"): State 1 melee, 2 ranged (agent K/L);
+-- a ranged weapon is a bow or a crossbow by its stats' Proficiency Group.
+local lastWield = nil
+local wieldCheckIn = 0
+
+local function RangedKind(weaponEntity)
+    local ok, statsId = pcall(function() return weaponEntity.Data.StatsId end)
+    if not ok or not statsId then
+        return "bow"
+    end
+    local stat = Ext.Stats.Get(statsId)
+    local ok2, groups = pcall(function() return stat["Proficiency Group"] end)
+    local text = ""
+    if ok2 and type(groups) == "table" then
+        for _, g in pairs(groups) do
+            text = text .. tostring(g) .. " "
+        end
+    elseif ok2 and groups then
+        text = tostring(groups)
+    end
+    return string.find(text, "Crossbow") and "crossbow" or "bow"
+end
+
+local function Wield()
+    local character = _C()
+    if not character then
+        return "none"
+    end
+    local ok, unsheath = pcall(function() return character.Unsheath end)
+    if not ok or not unsheath then
+        return "none"
+    end
+    local state = tostring(unsheath.State)
+    if state == "Melee" or state == "1" then
+        return "melee"
+    elseif state == "Ranged" or state == "2" then
+        local ok2, weapon = pcall(function() return unsheath.MainHandWeapon end)
+        return (ok2 and weapon) and RangedKind(weapon) or "bow"
+    end
+    return "none"
+end
+
+local function WieldTick(dt)
+    wieldCheckIn = wieldCheckIn - dt
+    if wieldCheckIn > 0 then
+        return
+    end
+    wieldCheckIn = 0.25
+    local wield = Wield()
+    if wield ~= lastWield then
+        lastWield = wield
+        BG3VR.WriteBridge({ "wield=" .. wield })
+        BG3VR.Log("combat: wielding %s", wield)
+    end
+end
+
+Ext.Events.Tick:Subscribe(function(e)
     local ok, err = pcall(Tick)
+    if not ok then
+        BG3VR.Warn("combat: %s", tostring(err))
+    end
+    ok, err = pcall(WieldTick, (e and e.Time and e.Time.DeltaTime) or 0.016)
     if not ok then
         BG3VR.Warn("combat: %s", tostring(err))
     end

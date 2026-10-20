@@ -158,8 +158,10 @@ Menu::Menu() {
            4);
     on_off("Point to select", "vr.hand_pointing", true);
     on_off("Grab objects", "grab.hold", false);
-    on_off("Physical melee", "combat.physical", false);
     on_off("Holsters", "holster.enabled", true);
+    choice("Swing attacks", "combat.swing",
+           {{"Off", "off", true}, {"At who you look at", "gaze"}, {"Blade contact", "hit"}}, 1);
+    choice("Bow", "combat.bow", {{"Nock, draw, release", "draw"}, {"Point and click", "off"}}, 0);
     section("Scale");
     choice("IPD (eye distance)", "xr.ipd_mm",
            {{"Headset", "0"}, {"56 mm", "56"}, {"58 mm", "58"}, {"60 mm", "60"}, {"62 mm", "62"}, {"64 mm", "64"},
@@ -495,10 +497,21 @@ std::vector<Menu::Lesson> Menu::lessons() const {
                                    "you.", squeeze, squeeze),
                        "grab"});
     }
-    if (setting("combat.physical") == "true") {
+    if (setting("combat.swing") == "gaze") {
+        out.push_back({"Fighting", "With a melee weapon drawn, look at an enemy within reach and swing: that is your "
+                                   "attack, or the weapon ability or spell you prepared. The game's own rolls decide "
+                                   "whether it hits. Spells and crossbows: aim with your hand and click.",
+                       "swing"});
+    } else if (setting("combat.swing") == "hit") {
         out.push_back({"Fighting", "With a weapon in hand, swing it through an enemy to make your normal attack: the "
                                    "dice still decide whether it hits.",
                        "swing"});
+    }
+    if (setting("combat.bow") != "off") {
+        out.push_back({"Bows", std::format("With a bow drawn, bring your {} hand to the bow in your {} hand and {} to "
+                                           "nock an arrow, pull back, aim along the arrow and let go. The game rolls "
+                                           "the shot.", dom, other, squeeze),
+                       "bow"});
     }
     std::string buttons;
     for (const Item& item : items_) {
@@ -1308,6 +1321,22 @@ void Renderer::Impl::draw_anim(const std::string& anim, float t, const D2D1_RECT
             seg(x, y, x + std::cos(b - 1.2f) * 0.25f, y + std::sin(b - 1.2f) * 0.25f, rgb(kGold, 0.25f - 0.05f * static_cast<float>(i)), 3.0f);
         }
         ring(0.85f, 0.40f, 0.08f, faint, 2.0f); // a target
+    } else if (anim == "bow") {
+        // The bow hand forward, the drawing hand pulls the string back and lets go.
+        const float pull = p < 0.6f ? ease(p / 0.6f) : 0.0f;
+        const float bx = 0.30f, by = 0.50f;
+        seg(bx - 0.02f, by - 0.30f, bx + 0.06f, by, gold, 3.0f); // the bow's limbs
+        seg(bx + 0.06f, by, bx - 0.02f, by + 0.30f, gold, 3.0f);
+        const float sx = bx + 0.06f + pull * 0.40f;
+        seg(bx - 0.02f, by - 0.30f, sx, by, bright, 1.5f); // the string
+        seg(sx, by, bx - 0.02f, by + 0.30f, bright, 1.5f);
+        dot(sx, by, 0.03f, pull > 0.0f ? bright : gold);  // the drawing hand
+        if (pull > 0.0f) {
+            seg(sx, by, bx - 0.10f, by, gold, 2.0f); // the arrow
+        } else {
+            const float fly = (p - 0.6f) / 0.4f;
+            seg(bx - 0.10f - fly * 0.6f, by, bx + 0.10f - fly * 0.6f, by, bright, 2.0f);
+        }
     } else if (anim == "buttons") {
         // Both controllers, buttons lighting in turn.
         const int lit = static_cast<int>(p * 6.0f);

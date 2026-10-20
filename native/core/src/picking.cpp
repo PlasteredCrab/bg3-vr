@@ -11,6 +11,9 @@
 #include <intrin.h>
 
 #include <atomic>
+#include <optional>
+#include <mutex>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -31,6 +34,15 @@ constexpr int kLogFirst = 3;
 
 using RayFn = void* (*)(std::uintptr_t camera, float u, float v, float* out_a, float* out_b, bool cached);
 
+std::mutex g_override_mutex;
+struct Override {
+    vr::Vec3 from{};
+    vr::Vec3 direction{};
+    std::chrono::steady_clock::time_point until{};
+};
+std::optional<Override> g_override;
+std::atomic<std::uint64_t> g_overridden{0};
+
 void* hooked_ray(std::uintptr_t camera, float u, float v, float* out_a, float* out_b, bool cached) {
     void* result = g_hook.call<void*>(camera, u, v, out_a, out_b, cached);
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
@@ -38,6 +50,19 @@ void* hooked_ray(std::uintptr_t camera, float u, float v, float* out_a, float* o
         return result;
     }
     g_calls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::scoped_lock lock(g_override_mutex);
+        if (g_override && std::chrono::steady_clock::now() < g_override->until) {
+            for (int i = 0; i < 3; ++i) {
+                const auto k = static_cast<std::size_t>(i);
+                out_a[i] = g_override->from[k];
+                out_b[i] = g_override->from[k] + g_override->direction[k] * layout::kRayLength;
+            }
+            g_overridden.fetch_add(1, std::memory_order_relaxed);
+            return result;
+        }
+        g_override.reset();
+    }
     const bool hand = g_hand.load(std::memory_order_relaxed);
     const auto aim = hand ? rayprobe::hand_aim() : std::nullopt;
     if (g_logged.load(std::memory_order_relaxed) < kLogFirst) {
@@ -110,9 +135,16 @@ void set_hand(bool on) {
     log::info("pick: hand pointing {}", on ? "on (the right hand's aim ray replaces the mouse ray)" : "off (mouse)");
 }
 
+void override_ray(const vr::Vec3& from, const vr::Vec3& direction, float seconds) {
+    std::scoped_lock lock(g_override_mutex);
+    g_override = Override{from, direction,
+                          std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(seconds * 1000.0f))};
+}
+
 void report() {
-    log::info("pick: {} picking rays, {} from the hand, {} with no tracked aim", g_calls.load(std::memory_order_relaxed),
-              g_replaced.load(std::memory_order_relaxed), g_no_aim.load(std::memory_order_relaxed));
+    log::info("pick: {} picking rays, {} from the hand, {} aimed by combat (gaze / arrow), {} with no tracked aim",
+              g_calls.load(std::memory_order_relaxed), g_replaced.load(std::memory_order_relaxed),
+              g_overridden.load(std::memory_order_relaxed), g_no_aim.load(std::memory_order_relaxed));
 }
 
 } // namespace bg3vr::picking
