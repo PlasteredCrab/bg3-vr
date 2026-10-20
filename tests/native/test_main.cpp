@@ -1022,7 +1022,7 @@ void test_vrmenu() {
     CHECK(menu.row_at(0.05f) == -1);
     menu.show_page(0);
     const float tabs = centre("#tabs");
-    CHECK(menu.update(std::array<float, 2>{0.573f, tabs}, true, 0.0f, live).haptic > 0.0f && menu.page() == 3);
+    CHECK(menu.update(std::array<float, 2>{0.5f, tabs}, true, 0.0f, live).haptic > 0.0f && menu.page() == 3);
     bool other_page = false;
     for (const auto& row : menu.snapshot().rows) {
         other_page = other_page || row.label == "Turning";
@@ -1049,8 +1049,12 @@ void test_vrmenu() {
         CHECK(menu.lessons().front().text.find("fist") != std::string::npos);
         menu.update(std::nullopt, false, 0.0f, live);
     }
-    // The Guide: Previous / Next along its bottom strip step through the lessons.
-    menu.show_page(5);
+    // Combos: hold one button, press another; the Guide lists them.
+    CHECK(menu.value_of("Left grip + A") == "Character sheet" && menu.page_of("Left grip + A") == 5);
+    a = menu.update(std::array<float, 2>{0.8f, centre("Left grip + B")}, true, 0.0f, live);
+    CHECK(a.settings.size() == 1 && a.settings[0].first == "combos.left_grip+right_b" && a.settings[0].second == "key:k");
+        // The Guide: Previous / Next along its bottom strip step through the lessons.
+    menu.show_page(6);
     {
         float guide_bottom = 0.0f;
         for (const auto& row : menu.snapshot().rows) {

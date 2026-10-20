@@ -173,7 +173,7 @@ Menu::Menu() {
            {{"−10 cm", "-0.1"}, {"−5 cm", "-0.05"}, {"At the eyes", "0"}, {"+5 cm", "0.05"}, {"+10 cm", "0.1"},
             {"+15 cm", "0.15"}, {"+20 cm", "0.2"}},
            2);
-    section("Controls");
+    section("Buttons");
     std::vector<Option> actions;
     for (const ActionName& a : kActions) {
         actions.push_back({a.text, a.value, std::string(a.value) == "none"});
@@ -198,6 +198,34 @@ Menu::Menu() {
             item.options = actions;
             for (int a = 0; a < static_cast<int>(std::size(kActions)); ++a) {
                 if (std::string(kActions[a].value) == kControls[c].fallback) {
+                    item.fallback = item.current = a;
+                }
+            }
+            items_.push_back(std::move(item));
+        }
+    }
+    section("Combos");
+    {
+        // Hold the first button, press the second (vrplay's [combos]; the same actions as single buttons).
+        struct ComboRow {
+            int modifier, button;
+            const char* fallback;
+        };
+        constexpr ComboRow kCombos[] = {{1, 8, "key:n"}, {1, 9, "key:j"}, {1, 2, "key:k"}, {1, 3, "key:tab"},
+                                        {1, 6, "key:space"}, {1, 10, "key:c"}};
+        Item heading;
+        heading.kind = Kind::Section;
+        heading.page = page();
+        heading.control = -4;
+        items_.push_back(std::move(heading));
+        for (const ComboRow& row : kCombos) {
+            Item item;
+            item.page = page();
+            item.control = 100 + row.modifier * 16 + row.button; // a combo: modifier and button packed
+            item.setting = std::string("combos.") + kControls[row.modifier].key + "+" + kControls[row.button].key;
+            item.options = actions;
+            for (int a = 0; a < static_cast<int>(std::size(kActions)); ++a) {
+                if (std::string(kActions[a].value) == row.fallback) {
                     item.fallback = item.current = a;
                 }
             }
@@ -365,6 +393,14 @@ std::string Menu::label_of(const Item& item) const {
     if (item.control == -3) {
         return std::format("Other hand ({})", left_handed ? "right" : "left");
     }
+    if (item.control == -4) {
+        return "Hold the first, press the second";
+    }
+    if (item.control >= 100) {
+        const int modifier = (item.control - 100) / 16, button = (item.control - 100) % 16;
+        const std::string a = control_name(modifier), b = control_name(button);
+        return a.empty() || b.empty() ? std::string("(no such buttons)") : capitalised(a) + " + " + b;
+    }
     if (item.control >= 0) {
         std::string name = control_name(item.control);
         // On the Controls page the heading says which hand: drop it from the row.
@@ -380,7 +416,8 @@ std::string Menu::label_of(const Item& item) const {
 
 std::string Menu::control_for(const std::string& action) const {
     for (const Item& item : items_) {
-        if (item.control >= 0 && !item.options.empty() && item.options[static_cast<std::size_t>(item.current)].value == action) {
+        if (item.control >= 0 && item.control < 100 && !item.options.empty() &&
+            item.options[static_cast<std::size_t>(item.current)].value == action) {
             const std::string name = control_name(item.control);
             if (!name.empty()) {
                 return name;
@@ -469,14 +506,14 @@ std::vector<Menu::Lesson> Menu::lessons() const {
             continue;
         }
         const Option& o = item.options[static_cast<std::size_t>(item.current)];
-        const std::string name = control_name(item.control);
+        const std::string name = item.control >= 100 ? label_of(item) : control_name(item.control);
         if (o.value == "none" || name.empty()) {
             continue;
         }
         buttons += std::format("{}{}: {}", buttons.empty() ? "" : "   ·   ", capitalised(name), o.text);
     }
     out.push_back({"Your buttons", (buttons.empty() ? std::string("No buttons are bound.") : buttons) +
-                                       ". Change any of them on the Controls page.",
+                                       ". Change any of them on the Buttons and Combos pages.",
                    "buttons"});
     out.push_back({"This menu",
                    hands ? std::format("Turn your {} palm toward your face and pinch to open or close this menu. Every "

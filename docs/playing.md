@@ -80,7 +80,9 @@ Press the left menu button. A panel opens in front of you with tabs along the to
 - Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement.
 - Body: dominant hand (which hand points; the wrist UI goes on the other), arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
 - Scale: IPD (the headset's own, or a fixed 56-72 mm), world scale (100% is true scale), eye height.
-- Controls: what every controller button does, named for the controllers in your hands (Touch, Index, Vive) and
+- Combos: hold one button and press another (left grip + A character sheet, + B journal, + X spellbook, + Y party
+  view, + right trigger end turn, + right stick click sneak by default); each one's action is yours to pick.
+- Buttons: what every controller button does, named for the controllers in your hands (Touch, Index, Vive) and
   your dominant hand; pick from the game's actions (click, inventory, map, journal, spellbook, end turn, sneak,
   jump, shove, weapon set, draw/sheathe, ...) or the VR ones (first/third person, wrist UI, VR menu, recentre).
 - Guide: animated lessons for pointing, walking, turning, the wrist, weapons, light and bags, grabbing, fighting,

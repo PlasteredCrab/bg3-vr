@@ -71,9 +71,36 @@ struct Binding {
     std::string text;      // as configured, for the log
 };
 std::array<Binding, kControlCount> g_bindings{};
+// Button combos ([combos]): hold `modifier`, press `button` -> `action` (tapped). The button's own binding doesn't fire;
+// a modifier with a key or mouse binding of its own fires it on release instead, unless a combo was used meanwhile.
+struct Combo {
+    int modifier = -1;
+    int button = -1;
+    Binding action;
+};
+struct ComboDefault {
+    Control modifier;
+    Control button;
+    const char* action;
+};
+constexpr ComboDefault kComboDefaults[] = {
+    {LeftGrip, RightA, "key:n"},          // character sheet
+    {LeftGrip, RightB, "key:j"},          // journal
+    {LeftGrip, LeftX, "key:k"},           // spellbook
+    {LeftGrip, LeftY, "key:tab"},         // party view
+    {LeftGrip, RightTrigger, "key:space"}, // end turn
+    {LeftGrip, RightStickClick, "key:c"}, // sneak
+};
+std::vector<Combo> g_combos;
+std::array<bool, kControlCount> g_swallow{};    // pressed as a combo's button: ignore until released
+std::array<bool, kControlCount> g_deferred{};   // a modifier with its own binding, held: fire on release
+std::array<bool, kControlCount> g_combo_used{}; // a combo fired while this modifier was held
+std::uint64_t g_combo_taps = 0;
+
 // New bindings from the VR menu (any thread), taken by on_controllers (held inputs are released first).
 std::mutex g_pending_mutex;
 std::optional<std::array<Binding, kControlCount>> g_pending_bindings;
+std::optional<std::vector<Combo>> g_pending_combos;
 
 std::array<Binding, kControlCount> parse_bindings(const Config& config, std::string& bound);
 // Defaults (BG3's default PC key bindings for the keys; every one is overridable in [bindings]).
@@ -219,6 +246,19 @@ std::array<Binding, kControlCount> parse_bindings(const Config& config, std::str
     return bindings;
 }
 
+std::vector<Combo> parse_combos(const Config& config, std::string& listed) {
+    std::vector<Combo> combos;
+    for (const ComboDefault& d : kComboDefaults) {
+        const std::string key = std::string(kControlNames[d.modifier]) + "+" + kControlNames[d.button];
+        const std::string value = config.get("combos", key, d.action);
+        if (const auto b = parse_binding(value); b && b->bound) {
+            combos.push_back({d.modifier, d.button, *b});
+            listed += std::format("{}{}={}", listed.empty() ? "" : ", ", key, b->text);
+        }
+    }
+    return combos;
+}
+
 } // namespace
 
 void install(const Config& config, const ModuleInfo& module) {
@@ -231,6 +271,9 @@ void install(const Config& config, const ModuleInfo& module) {
     }
     std::string bound;
     g_bindings = parse_bindings(config, bound);
+    std::string combos;
+    g_combos = parse_combos(config, combos);
+    log::info("vr: button combos {}", combos.empty() ? "none" : combos);
     configure(config);
     health::set("controller bindings", g_inject ? health::State::Ready : health::State::Unavailable, g_inject ? "" : "signature input_inject_raw");
     log::info("vr: bindings {}; turn {} ({}), right stick scroll {}, eye height {}", bound.empty() ? "none" : bound,
@@ -273,13 +316,15 @@ bool tap_key(std::string_view name) {
 }
 
 void configure_bindings(const Config& config) {
-    std::string bound;
+    std::string bound, listed;
     auto bindings = parse_bindings(config, bound);
+    auto combos = parse_combos(config, listed);
     {
         std::scoped_lock lock(g_pending_mutex);
         g_pending_bindings = bindings;
+        g_pending_combos = combos;
     }
-    log::info("vr: bindings now {}", bound.empty() ? "none" : bound);
+    log::info("vr: bindings now {}; combos {}", bound.empty() ? "none" : bound, listed.empty() ? "none" : listed);
 }
 
 void recalibrate() {
@@ -324,6 +369,12 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             g_bindings = *g_pending_bindings;
             g_pending_bindings.reset();
         }
+        if (g_pending_combos) {
+            g_combos = *g_pending_combos;
+            g_pending_combos.reset();
+            g_swallow = {};
+            g_deferred = {};
+        }
     }
     const Hand& l = hands[0];
     const Hand& r = hands[1];
@@ -337,9 +388,65 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     if (menu_open && std::any_of(g_injected.begin(), g_injected.end(), [](bool b) { return b; })) {
         release_all();
     }
+    // A tap of a binding: keys and mouse buttons pressed and released, the VR actions as feedback.
+    const auto tap = [&](const Binding& action, int c) {
+        if (action.view) {
+            feedback.toggle_view = true;
+        } else if (action.panel) {
+            feedback.toggle_panel = true;
+        } else if (action.menu) {
+            feedback.toggle_menu = true;
+        } else if (action.recenter) {
+            feedback.recenter = true;
+        } else if (action.bound) {
+            inject(action.device, action.id, true);
+            inject(action.device, action.id, false);
+        }
+        feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
+    };
+    // Combos first: a button pressed while its combo's modifier is held.
+    if (!menu_open) {
+        for (const Combo& combo : g_combos) {
+            if (now[combo.button] && !g_down[combo.button] && now[combo.modifier]) {
+                tap(combo.action, combo.button);
+                g_swallow[combo.button] = true;
+                g_combo_used[combo.modifier] = true;
+                ++g_combo_taps;
+                log::info("vr: combo {} + {} -> {}", kControlNames[combo.modifier], kControlNames[combo.button],
+                          combo.action.text);
+            }
+        }
+    }
     for (int c = 0; c < kControlCount; ++c) {
         const Binding& b = g_bindings[c];
         const bool grip = c == LeftGrip || c == RightGrip;
+        if (g_swallow[c]) {
+            if (!now[c]) {
+                g_swallow[c] = false;
+            }
+            g_down[c] = now[c];
+            continue;
+        }
+        // A modifier with a key / mouse binding of its own: that binding fires on release, unless a combo was used.
+        const bool device_binding = b.bound && !b.recenter && !b.panel && !b.view && !b.menu;
+        const bool modifier = device_binding && !menu_open &&
+                              std::any_of(g_combos.begin(), g_combos.end(), [c](const Combo& k) { return k.modifier == c; });
+        if (modifier || g_deferred[c]) {
+            if (now[c] && !g_down[c]) {
+                g_deferred[c] = true;
+                g_combo_used[c] = false;
+            } else if (!now[c] && g_down[c] && g_deferred[c]) {
+                g_deferred[c] = false;
+                if (!g_combo_used[c]) {
+                    tap(b, c);
+                }
+            }
+            g_down[c] = now[c];
+            continue;
+        }
+        if (now[c] && !g_down[c]) {
+            g_combo_used[c] = false;
+        }
         if (b.menu && now[c] && !g_down[c]) {
             feedback.toggle_menu = true;
             feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
