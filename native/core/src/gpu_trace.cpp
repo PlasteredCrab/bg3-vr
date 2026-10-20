@@ -306,8 +306,74 @@ void note_targets(UINT count, ID3D11RenderTargetView* const* views) {
 }
 
 
+// UI watch (separate from the trace; its own small lock).
+std::atomic<bool> g_watch_ui{false};
+std::mutex g_ui_mutex;
+std::uintptr_t g_ui_back_buffer = 0;     // under g_ui_mutex
+std::uintptr_t g_ui_target = 0;          // current RT0 resource (raw, not held)
+std::uintptr_t g_ui_slot1 = 0;           // current PS slot 1 view (raw, not held)
+ID3D11Texture2D* g_ui_texture = nullptr; // held
+std::uint64_t g_ui_changes = 0;
+
+void ui_note_targets(UINT count, ID3D11RenderTargetView* const* views) {
+    std::uintptr_t target = 0;
+    if (count && views && views[0]) {
+        ID3D11Resource* resource = nullptr;
+        views[0]->GetResource(&resource);
+        target = reinterpret_cast<std::uintptr_t>(resource);
+        if (resource) {
+            resource->Release();
+        }
+    }
+    std::scoped_lock lock(g_ui_mutex);
+    g_ui_target = target;
+}
+
+void ui_note_views(UINT start, UINT count, ID3D11ShaderResourceView* const* views) {
+    if (start > 1 || start + count <= 1) {
+        return;
+    }
+    std::scoped_lock lock(g_ui_mutex);
+    g_ui_slot1 = views ? reinterpret_cast<std::uintptr_t>(views[1 - start]) : 0;
+}
+
+void ui_on_draw() {
+    std::scoped_lock lock(g_ui_mutex);
+    if (!g_ui_back_buffer || g_ui_target != g_ui_back_buffer || !g_ui_slot1) {
+        return;
+    }
+    ID3D11Resource* resource = nullptr;
+    reinterpret_cast<ID3D11ShaderResourceView*>(g_ui_slot1)->GetResource(&resource);
+    if (!resource) {
+        return;
+    }
+    ID3D11Texture2D* texture = nullptr;
+    resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture));
+    resource->Release();
+    if (!texture) {
+        return;
+    }
+    if (texture == g_ui_texture) {
+        texture->Release();
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    if (g_ui_texture) {
+        g_ui_texture->Release();
+    }
+    g_ui_texture = texture; // keeps the reference
+    ++g_ui_changes;
+    log::info("gpu: UI texture (composite PS slot 1) 0x{:X}: {}x{} format {} mips {} bind 0x{:X} ({} change(s))",
+              reinterpret_cast<std::uintptr_t>(texture), desc.Width, desc.Height, static_cast<int>(desc.Format),
+              desc.MipLevels, desc.BindFlags, g_ui_changes);
+}
+
 void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
                                               ID3D11DepthStencilView* depth) {
+    if (g_watch_ui.load(std::memory_order_relaxed)) {
+        ui_note_targets(count, views);
+    }
     {
         std::scoped_lock lock(g_mutex);
         if (active()) {
@@ -319,6 +385,9 @@ void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT cou
 void STDMETHODCALLTYPE om_set_render_targets_uav(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
                                                  ID3D11DepthStencilView* depth, UINT uav_start, UINT uav_count,
                                                  ID3D11UnorderedAccessView* const* uavs, const UINT* initial) {
+    if (g_watch_ui.load(std::memory_order_relaxed) && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
+        ui_note_targets(count, views);
+    }
     {
         std::scoped_lock lock(g_mutex);
         if (active() && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
@@ -337,6 +406,9 @@ void STDMETHODCALLTYPE rs_set_viewports(ID3D11DeviceContext* self, UINT count, c
     g_hooks[2].call<void>(self, count, viewports);
 }
 void count_draw() {
+    if (g_watch_ui.load(std::memory_order_relaxed)) {
+        ui_on_draw();
+    }
     std::scoped_lock lock(g_mutex);
     if (active()) {
         ++run(slots_text(g_ps_srv)).draws;
@@ -412,6 +484,9 @@ void STDMETHODCALLTYPE copy_subresource_region(ID3D11DeviceContext* self, ID3D11
 
 void STDMETHODCALLTYPE ps_set_shader_resources(ID3D11DeviceContext* self, UINT start, UINT count,
                                                ID3D11ShaderResourceView* const* views) {
+    if (g_watch_ui.load(std::memory_order_relaxed)) {
+        ui_note_views(start, count, views);
+    }
     {
         std::scoped_lock lock(g_mutex);
         if (active()) {
@@ -503,6 +578,31 @@ void arm(int frames) {
     g_frames = frames;
     g_armed.store(true);
     log::info("gpu: tracing the next {} frame(s)", frames);
+}
+
+void watch_ui(bool on) {
+    if (on) {
+        std::call_once(g_install_once, [] { g_installed = install(); });
+        if (!g_installed) {
+            return;
+        }
+    }
+    if (g_watch_ui.exchange(on) != on) {
+        log::info("gpu: UI texture watch {}", on ? "on" : "off");
+    }
+}
+
+void set_back_buffer(std::uintptr_t resource) {
+    std::scoped_lock lock(g_ui_mutex);
+    g_ui_back_buffer = resource;
+}
+
+ID3D11Texture2D* ui_texture() {
+    std::scoped_lock lock(g_ui_mutex);
+    if (g_ui_texture) {
+        g_ui_texture->AddRef();
+    }
+    return g_ui_texture;
 }
 
 void marker(const std::string& text) {

@@ -29,11 +29,20 @@ public:
         UINT x = 0, y = 0, width = 0, height = 0; // pixels in the source; width 0 = the whole source
     };
 
+    // Options for panels: keep the source's alpha (the UI is premultiplied), and draw a cursor dot at
+    // (cursor_u, cursor_v) in target uv with radius cursor_radius (in uv of the target's height; 0 = none).
+    struct Overlay {
+        bool keep_alpha = false;
+        float cursor_u = 0.0f;
+        float cursor_v = 0.0f;
+        float cursor_radius = 0.0f;
+    };
+
     // Draws `rect` of `source` (same size and format as create()) over the whole `target` view of a
     // `target_width` x `target_height` image. `linearize`: the source holds gamma-encoded values in a
     // non-sRGB format and the target view is sRGB, so decode them first.
     void draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTargetView* target, UINT target_width,
-              UINT target_height, bool linearize);
+              UINT target_height, bool linearize, const Overlay& overlay = {});
 
 private:
     ID3D11Device* device_ = nullptr;

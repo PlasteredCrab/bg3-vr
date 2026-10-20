@@ -44,6 +44,21 @@ Source: agent F's static RE (`re-local/ghidra/agents/F_ui.md`). Nothing here has
 6. **Dialogue.** Show the dialogue UI on the world panel near the speaker. Agent G is working on keeping the
    camera first-person during dialogues.
 
+## Status (2026-10-20, built, untested in game)
+
+- **Panel:**
+  - `gpu_trace::watch_ui` records PS slot 1 of draws into the back buffer (the composite), which gives the UI
+    texture;
+  - the headset copies it with alpha into the panel layer, 1.1 m wide, 1 m ahead and 15 cm below the eyes, placed
+    when VR starts and on recentre;
+  - while the panel is shown, GlobalSwitches+0x0D = 0 keeps the UI out of the eye images (restored after);
+  - after a window resize the UI goes back into the composite for 5 frames, so the new target is found.
+- **Laser:** the right aim ray is intersected with the panel. A hit draws a dot and moves the real mouse cursor to
+  that spot, and the trigger's injected left click acts there. A miss parks the cursor at the window centre.
+- **Settings:** `[ui]` panel, remove_from_eyes, laser, width, distance, below_eyes.
+- **Not yet:** wrist placement, re-projection of world labels (0x407BF00), keeping the software cursor out of the
+  eye images.
+
 ## Open
 
 - The D3D object behind key 0x0C419ABC (runtime: GPU trace or resource manager 0x4098180).

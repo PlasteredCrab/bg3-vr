@@ -2,6 +2,7 @@
 
 #include "bg3vr/blit.hpp"
 #include "bg3vr/camera.hpp"
+#include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/bridge.hpp"
@@ -104,6 +105,8 @@ std::atomic<bool> g_hands_report{false};
 std::atomic<bool> g_hands_buzz{false};
 constexpr std::uint64_t kHandLogEvery = 900; // samples between periodic pose lines (~10 s at 90 Hz)
 std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
+std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
+HWND g_window = nullptr;                    // the game window (the laser moves the mouse cursor in it)
 bool g_was_driven = false;
 
 // Same-frame stereo (stereo.hpp), switched at runtime; needs a head-tracked mode.
@@ -310,6 +313,7 @@ void start(IDXGISwapChain* swapchain) {
     ID3D11Device* device = render::device();
     DXGI_SWAP_CHAIN_DESC desc{};
     swapchain->GetDesc(&desc);
+    g_window = desc.OutputWindow;
     if (!device || !load_loader()) {
         g_failed = true;
         return;
@@ -525,6 +529,7 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
     if (g_session->locate(when, views) && views.size() == 2) {
         if (g_recenter_request.exchange(false, std::memory_order_relaxed)) {
             camera::set_recenter(centre_view(views).pose);
+            g_ui_place_request.store(true, std::memory_order_relaxed); // the UI panel moves in front again
         }
         if (stereo) {
             // The game camera at the head centre covering both eyes (culling sees both); the stereo hook
@@ -718,6 +723,235 @@ void publish_status(bool ready) {
     log::info("xr: status for Lua: {}", ready ? "ready" : "off");
 }
 
+
+// The game's UI on a VR panel (agent F, F_ui.md; docs/design/vr-ui.md). The UI is drawn once per frame into its own
+// texture, which the final composite (stage 0x07) binds as pixel-shader resource 1 over the back buffer. While VR play
+// is on: that texture is found by gpu_trace's UI watch, copied (with alpha) into the XR panel layer, placed about 1 m in
+// front of the player (re-placed on recentre), and taken out of the eye images by clearing GlobalSwitches+0x0D, which
+// the composite tests before binding it. The right hand's aim ray drives a laser dot on the panel and moves the real
+// mouse cursor there, so hover and clicks reach the UI the game's own way.
+bool g_ui_enabled = true;          // [ui] panel
+bool g_ui_remove_from_eyes = true; // [ui] remove_from_eyes
+bool g_ui_laser = true;            // [ui] laser
+float g_ui_distance = 1.0f;        // [ui] distance (m)
+float g_ui_width = 1.1f;           // [ui] width (m)
+float g_ui_drop = 0.15f;           // [ui] below_eyes (m)
+constexpr UINT kUiMaxWidth = 2560;
+blit::Blitter g_ui_blitter;
+ID3D11Texture2D* g_ui_source_seen = nullptr; // identity of the texture the blitter was made for (not held)
+UINT g_ui_panel_width = 0;
+UINT g_ui_panel_height = 0;
+bool g_ui_linearize = false;
+bool g_ui_failed = false;
+std::optional<xr::PanelPlacement> g_ui_place;
+bool g_ui_shown = false;
+int g_ui_flag_saved = -1; // GlobalSwitches+0x0D before it was cleared (-1: not cleared)
+bool g_ui_cursor_on_panel = false;
+std::uint64_t g_ui_frames = 0;
+std::uint64_t g_ui_laser_hits = 0;
+
+std::uint8_t* ui_composite_flag() {
+    static const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    std::uintptr_t switches = 0;
+    if (!mem::try_copy(&switches, base + 0x604B1B8, sizeof(switches)) || !switches) {
+        return nullptr;
+    }
+    return reinterpret_cast<std::uint8_t*>(switches + 0x0D);
+}
+
+// Whether the composite draws the UI into the eye images (restores the game's own value when shown again).
+void ui_set_in_eyes(bool show) {
+    std::uint8_t* flag = ui_composite_flag();
+    if (!flag) {
+        return;
+    }
+    std::uint8_t current = 0;
+    if (!mem::try_copy(&current, reinterpret_cast<std::uintptr_t>(flag), 1)) {
+        return;
+    }
+    if (!show) {
+        if (g_ui_flag_saved < 0) {
+            g_ui_flag_saved = current;
+            log::info("ui: UI taken out of the eye images (GlobalSwitches+0x0D was {})", current);
+        }
+        if (current != 0) {
+            *flag = 0; // the game may set it again (e.g. a UI toggle): re-applied every frame
+        }
+    } else if (g_ui_flag_saved >= 0) {
+        *flag = static_cast<std::uint8_t>(g_ui_flag_saved);
+        log::info("ui: UI back in the eye images (GlobalSwitches+0x0D = {})", g_ui_flag_saved);
+        g_ui_flag_saved = -1;
+    }
+}
+
+// A world panel in front of the head (yaw only, so it stands upright), `distance` ahead and `drop` below the eyes.
+xr::PanelPlacement place_in_front(const vr::RigidPose& head) {
+    const vr::Vec3 forward = vr::rotate(head.orientation, {0.0f, 0.0f, -1.0f});
+    const float yaw = std::atan2(-forward[0], -forward[2]);
+    xr::PanelPlacement place;
+    place.anchor = xr::PanelPlacement::Anchor::Local;
+    place.pose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+    place.pose.position = {head.position[0] - std::sin(yaw) * g_ui_distance, head.position[1] - g_ui_drop,
+                           head.position[2] - std::cos(yaw) * g_ui_distance};
+    place.width_m = g_ui_width;
+    return place;
+}
+
+// Where the aim ray meets the panel's front face, in panel uv (0..1, v down), or nullopt.
+std::optional<std::array<float, 2>> panel_uv(const vr::RigidPose& aim, const xr::PanelPlacement& place, float height_m) {
+    const vr::Quat q{place.pose.orientation.x, place.pose.orientation.y, place.pose.orientation.z, place.pose.orientation.w};
+    const vr::Vec3 c{place.pose.position.x, place.pose.position.y, place.pose.position.z};
+    const vr::Vec3 n = vr::rotate(q, {0.0f, 0.0f, 1.0f});
+    const vr::Vec3 right = vr::rotate(q, {1.0f, 0.0f, 0.0f});
+    const vr::Vec3 up = vr::rotate(q, {0.0f, 1.0f, 0.0f});
+    const vr::Vec3 d = vr::rotate(aim.orientation, {0.0f, 0.0f, -1.0f});
+    const auto dot = [](const vr::Vec3& a, const vr::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    const float facing = dot(d, n);
+    if (facing > -1e-3f) {
+        return std::nullopt; // pointing away from (or along) the panel's front
+    }
+    const vr::Vec3 to_centre{c[0] - aim.position[0], c[1] - aim.position[1], c[2] - aim.position[2]};
+    const float t = dot(to_centre, n) / facing;
+    if (t <= 0.0f || t > 20.0f) {
+        return std::nullopt;
+    }
+    const vr::Vec3 local{aim.position[0] + d[0] * t - c[0], aim.position[1] + d[1] * t - c[1],
+                         aim.position[2] + d[2] * t - c[2]};
+    const float u = dot(local, right) / place.width_m + 0.5f;
+    const float v = 0.5f - dot(local, up) / height_m;
+    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+        return std::nullopt;
+    }
+    return std::array<float, 2>{u, v};
+}
+
+// Moves the real mouse cursor to (u, v) of the game window's client area (only while the game has the focus).
+void move_cursor(float u, float v) {
+    if (!g_window || GetForegroundWindow() != g_window) {
+        return;
+    }
+    RECT client{};
+    if (!GetClientRect(g_window, &client)) {
+        return;
+    }
+    POINT point{static_cast<LONG>(u * static_cast<float>(client.right)), static_cast<LONG>(v * static_cast<float>(client.bottom))};
+    ClientToScreen(g_window, &point);
+    SetCursorPos(point.x, point.y);
+}
+
+void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
+    const bool want = g_ui_enabled && !g_ui_failed && vrplay::active() && g_mode != Mode::Screen;
+    gpu_trace::watch_ui(want);
+    if (!want) {
+        if (g_ui_shown) {
+            g_session->set_panel(std::nullopt);
+            ui_set_in_eyes(true);
+            g_ui_shown = false;
+            g_ui_place.reset();
+            g_ui_place_request.store(true, std::memory_order_relaxed);
+            log::info("ui: panel hidden");
+        }
+        return;
+    }
+    ID3D11Texture2D* back_buffer = nullptr;
+    D3D11_TEXTURE2D_DESC back_desc{};
+    if (SUCCEEDED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
+        gpu_trace::set_back_buffer(reinterpret_cast<std::uintptr_t>(back_buffer));
+        back_buffer->GetDesc(&back_desc);
+        back_buffer->Release();
+    }
+    ID3D11Texture2D* ui = gpu_trace::ui_texture();
+    if (!ui) {
+        ui_set_in_eyes(true); // the composite must bind the UI once for the watch to find it
+        return;
+    }
+    // A resized window gets a new UI target, which the watch only sees while the composite binds it: after a back
+    // buffer size change, let the composite bind the UI for a few frames.
+    static UINT last_width = 0, last_height = 0;
+    static int redetect = 0;
+    if (back_desc.Width && (back_desc.Width != last_width || back_desc.Height != last_height)) {
+        if (last_width) {
+            log::info("ui: back buffer now {}x{}; looking for the UI texture again", back_desc.Width, back_desc.Height);
+            redetect = 5;
+        }
+        last_width = back_desc.Width;
+        last_height = back_desc.Height;
+    }
+    if (redetect > 0) {
+        --redetect;
+        ui_set_in_eyes(true);
+        ui->Release();
+        return;
+    }
+    if (ui != g_ui_source_seen) {
+        D3D11_TEXTURE2D_DESC desc{};
+        ui->GetDesc(&desc);
+        std::string error;
+        if (!g_ui_blitter.create(render::device(), desc.Width, desc.Height, desc.Format, error)) {
+            log::error("ui: can't copy the UI texture ({}x{} format {}): {}; panel off", desc.Width, desc.Height,
+                       static_cast<int>(desc.Format), error);
+            g_ui_failed = true;
+            ui->Release();
+            return;
+        }
+        if (!g_session->has_panel()) {
+            g_ui_panel_width = std::min<UINT>(desc.Width, kUiMaxWidth);
+            g_ui_panel_height = desc.Height * g_ui_panel_width / std::max<UINT>(desc.Width, 1);
+            if (!g_session->create_panel(static_cast<int32_t>(g_ui_panel_width), static_cast<int32_t>(g_ui_panel_height),
+                                         error)) {
+                log::error("ui: can't create the panel layer: {}; panel off", error);
+                g_ui_failed = true;
+                ui->Release();
+                return;
+            }
+        }
+        g_ui_linearize = blit::is_srgb(g_session->format()) && !blit::is_srgb(desc.Format);
+        g_ui_source_seen = ui;
+        log::info("ui: panel {}x{} from the UI texture {}x{} format {}{}; {:.2f} m wide, {:.2f} m away", g_ui_panel_width,
+                  g_ui_panel_height, desc.Width, desc.Height, static_cast<int>(desc.Format),
+                  g_ui_linearize ? " (sRGB-decoded)" : "", g_ui_width, g_ui_distance);
+    }
+    if ((g_ui_place_request.exchange(false, std::memory_order_relaxed) || !g_ui_place) && frame.views.size() == 2) {
+        g_ui_place = place_in_front(centre_view(frame.views).pose);
+    }
+    if (!g_ui_place) {
+        ui->Release();
+        return;
+    }
+    // The laser.
+    blit::Blitter::Overlay overlay;
+    overlay.keep_alpha = true;
+    const float height_m = g_ui_width * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
+    if (g_ui_laser) {
+        const HandState right = hands()[kRightHand];
+        const auto uv = right.aim_valid ? panel_uv(right.aim, *g_ui_place, height_m) : std::nullopt;
+        if (uv) {
+            overlay.cursor_u = (*uv)[0];
+            overlay.cursor_v = (*uv)[1];
+            overlay.cursor_radius = 0.008f;
+            move_cursor((*uv)[0], (*uv)[1]);
+            ++g_ui_laser_hits;
+            g_ui_cursor_on_panel = true;
+        } else if (g_ui_cursor_on_panel) {
+            move_cursor(0.5f, 0.5f); // off the panel: park the cursor where the UI doesn't block world clicks
+            g_ui_cursor_on_panel = false;
+        }
+    }
+    if (frame.state.shouldRender) {
+        const xr::EyeImage image = g_session->acquire_panel();
+        g_ui_blitter.draw(ui, {}, image.view, g_ui_panel_width, g_ui_panel_height, g_ui_linearize, overlay);
+        g_session->release_panel();
+    }
+    ui->Release();
+    g_session->set_panel(g_ui_place);
+    ui_set_in_eyes(!g_ui_remove_from_eyes);
+    if (!g_ui_shown) {
+        log::info("ui: panel shown");
+    }
+    g_ui_shown = true;
+    ++g_ui_frames;
+}
+
 // Just before the game's Present.
 void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     if (g_failed) {
@@ -747,6 +981,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     }
     publish_status(true);
     update_input(frame);
+    update_ui_panel(swapchain, frame);
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
     } else {
@@ -782,6 +1017,16 @@ void install(const Config& config) {
     g_input_wanted = config.get_bool("xr", "input", true);
     g_input_haptics = config.get_bool("xr", "input_haptics", true);
     g_autostart = config.get_bool("vr", "autostart", true);
+    g_ui_enabled = config.get_bool("ui", "panel", true);
+    g_ui_remove_from_eyes = config.get_bool("ui", "remove_from_eyes", true);
+    g_ui_laser = config.get_bool("ui", "laser", true);
+    const auto ui_number = [&](const char* key, float fallback, float lo, float hi) {
+        const std::string v = config.get("ui", key);
+        return v.empty() ? fallback : std::clamp(std::strtof(v.c_str(), nullptr), lo, hi);
+    };
+    g_ui_distance = ui_number("distance", 1.0f, 0.3f, 5.0f);
+    g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
+    g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));

@@ -13,7 +13,8 @@ namespace {
 constexpr char kShader[] = R"(
 cbuffer Params : register(b0) {
     float4 uv_rect;  // offset.xy, scale.zw
-    float4 options;  // x: linearize
+    float4 options;  // x: linearize, y: keep the source alpha (else 1)
+    float4 cursor;   // xy: cursor centre in target uv, z: radius in uv (0 = none), w: aspect (width / height)
 };
 Texture2D source : register(t0);
 SamplerState linear_clamp : register(s0);
@@ -36,11 +37,24 @@ float3 srgb_to_linear(float3 c) {
 }
 
 float4 ps_main(Varyings i) : SV_Target {
-    float3 c = source.Sample(linear_clamp, i.uv).rgb;
+    const float4 s = source.Sample(linear_clamp, i.uv);
+    float3 c = s.rgb;
     if (options.x > 0.5) {
         c = srgb_to_linear(c);
     }
-    return float4(c, 1.0);
+    float a = options.y > 0.5 ? s.a : 1.0;
+    if (cursor.z > 0.0) {
+        // A laser dot: white with a dark ring, premultiplied over the image.
+        const float2 target_uv = (i.uv - uv_rect.xy) / uv_rect.zw;
+        const float2 d = (target_uv - cursor.xy) * float2(cursor.w, 1.0);
+        const float r = length(d) / cursor.z;
+        if (r < 1.0) {
+            const float3 dot_colour = r < 0.6 ? float3(1.0, 1.0, 1.0) : float3(0.05, 0.05, 0.05);
+            c = dot_colour;
+            a = 1.0;
+        }
+    }
+    return float4(c, a);
 }
 )";
 
@@ -71,6 +85,7 @@ ID3DBlob* compile(const char* entry, const char* target, std::string& error) {
 struct Constants {
     float uv_rect[4];
     float options[4];
+    float cursor[4];
 };
 
 } // namespace
@@ -190,7 +205,7 @@ void Blitter::destroy() {
 }
 
 void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTargetView* target, UINT target_width,
-                   UINT target_height, bool linearize) {
+                   UINT target_height, bool linearize, const Overlay& overlay) {
     if (!state_ || !source || !target) {
         return;
     }
@@ -207,7 +222,9 @@ void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTarget
                                static_cast<float>(rect.y) / static_cast<float>(height_),
                                static_cast<float>(w) / static_cast<float>(width_),
                                static_cast<float>(h) / static_cast<float>(height_)},
-                              {linearize ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
+                              {linearize ? 1.0f : 0.0f, overlay.keep_alpha ? 1.0f : 0.0f, 0.0f, 0.0f},
+                              {overlay.cursor_u, overlay.cursor_v, overlay.cursor_radius,
+                               static_cast<float>(target_width) / static_cast<float>(target_height ? target_height : 1)}};
     context_->UpdateSubresource(constants_, 0, nullptr, &constants, 0, 0);
 
     const D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(target_width), static_cast<float>(target_height),
