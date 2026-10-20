@@ -28,6 +28,7 @@ add_library(bg3vr_base STATIC
     src/grab_math.cpp
     src/health.cpp
     src/hold.cpp
+    src/holster.cpp
     src/ik.cpp
     src/stereo.cpp
     src/trace.cpp

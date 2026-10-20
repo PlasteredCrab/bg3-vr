@@ -47,6 +47,13 @@ them; they are marked "(off)".
 The key bindings assume BG3's default PC keys; change any of them in `[bindings]`. Every button press gives a
 light buzz.
 
+## Holsters
+
+Reach over your right or left shoulder, or to either hip, squeeze the grip and pull your hand away: your character
+draws their weapon. Bring the hand back to a holster and let go to put it away. You feel a light tick when your hand
+is over a holster. Squeezing low behind your back is reserved for the inventory. (Which weapon set each holster
+holds, the inventory and the torch are still being worked out; `holster:` lines in the log show what was detected.)
+
 ## The VR menu
 
 Press the left menu button. A panel opens in front of you with the settings you'd want to change while playing:

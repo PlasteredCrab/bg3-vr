@@ -20,6 +20,7 @@
 #include "bg3vr/dialogue.hpp"
 #include "bg3vr/eyefix.hpp"
 #include "bg3vr/hold.hpp"
+#include "bg3vr/holster.hpp"
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/melee.hpp"
 #include "bg3vr/vrplay.hpp"
@@ -377,6 +378,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     bodyik::report();
     hold::report();
     melee::report();
+    holster::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -434,6 +436,7 @@ int init(const wchar_t* root_dir) {
     vrplay::install(g_config, module);
     hold::install(g_config, module);
     melee::install(g_config);
+    holster::install(g_config);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
     bridge::reset_status(); // a fresh start: nothing from a previous run counts

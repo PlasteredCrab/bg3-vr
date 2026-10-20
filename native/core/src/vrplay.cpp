@@ -313,7 +313,9 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             feedback.toggle_view = true;
             feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
         }
-        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !b.menu && !(grips_grab && grip && !g_injected[c])) {
+        const bool holster_grip = grip && (c == LeftGrip ? l.grip_taken : r.grip_taken);
+        if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !b.menu &&
+            !((grips_grab || holster_grip) && grip && !g_injected[c])) {
             if (inject(b.device, b.id, now[c])) {
                 g_injected[c] = now[c];
                 if (now[c]) {

@@ -10,6 +10,7 @@
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/grab_math.hpp"
+#include "bg3vr/holster.hpp"
 #include "bg3vr/ik.hpp"
 #include "bg3vr/rigid.hpp"
 #include "bg3vr/stereo.hpp"
@@ -1026,6 +1027,55 @@ void test_vrmenu() {
     }
 }
 
+void test_holster() {
+    using namespace bg3vr::holster;
+    const Settings settings;
+    vr::RigidPose head;
+    head.position = {0.0f, 1.6f, 0.0f};
+    CHECK(classify(settings, head, {0.17f, 1.5f, 0.12f}) == Zone::ShoulderRight);
+    CHECK(classify(settings, head, {-0.17f, 1.5f, 0.12f}) == Zone::ShoulderLeft);
+    CHECK(classify(settings, head, {0.17f, 1.5f, -0.2f}) == Zone::None); // in front of the shoulder
+    CHECK(classify(settings, head, {0.22f, 0.82f, 0.02f}) == Zone::HipRight);
+    CHECK(classify(settings, head, {-0.22f, 0.82f, 0.02f}) == Zone::HipLeft);
+    CHECK(classify(settings, head, {0.0f, 1.2f, 0.2f}) == Zone::Back);
+    CHECK(classify(settings, head, {0.0f, 1.3f, -0.4f}) == Zone::None); // hands out in front
+    // The zones turn with the head: facing -X, the right shoulder is towards -Z and behind is +X.
+    vr::RigidPose turned = head;
+    turned.orientation = vr::yaw_quat(90.0f);
+    const vr::Vec3 fwd = vr::rotate(turned.orientation, {0.0f, 0.0f, -1.0f});
+    CHECK(std::abs(fwd[0] + 1.0f) < 1e-4f);
+    CHECK(classify(settings, turned, {0.12f, 1.5f, -0.17f}) == Zone::ShoulderRight);
+    CHECK(classify(settings, head, {0.12f, 1.5f, -0.17f}) == Zone::None);
+
+    Tracker tracker;
+    const auto step = [&](vr::Vec3 right, bool grip) {
+        Hand hands[2] = {{true, {-0.4f, 1.0f, -0.4f}, false}, {true, right, grip}};
+        return tracker.update(settings, head, hands);
+    };
+    const vr::Vec3 shoulder{0.17f, 1.5f, 0.12f}, out_front{0.3f, 1.3f, -0.3f}, hip{0.22f, 0.82f, 0.02f};
+    Output o = step(shoulder, false);
+    CHECK(o.events.empty() && o.haptic[1] > 0.0f); // entering a zone ticks
+    o = step(shoulder, true);
+    CHECK(o.events.empty() && o.grip_taken[1]);
+    o = step(out_front, true); // pulled out: drawn
+    CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Grab && o.events[0].zone == Zone::ShoulderRight &&
+          o.events[0].hand == 1 && o.grip_taken[1]);
+    o = step(hip, true);
+    CHECK(o.events.empty());
+    o = step(hip, false); // let go at the hip: stowed there
+    CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Stow && o.events[0].zone == Zone::HipRight);
+    o = step(hip, true);
+    o = step(hip, false); // closed and opened without leaving: a tap
+    CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Tap && o.events[0].zone == Zone::HipRight);
+    o = step(out_front, true);
+    o = step(hip, false); // closed outside any zone, opened at the hip: nothing was drawn, nothing to stow
+    CHECK(o.events.empty() && !o.grip_taken[1]);
+    o = step({0.0f, 1.2f, 0.2f}, true); // the back opens at once
+    CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Grab && o.events[0].zone == Zone::Back);
+    o = step({0.0f, 1.2f, 0.2f}, false);
+    CHECK(o.events.empty());
+}
+
 } // namespace
 
 int main() {
@@ -1050,6 +1100,7 @@ int main() {
     test_grab_math();
     test_rigid();
     test_vrmenu();
+    test_holster();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

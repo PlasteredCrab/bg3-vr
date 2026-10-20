@@ -5,6 +5,7 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
+#include "bg3vr/holster.hpp"
 #include "bg3vr/melee.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
@@ -674,9 +675,8 @@ HandState hand_state(const xr::Hand& hand, std::uint64_t sample) {
 // Once per submitted frame: sample the controllers, publish them, log changes, run queued haptics.
 // First <-> third person: the Lua side switches the camera, then tells the core (bridge view=).
 void request_view_toggle() {
-    static int request = 0;
     const bool to_third = !vrplay::third_person();
-    bridge::set_status("request", std::format("{} view_{}", ++request, to_third ? "third" : "first"));
+    bridge::push_request(to_third ? "view_third" : "view_first");
     log::info("vr: asking the Lua side for {} person", to_third ? "third" : "first");
 }
 
@@ -725,13 +725,30 @@ void update_input(const xr::Frame& frame) {
         aim = camera::tracked_to_world(now[kRightHand].aim);
     }
     rayprobe::set_hand_aim(aim);
+    // Holsters on the body (first person, VR play on, menu closed): a grip closing over a shoulder, at a hip or behind
+    // the back belongs to the holster, not to picking up world items.
+    holster::Output holsters;
+    if (vrplay::active() && !vrplay::third_person() && !g_menu_is_open.load(std::memory_order_relaxed) &&
+        frame.views.size() == 2) {
+        holster::Hand body_hands[2];
+        for (std::size_t h = 0; h < 2; ++h) {
+            body_hands[h] = {now[h].tracked, now[h].grip.position, now[h].active && now[h].squeeze > 0.5f};
+        }
+        holsters = holster::on_frame(centre_view(frame.views).pose, body_hands);
+        for (std::size_t h = 0; h < 2; ++h) {
+            if (holsters.haptic[h] > 0.0f) {
+                g_session->haptic(h, holsters.haptic[h], 0.02f);
+            }
+        }
+    }
     // Grips and aims for picking things up (world, game convention).
     for (std::size_t h = 0; h < 2; ++h) {
         std::optional<vr::RigidPose> aim_world;
         if (now[h].aim_valid) {
             aim_world = camera::tracked_to_world(now[h].aim);
         }
-        hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f && !g_menu_is_open.load(std::memory_order_relaxed),
+        hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f && !g_menu_is_open.load(std::memory_order_relaxed) &&
+                              !holsters.grip_taken[h],
                        now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world,
                        static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     }
@@ -750,7 +767,7 @@ void update_input(const xr::Frame& frame) {
     vrplay::Hand play[2];
     for (std::size_t h = 0; h < 2; ++h) {
         play[h] = {now[h].active, now[h].trigger, now[h].squeeze, now[h].stick_x, now[h].stick_y,
-                   now[h].stick_click, now[h].primary, now[h].secondary, now[h].menu};
+                   now[h].stick_click, now[h].primary, now[h].secondary, now[h].menu, holsters.grip_taken[h]};
     }
     const vrplay::Feedback feedback =
         vrplay::on_controllers(play, static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);

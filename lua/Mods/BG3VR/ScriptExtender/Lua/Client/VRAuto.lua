@@ -79,17 +79,16 @@ local function OnCharacterChanged()
     BG3VR.Log("VR: now playing %s", tostring(auto.character))
 end
 
--- First / third person, asked for by the core (the "view" controller binding) through request=<n> view_<mode>.
-local function HandleRequest(status)
-    local seq, what = string.match(status.request or "", "^(%d+) (%S+)")
-    if not seq or seq == auto.lastRequest then
+-- What the core asks for, through request=<n> <text>|<n> <text>|... (the last 16, numbered): first / third person
+-- (the "view" controller binding, the VR menu), holster events (Client/Holster.lua).
+local function HandleOne(what)
+    local holster, zone, hand = string.match(what, "^holster (%S+) (%S+) (%S+)")
+    if holster then
+        if auto.started and BG3VR.OnHolster then
+            BG3VR.OnHolster(holster, zone, hand)
+        end
         return
     end
-    if auto.lastRequest == nil then
-        auto.lastRequest = seq -- from before this Lua state: don't replay it
-        return
-    end
-    auto.lastRequest = seq
     if what == "view_third" or what == "view_first" then
         auto.third = what == "view_third"
         if auto.started then
@@ -99,6 +98,30 @@ local function HandleRequest(status)
             else
                 VRStart(1.7, "back to first person")
             end
+        end
+    end
+end
+
+local function HandleRequest(status)
+    local entries = {}
+    for entry in string.gmatch(status.request or "", "[^|]+") do
+        local seq, what = string.match(entry, "^(%d+) (.+)$")
+        if seq then
+            entries[#entries + 1] = { tonumber(seq), what }
+        end
+    end
+    if #entries == 0 then
+        auto.lastRequest = auto.lastRequest or 0 -- nothing asked yet: the first request counts
+        return
+    end
+    if auto.lastRequest == nil then
+        auto.lastRequest = entries[#entries][1] -- from before this Lua state: don't replay them
+        return
+    end
+    for _, e in ipairs(entries) do
+        if e[1] > auto.lastRequest then
+            auto.lastRequest = e[1]
+            HandleOne(e[2])
         end
     end
 end

@@ -36,6 +36,7 @@ struct Hand {
     bool primary = false;   // A / X
     bool secondary = false; // B / Y
     bool menu = false;
+    bool grip_taken = false; // the grip is drawing from / stowing in a holster: its binding must not fire
 };
 
 // What the headset should do in response (haptics and recentring live there).

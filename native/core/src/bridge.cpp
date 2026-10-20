@@ -9,12 +9,14 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace bg3vr::bridge {
 
@@ -413,6 +415,24 @@ void post(std::string lines) {
         g_posted += '\n';
     }
     g_posted += lines;
+}
+
+void push_request(std::string_view text) {
+    static std::mutex mutex;
+    static std::uint64_t sequence = 0;
+    static std::vector<std::string> recent;
+    std::string value;
+    {
+        std::scoped_lock lock(mutex);
+        recent.push_back(std::format("{} {}", ++sequence, text));
+        if (recent.size() > 16) {
+            recent.erase(recent.begin());
+        }
+        for (const std::string& r : recent) {
+            value += (value.empty() ? "" : "|") + r;
+        }
+    }
+    set_status("request", value);
 }
 
 void reset_status() {

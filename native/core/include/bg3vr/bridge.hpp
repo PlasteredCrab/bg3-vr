@@ -98,6 +98,10 @@ void start(const Config& config, std::function<void(const Request&)> on_request)
 // value removes the key. reset_status() clears every key (start-up: nothing from a previous run counts).
 void set_status(std::string_view key, std::string_view value);
 
+// Asks the Lua side to do something (e.g. "view_third", "holster grab back right"): numbered and kept with the last 16
+// in the status key request ("<n> <text>|<n> <text>|..."), so none is lost between two Lua reads. Any thread.
+void push_request(std::string_view text);
+
 // Lines in the bridge file's form from inside the core (e.g. the VR menu's set= lines): handled on the watcher
 // thread like a file write, within 250 ms, in the order posted.
 void post(std::string lines);

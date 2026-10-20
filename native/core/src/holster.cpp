@@ -1,0 +1,172 @@
+#include "bg3vr/holster.hpp"
+
+#include "bg3vr/bridge.hpp"
+#include "bg3vr/health.hpp"
+#include "bg3vr/log.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstdlib>
+#include <format>
+
+namespace bg3vr::holster {
+
+namespace {
+
+Settings g_settings;
+Tracker g_tracker;
+std::atomic<std::uint64_t> g_events[3]{}; // grab, stow, tap
+
+float distance(const vr::Vec3& a, const vr::Vec3& b) {
+    const float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return std::sqrt(x * x + y * y + z * z);
+}
+
+vr::Vec3 mirrored(const vr::Vec3& v) {
+    return {-v[0], v[1], v[2]};
+}
+
+} // namespace
+
+const char* zone_name(Zone zone) {
+    switch (zone) {
+    case Zone::ShoulderRight:
+        return "shoulder_right";
+    case Zone::ShoulderLeft:
+        return "shoulder_left";
+    case Zone::HipRight:
+        return "hip_right";
+    case Zone::HipLeft:
+        return "hip_left";
+    case Zone::Back:
+        return "back";
+    default:
+        return "none";
+    }
+}
+
+Settings load_settings(const Config& config) {
+    Settings s;
+    s.enabled = config.get_bool("holster", "enabled", true);
+    const auto number = [&](const char* key, float fallback, float lo, float hi) {
+        const std::string v = config.get("holster", key);
+        return v.empty() ? fallback : std::clamp(std::strtof(v.c_str(), nullptr), lo, hi);
+    };
+    s.shoulder_radius = number("shoulder_radius", s.shoulder_radius, 0.05f, 0.5f);
+    s.hip_radius = number("hip_radius", s.hip_radius, 0.05f, 0.5f);
+    s.back_radius = number("back_radius", s.back_radius, 0.05f, 0.5f);
+    s.hip[1] = -number("hip_drop", -s.hip[1], 0.3f, 1.3f);
+    s.hip[0] = number("hip_width", s.hip[0], 0.05f, 0.5f);
+    return s;
+}
+
+Zone classify(const Settings& settings, const vr::RigidPose& head, const vr::Vec3& hand) {
+    // The body frame: the head's facing (yaw only); x right, y up, z backwards (OpenXR: -Z is forward).
+    const vr::Vec3 forward = vr::rotate(head.orientation, {0.0f, 0.0f, -1.0f});
+    const float yaw = std::atan2(-forward[0], -forward[2]);
+    const vr::Quat unyaw{0.0f, -std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+    const vr::Vec3 local = vr::rotate(unyaw, {hand[0] - head.position[0], hand[1] - head.position[1], hand[2] - head.position[2]});
+    struct Candidate {
+        Zone zone;
+        vr::Vec3 centre;
+        float radius;
+    };
+    const Candidate candidates[] = {
+        {Zone::ShoulderRight, settings.shoulder, settings.shoulder_radius},
+        {Zone::ShoulderLeft, mirrored(settings.shoulder), settings.shoulder_radius},
+        {Zone::HipRight, settings.hip, settings.hip_radius},
+        {Zone::HipLeft, mirrored(settings.hip), settings.hip_radius},
+        {Zone::Back, settings.back, settings.back_radius},
+    };
+    Zone best = Zone::None;
+    float best_fraction = 1.0f;
+    for (const Candidate& c : candidates) {
+        const float fraction = distance(local, c.centre) / c.radius;
+        if (fraction >= best_fraction) {
+            continue;
+        }
+        // Over the shoulder means behind the face: not a hand held up in front of the shoulder.
+        if ((c.zone == Zone::ShoulderRight || c.zone == Zone::ShoulderLeft) && local[2] < -0.02f) {
+            continue;
+        }
+        best = c.zone;
+        best_fraction = fraction;
+    }
+    return best;
+}
+
+Output Tracker::update(const Settings& settings, const vr::RigidPose& head, const Hand (&hands)[2]) {
+    Output out;
+    for (int h = 0; h < 2; ++h) {
+        const Hand& hand = hands[h];
+        const Zone zone = hand.tracked ? classify(settings, head, hand.position) : Zone::None;
+        const bool grip = hand.tracked && hand.grip;
+        if (zone != inside_[h] && zone != Zone::None && (!grip || carrying_[h] != Zone::None)) {
+            out.haptic[h] = std::max(out.haptic[h], 0.12f); // you feel the holster under your hand
+        }
+        if (grip && !grip_[h]) {
+            // Closed: in a zone, take hold of what is kept there. The back opens at once (nothing to pull out).
+            if (zone == Zone::Back) {
+                out.events.push_back({Event::Kind::Grab, zone, h});
+                out.haptic[h] = 0.4f;
+            } else if (zone != Zone::None) {
+                armed_[h] = zone;
+                out.haptic[h] = 0.3f;
+            }
+        } else if (grip && armed_[h] != Zone::None && zone != armed_[h]) {
+            // Pulled out of the zone with the grip closed: drawn.
+            out.events.push_back({Event::Kind::Grab, armed_[h], h});
+            out.haptic[h] = 0.5f;
+            carrying_[h] = armed_[h];
+            armed_[h] = Zone::None;
+        } else if (!grip && grip_[h]) {
+            // Opened.
+            if (armed_[h] != Zone::None) {
+                out.events.push_back({Event::Kind::Tap, armed_[h], h});
+                out.haptic[h] = 0.25f;
+            } else if (carrying_[h] != Zone::None && zone != Zone::None && zone != Zone::Back) {
+                out.events.push_back({Event::Kind::Stow, zone, h});
+                out.haptic[h] = 0.4f;
+            }
+            armed_[h] = Zone::None;
+            carrying_[h] = Zone::None;
+        }
+        out.grip_taken[h] = grip && (armed_[h] != Zone::None || carrying_[h] != Zone::None || zone == Zone::Back);
+        inside_[h] = zone;
+        grip_[h] = grip;
+    }
+    return out;
+}
+
+void install(const Config& config) {
+    g_settings = load_settings(config);
+    health::set("holsters", g_settings.enabled ? health::State::Ready : health::State::Off, "[holster] enabled");
+    log::info("holster: {} (shoulders r {:.2f} m, hips r {:.2f} m {:.2f} m below the eyes, back r {:.2f} m)",
+              g_settings.enabled ? "on" : "off ([holster] enabled)", g_settings.shoulder_radius, g_settings.hip_radius,
+              -g_settings.hip[1], g_settings.back_radius);
+}
+
+bool enabled() {
+    return g_settings.enabled;
+}
+
+Output on_frame(const vr::RigidPose& head, const Hand (&hands)[2]) {
+    if (!g_settings.enabled) {
+        return {};
+    }
+    Output out = g_tracker.update(g_settings, head, hands);
+    for (const Event& e : out.events) {
+        const char* kind = e.kind == Event::Kind::Grab ? "grab" : e.kind == Event::Kind::Stow ? "stow" : "tap";
+        g_events[static_cast<int>(e.kind)].fetch_add(1, std::memory_order_relaxed);
+        bridge::push_request(std::format("holster {} {} {}", kind, zone_name(e.zone), e.hand == 0 ? "left" : "right"));
+        log::info("holster: {} {} with the {} hand", kind, zone_name(e.zone), e.hand == 0 ? "left" : "right");
+    }
+    return out;
+}
+
+void report() {
+    log::info("holster: {} grab(s), {} stow(s), {} tap(s)", g_events[0].load(), g_events[1].load(), g_events[2].load());
+}
+
+} // namespace bg3vr::holster
