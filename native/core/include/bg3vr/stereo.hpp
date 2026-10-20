@@ -43,6 +43,14 @@ inline constexpr std::size_t kNear = 0xC0;           // float
 inline constexpr std::size_t kFar = 0xC4;            // float
 inline constexpr std::size_t kPosition = 0xD0;       // vec3: the controller's GetWorldTranslate
 inline constexpr std::size_t kReadStateController = 0x21D8; // in the view: ReadState's CameraController*
+// GameRenderView::PerView (400 bytes, b12 in the shaders), also filled by 0x3CC7490 (agent N, N_stereo_lighting.md
+// 1.2): the inverse view and the far-plane rays to the full-screen triangle's corners, from which the clustered
+// lighting, light assignment, volumetric fog and camera velocity shaders rebuild world positions.
+inline constexpr std::size_t kPerView0 = 0x2340;
+inline constexpr std::size_t kPerView1 = 0x24D0;
+inline constexpr std::size_t kViewInverse = 0x30;  // mat4: camera to world
+inline constexpr std::size_t kViewCorners = 0x70;  // 3 x vec4 (w 0): NDC (-1, 1), (3, 1), (-1, -3) at the far plane
+inline constexpr std::size_t kOutlineGate = 0x2961; // byte: the outline combine runs only when 0 (0x17FCF10)
 inline constexpr std::size_t kControllerIsOrthographic = 0x12; // in the controller (bool)
 } // namespace layout
 
@@ -65,6 +73,11 @@ camera::Mat4 rotation_view_projection(const camera::Mat4& projection, const came
 
 // The world position of a camera whose world-to-camera matrix is `view` (rigid).
 vr::Vec3 camera_position(const camera::Mat4& view);
+
+// Rewrites a PerView block's inverse view and corner rays from a (rewritten) PerCamera block: the corner at NDC
+// (nx, ny) is far * (F + R (nx - P[8]) / P[0] + U (ny - P[9]) / P[5]) with R, U, F the view's rows (agent N 3);
+// with the game's own symmetric projection this is exactly what 0x3CC7490 writes.
+void rewrite_view_block(std::uint8_t* per_view, const std::uint8_t* per_camera);
 
 // Rewrites one PerCamera block (as laid out above) for an eye: the block's view matrix is the head's.
 // `jittered`: the block is [1], whose projection's [8]/[9] are jitter to keep.

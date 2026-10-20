@@ -59,6 +59,120 @@ std::atomic<std::uint64_t> g_orthographic{0};
 std::atomic<std::uint64_t> g_single_rewrites{0};
 std::atomic<std::uint64_t> g_unmatched{0};
 
+// Views whose camera blocks this frame came from the hook (the eye views, or the one view showing the driven camera),
+// for the later stage hooks: stage 0x1B's reprojection and stage 0x40's velocity / TAA blocks read the controller
+// directly, after the hook (agent N 1.5, 1.6).
+std::array<std::atomic<std::uintptr_t>, 4> g_rewritten{};
+void mark_rewritten(std::uintptr_t view) {
+    for (auto& slot : g_rewritten) {
+        if (slot.load(std::memory_order_relaxed) == view) {
+            return;
+        }
+    }
+    static std::atomic<std::size_t> next{0};
+    g_rewritten[next.fetch_add(1, std::memory_order_relaxed) % g_rewritten.size()].store(view, std::memory_order_relaxed);
+}
+bool was_rewritten(std::uintptr_t view) {
+    for (const auto& slot : g_rewritten) {
+        if (view && slot.load(std::memory_order_relaxed) == view) {
+            return true;
+        }
+    }
+    return false;
+}
+
+safetyhook::MidHook g_reprojection_hook; // stage 0x1B, 0x3E32C44
+safetyhook::MidHook g_velocity_hook;     // stage 0x40, 0x3E12730
+std::atomic<std::uint64_t> g_reprojections{0};
+std::atomic<std::uint64_t> g_velocity_rewrites{0};
+std::atomic<int> g_logged_reprojection{0};
+std::atomic<std::uint8_t> g_outline_main{0xFF}, g_outline_eye{0xFF};
+std::atomic<std::uint64_t> g_outline_copies{0};
+constexpr std::uintptr_t kRenderSettings = 0x604AA10; // DAT_14604AA10: +0x80 / +0x77 antialiasing / upscaler modes
+
+void rewrite_views_of(std::uintptr_t view) {
+    auto* base = reinterpret_cast<std::uint8_t*>(view);
+    rewrite_view_block(base + layout::kPerView0, base + layout::kPerCamera0);
+    rewrite_view_block(base + layout::kPerView1, base + layout::kPerCamera1);
+    mark_rewritten(view);
+}
+
+// Stage 0x1B (clustered lighting) execute, after it computed P x V of the head into 16 doubles at [rsp+0x20] for its
+// temporal reprojection: the eye's jittered block [1] instead (agent N fix 2). rbx = the view, rdi = the stage.
+void on_reprojection(safetyhook::Context& ctx) {
+    const std::uintptr_t view = ctx.rbx;
+    if (!was_rewritten(view)) {
+        return;
+    }
+    camera::Mat4 v{}, p{};
+    std::memcpy(v.data(), reinterpret_cast<const void*>(view + layout::kPerCamera1 + layout::kView), sizeof(v));
+    std::memcpy(p.data(), reinterpret_cast<const void*>(view + layout::kPerCamera1 + layout::kProjection), sizeof(p));
+    double out[16];
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            double sum = 0.0;
+            for (int k = 0; k < 4; ++k) {
+                sum += static_cast<double>(p[k * 4 + row]) * static_cast<double>(v[column * 4 + k]);
+            }
+            out[column * 4 + row] = sum;
+        }
+    }
+    auto* game = reinterpret_cast<double*>(ctx.rsp + 0x20);
+    if (g_logged_reprojection.fetch_add(1, std::memory_order_relaxed) < 4) {
+        log::info("stereo: stage 0x1B view 0x{:X}: game P*V [{:.4f} {:.4f} {:.4f} {:.4f} | {:.4f} {:.4f} {:.4f} {:.4f} | "
+                  "{:.4f} {:.4f} {:.4f} {:.4f} | {:.4f} {:.4f} {:.4f} {:.4f}] -> eye [{:.4f} {:.4f} {:.4f} {:.4f} | "
+                  "{:.4f} {:.4f} {:.4f} {:.4f} | {:.4f} {:.4f} {:.4f} {:.4f} | {:.4f} {:.4f} {:.4f} {:.4f}]",
+                  view, game[0], game[1], game[2], game[3], game[4], game[5], game[6], game[7], game[8], game[9],
+                  game[10], game[11], game[12], game[13], game[14], game[15], out[0], out[1], out[2], out[3], out[4],
+                  out[5], out[6], out[7], out[8], out[9], out[10], out[11], out[12], out[13], out[14], out[15]);
+    }
+    std::memcpy(game, out, sizeof(out));
+    g_reprojections.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Stage 0x40 (camera velocity, TAA) execute, after it built its current camera block from the controller: the eye's
+// block instead ([1] in TAA / upscaler modes, else [0]); a stage seen for the first time gets it as its previous
+// block too (agent N fix 3). rbx = the stage, its view at [stage+8].
+void on_velocity(safetyhook::Context& ctx) {
+    const std::uintptr_t stage = ctx.rbx;
+    const auto view = mem::read<std::uintptr_t>(stage + 8);
+    if (!view || !was_rewritten(view)) {
+        return;
+    }
+    const auto settings = mem::read<std::uintptr_t>(g_module.base + kRenderSettings);
+    const std::uint8_t aa = settings ? mem::read<std::uint8_t>(settings + 0x80) : 0;
+    const std::uint8_t upscaler = settings ? mem::read<std::uint8_t>(settings + 0x77) : 0;
+    const bool jittered = (aa >= 2 && aa <= 4) || upscaler == 2 || upscaler == 3 || upscaler == 5;
+    const auto* block = reinterpret_cast<const std::uint8_t*>(view + (jittered ? layout::kPerCamera1 : layout::kPerCamera0));
+    auto* current = reinterpret_cast<std::uint8_t*>(stage + 0x2230);
+    std::memcpy(current + 0x00, block + layout::kView, 64);
+    std::memcpy(current + 0x40, block + layout::kProjection, 64);
+    std::memcpy(current + 0x80, block + layout::kViewProjection, 64);
+    std::memcpy(current + 0xC0, block + layout::kPosition, 12);
+    static std::array<std::atomic<std::uintptr_t>, 8> seen{};
+    bool known = false;
+    for (const auto& s : seen) {
+        known = known || s.load(std::memory_order_relaxed) == stage;
+    }
+    if (!known) {
+        static std::atomic<std::size_t> next{0};
+        seen[next.fetch_add(1, std::memory_order_relaxed) % seen.size()].store(stage, std::memory_order_relaxed);
+        auto* previous = reinterpret_cast<std::uint8_t*>(stage + 0x2150);
+        std::memcpy(previous, current, 0xCC);
+        log::info("stereo: stage 0x40 0x{:X} of view 0x{:X}: velocity / TAA camera from the eye's block [{}] (aa {}, "
+                  "upscaler {})", stage, view, jittered ? 1 : 0, aa, upscaler);
+    }
+    g_velocity_rewrites.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool bytes_at(std::uintptr_t address, std::initializer_list<std::uint8_t> expected) {
+    std::array<std::uint8_t, 32> got{};
+    if (expected.size() > got.size() || !mem::try_copy(got.data(), address, expected.size())) {
+        return false;
+    }
+    return std::equal(expected.begin(), expected.end(), got.begin());
+}
+
 bool matrix_matches(const float* candidate, const camera::Mat4& expected) {
     for (std::size_t i = 0; i < 16; ++i) {
         if (std::abs(candidate[i] - expected[i]) > 1e-3f * (std::max)(1.0f, std::abs(expected[i]))) {
@@ -128,6 +242,7 @@ void on_camera_built(safetyhook::Context& ctx) {
         }
         rewrite_block(block0, vr::RigidPose{}, head->fov, false);
         rewrite_block(block1, vr::RigidPose{}, head->fov, true);
+        rewrite_views_of(view);
         g_single_rewrites.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -163,6 +278,29 @@ void on_camera_built(safetyhook::Context& ctx) {
     }
     rewrite_block(block0, offset, fov, false);
     rewrite_block(block1, offset, fov, true);
+    rewrite_views_of(view);
+    // The outline combine runs only where [view+0x2961] is 0; the created eye view never gets the game's per-player
+    // updates of that byte (agent N 4): it follows the main view's.
+    std::uintptr_t main_view = 0, eye_view = 0;
+    {
+        std::scoped_lock lock(g_mutex);
+        main_view = g_views[0];
+        eye_view = g_views[1];
+    }
+    if (main_view && eye_view) {
+        const auto main_gate = mem::read<std::uint8_t>(main_view + layout::kOutlineGate);
+        const auto eye_gate = mem::read<std::uint8_t>(eye_view + layout::kOutlineGate);
+        if (main_gate != g_outline_main.load(std::memory_order_relaxed) || eye_gate != g_outline_eye.load(std::memory_order_relaxed)) {
+            log::info("stereo: outline gate [view+0x2961] main 0x{:X} = {}, eye 0x{:X} = {}{}", main_view, main_gate,
+                      eye_view, eye_gate, main_gate != eye_gate ? " (copying the main view's)" : "");
+            g_outline_main.store(main_gate, std::memory_order_relaxed);
+            g_outline_eye.store(main_gate, std::memory_order_relaxed);
+        }
+        if (eye_gate != main_gate) {
+            *reinterpret_cast<std::uint8_t*>(eye_view + layout::kOutlineGate) = main_gate;
+            g_outline_copies.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     g_rewrites[eye].fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -216,6 +354,41 @@ vr::Vec3 camera_position(const camera::Mat4& view) {
     return position;
 }
 
+void rewrite_view_block(std::uint8_t* per_view, const std::uint8_t* per_camera) {
+    camera::Mat4 v{}, p{};
+    float far_z = 0.0f;
+    std::memcpy(v.data(), per_camera + layout::kView, sizeof(v));
+    std::memcpy(p.data(), per_camera + layout::kProjection, sizeof(p));
+    std::memcpy(&far_z, per_camera + layout::kFar, sizeof(far_z));
+    if (p[0] == 0.0f || p[5] == 0.0f) {
+        return;
+    }
+    // Inverse of the rigid view: the transposed rotation and the camera position.
+    camera::Mat4 inverse{};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            inverse[c * 4 + r] = v[r * 4 + c];
+        }
+    }
+    const vr::Vec3 position = camera_position(v);
+    inverse[12] = position[0];
+    inverse[13] = position[1];
+    inverse[14] = position[2];
+    inverse[15] = 1.0f;
+    std::memcpy(per_view + layout::kViewInverse, inverse.data(), sizeof(inverse));
+    const float R[3] = {v[0], v[4], v[8]};
+    const float U[3] = {v[1], v[5], v[9]};
+    const float F[3] = {v[2], v[6], v[10]};
+    const float corners[3][2] = {{-1.0f, 1.0f}, {3.0f, 1.0f}, {-1.0f, -3.0f}};
+    for (int i = 0; i < 3; ++i) {
+        const float a = (corners[i][0] - p[8]) / p[0];
+        const float b = (corners[i][1] - p[9]) / p[5];
+        const float ray[4] = {far_z * (F[0] + R[0] * a + U[0] * b), far_z * (F[1] + R[1] * a + U[1] * b),
+                              far_z * (F[2] + R[2] * a + U[2] * b), 0.0f};
+        std::memcpy(per_view + layout::kViewCorners + 16 * i, ray, sizeof(ray));
+    }
+}
+
 void rewrite_block(std::uint8_t* block, const vr::RigidPose& eye_in_head, const camera::EyeFov& fov, bool jittered) {
     camera::Mat4 head_view, projection;
     std::memcpy(head_view.data(), block + layout::kView, sizeof(head_view));
@@ -260,6 +433,29 @@ void install(const Config& config, const ModuleInfo& module) {
     g_hook = std::move(*hook);
     health::set("same-frame stereo", health::State::Ready);
     log::info("stereo: hook render_view_camera_built installed at exe+0x{:X}", *site - module.base);
+
+    // The two stages that rebuild the camera from the controller after the hook (agent N 1.5 / 1.6), 4.1.1.7631656:
+    // checked byte for byte before hooking.
+    const std::uintptr_t reprojection = module.base + 0x3E32C44; // cmp byte [rdi+2411h],0 ; lea rcx,[rdi+24F8h]
+    if (config.get_bool("views", "eye_reprojection", true) &&
+        bytes_at(reprojection, {0x80, 0xBF, 0x11, 0x24, 0x00, 0x00, 0x00, 0x48, 0x8D, 0x8F, 0xF8, 0x24, 0x00, 0x00})) {
+        if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(reprojection), &on_reprojection)) {
+            g_reprojection_hook = std::move(*h);
+            log::info("stereo: stage 0x1B reprojection hook at exe+0x3E32C44 (lighting history follows each eye)");
+        }
+    } else {
+        log::warn("stereo: stage 0x1B reprojection site doesn't match (or [views] eye_reprojection off); not hooked");
+    }
+    const std::uintptr_t velocity = module.base + 0x3E12730; // cmp byte [rbx+18h],0 ; jz ; mov rcx,[rbx+2138h]
+    if (config.get_bool("views", "eye_velocity", true) &&
+        bytes_at(velocity, {0x80, 0x7B, 0x18, 0x00, 0x74, 0x21, 0x48, 0x8B, 0x8B, 0x38, 0x21, 0x00, 0x00})) {
+        if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(velocity), &on_velocity)) {
+            g_velocity_hook = std::move(*h);
+            log::info("stereo: stage 0x40 velocity / TAA hook at exe+0x3E12730 (motion vectors follow each eye)");
+        }
+    } else {
+        log::warn("stereo: stage 0x40 velocity site doesn't match (or [views] eye_velocity off); not hooked");
+    }
 }
 
 void set_eyes(std::optional<Eyes> eyes) {
@@ -304,6 +500,10 @@ void report() {
               g_rewrites[1].load(std::memory_order_relaxed), g_single_rewrites.load(std::memory_order_relaxed),
               g_unmatched.load(std::memory_order_relaxed), g_without_eyes.load(std::memory_order_relaxed),
               g_without_camera.load(std::memory_order_relaxed), g_orthographic.load(std::memory_order_relaxed));
+    log::info("stereo: per-view lighting blocks rewritten with the camera; stage 0x1B reprojections {}, stage 0x40 "
+              "velocity blocks {}; outline gate copies {} (main {}, eye {})",
+              g_reprojections.load(), g_velocity_rewrites.load(), g_outline_copies.load(), g_outline_main.load(),
+              g_outline_eye.load());
 }
 
 } // namespace bg3vr::stereo

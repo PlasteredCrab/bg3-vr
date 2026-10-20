@@ -1151,6 +1151,42 @@ void test_holster() {
     CHECK(o.events.empty());
 }
 
+void test_stereo_view_block() {
+    // PerView rewrite: inverse view and the far-plane corner rays (agent N 3).
+    const float far_z = 100.0f;
+    const camera::Mat4 p = vr::projection(-0.5f, 0.5f, 0.4f, -0.4f, 0.1f, far_z);
+    vr::RigidPose pose;
+    pose.position = {3.0f, 1.5f, -2.0f};
+    pose.orientation = vr::yaw_quat(90.0f);
+    camera::Mat4 world{}, view{};
+    vr::camera_matrices(pose, world, view);
+    std::array<std::uint8_t, 0xE0> per_camera{};
+    std::memcpy(per_camera.data() + stereo::layout::kView, view.data(), 64);
+    std::memcpy(per_camera.data() + stereo::layout::kProjection, p.data(), 64);
+    std::memcpy(per_camera.data() + stereo::layout::kFar, &far_z, 4);
+    std::array<std::uint8_t, 400> per_view{};
+    stereo::rewrite_view_block(per_view.data(), per_camera.data());
+    float inverse[16], c[3][4];
+    std::memcpy(inverse, per_view.data() + stereo::layout::kViewInverse, sizeof(inverse));
+    std::memcpy(c, per_view.data() + stereo::layout::kViewCorners, sizeof(c));
+    CHECK(near_eq(inverse[12], 3.0f) && near_eq(inverse[13], 1.5f) && near_eq(inverse[14], -2.0f) && near_eq(inverse[15], 1.0f));
+    // The screen centre is 0.5 c0 + 0.25 c1 + 0.25 c2: straight ahead (yaw 90 turns +Z to +X) at the far plane.
+    const vr::Vec3 forward = vr::rotate(pose.orientation, {0.0f, 0.0f, 1.0f});
+    for (int i = 0; i < 3; ++i) {
+        const float centre = 0.5f * c[0][i] + 0.25f * c[1][i] + 0.25f * c[2][i];
+        CHECK(std::abs(centre - far_z * forward[static_cast<std::size_t>(i)]) < 1e-2f);
+        CHECK(c[0][3] == 0.0f && c[1][3] == 0.0f && c[2][3] == 0.0f);
+    }
+    // NDC (-1, 1): left and up by the half-angle tangents.
+    const vr::Vec3 right = vr::rotate(pose.orientation, {1.0f, 0.0f, 0.0f});
+    const vr::Vec3 up = vr::rotate(pose.orientation, {0.0f, 1.0f, 0.0f});
+    for (int i = 0; i < 3; ++i) {
+        const auto k = static_cast<std::size_t>(i);
+        const float expected = far_z * (forward[k] - std::tan(0.5f) * right[k] + std::tan(0.4f) * up[k]);
+        CHECK(std::abs(c[0][i] - expected) < 1e-2f);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1176,6 +1212,7 @@ int main() {
     test_rigid();
     test_vrmenu();
     test_holster();
+    test_stereo_view_block();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }
