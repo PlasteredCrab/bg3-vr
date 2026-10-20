@@ -22,7 +22,7 @@ the same kinds of things and then run `!vr_ray off`.
 
 | Step | Do | Look for in bg3vr.log |
 |---|---|---|
-| 1 | Wait for the first frame | `xr: session open ...`, `xr input: controller actions attached` (or a warning with the reason) |
+| 1 | Wait for the first frame | `health (start-up): N ready, N off, N unavailable` with one line per feature (anything UNAVAILABLE says why), `xr: session open ...`, `xr input: controller actions attached` |
 | 2 | Press buttons on both controllers | `xr input: ... profile /interaction_profiles/oculus/touch_controller`, `xr input: right trigger down ...`, a short buzz on each grip press |
 | 3 | Nothing: with the headset ready and the game running, VR starts by itself (`!vr_go` if it doesn't; `!vr_stop` stops it) | `xr: status for Lua: ready`, `VR started (headset ready)`, `vr: play on`, `skeleton: ... Head_M is bone N`, the attachment list, `vr: eye height ... m (head bone ...)`, then `VR: same-frame stereo on` after 3 s |
 | 3b | Controls (all on by default): right trigger clicks (move / interact / attack at what the hand points at), right grip right-clicks, A inventory, B / menu cancel, X map, Y journal, left trigger highlights items, left stick walks, right stick snap-turns and scrolls, hold the right stick click to recentre | `vr: bindings ...` at start-up; each press gives a light buzz; `vr: recentre`; wrong keys are fixed in `[bindings]` |
