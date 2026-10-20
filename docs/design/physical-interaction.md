@@ -221,6 +221,28 @@ Static RE only; the skeleton probe now logs the live attachments to confirm the 
 - **Spells and thrown objects.** Objects about to be thrown attach to `Dummy_CastFX` (0x1A2A860). The projectile
   start can be overridden on the server at 0x2E8DE30 (`+0x0C`), so VR casts can start at the real hand.
 
+## 2e. Locomotion (agent J, `re-local/ghidra/agents/J_locomotion.md`)
+
+Static RE only.
+
+- **Thumbstick.** The game has an unused movement-input override: GlobalSwitches +0x136C enables it, with x at +0x1364
+  and forward at +0x1368. The MoveController direction function 0x425E7F0 reads it and turns it by the camera
+  entity's yaw, which the mod drives from the headset, so forward should be where you look. A magnitude up to 1
+  blends stroll to run. The task only runs in controller mode, so `locomotion.cpp` bypasses that one check while
+  stick locomotion is on (`!vr_move stick`). This avoids gamepad input, which would flip the UI out of mouse/laser
+  mode (agent F). Keyboard injection doesn't work in mouse mode either (correction to agent C).
+- **Server sync and turn limits come for free.** The client plans the move and sends the path (0xEB), steering
+  (0x24) and the distance walked (0x2F). The server spends the Movement resource, so turn-based limits apply to
+  stick and room-scale movement alike.
+- **Turning.** The view turn (snap/smooth) is a camera offset in the mod. The body's facing goes through
+  SteeringComponent+0xC (0x1BBD650 smooth, 0x1C65700 instant), to turn the body toward the head when idle.
+- **Room-scale.** Short move targets every frame via 0x1BED4C0 (the game re-applies only past 2 cm of change), with
+  a walkability check on the navigation grid (0xE4CEC0, blocked mask 0x40000000400084). The headset offset that
+  can't be walked stays as a camera offset.
+- **Teleport / point-to-move.** Point-to-move is the game's own click-to-move: hand picking (`!vr_pick hand`) plus a
+  click (event 4). A real teleport is server `TeleportToPosition`; 0x3C78110 only moves the client copy.
+- **Not found.** The sneak (0xCD), climb (0xAA) and shove (0xCC) handlers; jump is a spell.
+
 ## 3a. Body and input (agent C, `re-local/ghidra/agents/C_animation_systems.md`)
 
 Answered from agent C's report; the parts our code uses are re-checked in `docs/re-notes/skeleton.md`.

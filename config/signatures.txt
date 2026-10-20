@@ -115,3 +115,8 @@ timeline_player_joined = 40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 F1 4
 # picking.cpp replaces the ray for those two callers with the right hand's aim ray.
 #   mov rax,rsp ; mov [rax+10h],rbx ; mov [rax+18h],rsi ; push rdi ; sub rsp,160h
 camera_screen_to_world_ray = 48 8B C4 48 89 58 10 48 89 70 18 57 48 81 EC 60 01 00 00
+
+# MoveController task CanExecute (fn 0x425EC30, agent J): the controller-mode check at 0x425EEE8,
+# `cmp byte [0x614FBC8],0 ; jz` (then mov rcx,[r15+68h]). locomotion.cpp NOPs the jz (match + 7) while
+# thumbstick locomotion is on, so the task runs in mouse mode and reads the GlobalSwitches movement override.
+move_controller_mode_check = 80 3D ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? 49 8B 4F 68

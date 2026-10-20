@@ -32,6 +32,7 @@ the same kinds of things and then run `!vr_ray off`.
 | 6c | `!vr_quality` (after `!vr_go`) | `quality: view 0/1 ... fov ... LOD band factor ... texture factor ...` and the texture cache budget and usage: tells whether `[quality] texture_distance` / `texture_budget_mb` are needed |
 | 6d | Talk to an NPC (normal conversation), then trigger a cutscene if one is near (or a long rest) | `dialogue: player joins timeline ... type N ... (kept in first person)` per timeline: whether conversations stay first person, and which types the cutscenes have (to tune `[dialogue] first_person_types`) |
 | 6e | `!vr_pick hand`, point the right controller at an NPC, an item and the ground; then `!vr_pick off` | the game's own hover highlight, tooltip and movement path preview follow the hand; `pick: call from ... game ray A ... B ...` (the original mouse ray, to check the far point) and `pick: N picking rays, M from the hand` in `!vr_fps` |
+| 6f | `!vr_move stick`, push the left stick forward, sideways, half-way and fully; look left and push forward; then `!vr_move off` | the character walks where you look (forward = view direction; if backwards, set `[locomotion] invert_forward = true`), half stick strolls, full stick runs; `locomotion: moving / stopped` lines; check that mouse/laser UI still works |
 | 7 | `!vr_fps` | `skeleton: ... reads, ... failed, ... with a pose older than the last frame` |
 
 Things to note while in the headset (just say them, the logs carry the numbers):

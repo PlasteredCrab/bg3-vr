@@ -4,6 +4,7 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
+#include "bg3vr/locomotion.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/render.hpp"
 #include "bg3vr/stereo.hpp"
@@ -659,6 +660,9 @@ void update_input(const xr::Frame& frame) {
         aim = camera::tracked_to_world(now[kRightHand].aim);
     }
     rayprobe::set_hand_aim(aim);
+    // The left stick drives locomotion (when it is on); zero while the hand isn't active.
+    locomotion::set_stick(now[kLeftHand].active ? now[kLeftHand].stick_x : 0.0f,
+                          now[kLeftHand].active ? now[kLeftHand].stick_y : 0.0f);
     if (g_hand_samples % kHandLogEvery == 1) {
         for (std::size_t h = 0; h < 2; ++h) {
             log::info("xr input: {} {}", hand_name(h), hand_text(now[h]));

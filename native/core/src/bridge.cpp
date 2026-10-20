@@ -256,6 +256,11 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "move") {
+            const std::string word = text::to_lower(value);
+            if (word == "stick" || word == "off") {
+                request.move_stick = word == "stick";
+            }
         } else if (key == "pick") {
             const std::string word = text::to_lower(value);
             if (word == "hand" || word == "off") {

@@ -16,6 +16,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
+#include "bg3vr/locomotion.hpp"
 #include "bg3vr/picking.hpp"
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
@@ -121,6 +122,7 @@ void on_game_frame() {
     skeleton::on_frame();
     rayprobe::on_frame();
     quality::on_frame();
+    locomotion::on_frame();
 }
 
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
@@ -186,6 +188,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     if (request.skeleton) {
         skeleton::attach_visual(*request.skeleton);
+    }
+    if (request.move_stick) {
+        locomotion::set_enabled(*request.move_stick);
     }
     if (request.pick_hand) {
         picking::set_hand(*request.pick_hand);
@@ -264,6 +269,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     skeleton::report();
     dialogue::report();
     picking::report();
+    locomotion::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -306,6 +312,7 @@ int init(const wchar_t* root_dir) {
     quality::install(g_config, module);
     dialogue::install(g_config, module);
     picking::install(g_config, module);
+    locomotion::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
 

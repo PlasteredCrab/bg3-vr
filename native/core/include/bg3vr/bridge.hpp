@@ -51,6 +51,7 @@ struct Request {
     std::optional<std::string> ray;                            // raycast probe: camera | hand | off | report
     bool quality_report = false;                               // log LOD / texture quality state
     std::optional<bool> pick_hand;                             // picking ray from the right hand (true) or mouse
+    std::optional<bool> move_stick;                            // thumbstick locomotion on/off
 };
 
 // Parses the bridge file:
@@ -73,6 +74,7 @@ struct Request {
 //   ray=camera | ray=hand | ray=off | ray=report   (physics raycast probe)
 //   quality=report                    (LOD and texture streaming state per view)
 //   pick=hand | pick=off              (the game's picking ray from the right hand's aim, or the mouse)
+//   move=stick | move=off             (left thumbstick locomotion through the game's movement override)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 
