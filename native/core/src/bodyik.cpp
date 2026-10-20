@@ -117,8 +117,8 @@ void configure(const Config& config, const ModuleInfo& module) {
         g_module = {};
         return;
     }
-    health::set("arm IK", config.get_bool("ik", "arms", false) ? health::State::Ready : health::State::Off, "[ik] arms");
-    set_enabled(config.get_bool("ik", "arms", false));
+    health::set("arm IK", config.get_bool("ik", "arms", true) ? health::State::Ready : health::State::Off, "[ik] arms");
+    set_enabled(config.get_bool("ik", "arms", true));
 }
 
 bool enabled() {

@@ -19,7 +19,7 @@
 //     (and on recentre);
 //   - every other bone below a chain bone (fingers, twist bones, the weapon's dummy bones) moves rigidly with its
 //     nearest chain bone, so the held weapon stays in the hand.
-// Off by default ([ik] arms) until the logged chain is confirmed in game.
+// On by default ([ik] arms); the chain was confirmed in game on 2026-10-20 (Shoulder / Elbow / Wrist, 29 followers).
 namespace bg3vr::bodyik {
 
 struct Bone {

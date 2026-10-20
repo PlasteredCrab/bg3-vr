@@ -14,6 +14,7 @@
 #include <chrono>
 #include <numbers>
 #include <cmath>
+#include <format>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -78,22 +79,41 @@ bool g_follow_has_last = false;
 std::array<float, 3> g_follow_last{};
 std::atomic<std::uint64_t> g_follow_reads{0};
 std::atomic<std::uint64_t> g_follow_rejects{0};
-constexpr float kFollowMaxJump = 10.0f;
+std::atomic<std::uint64_t> g_follow_teleports{0};
+// A jump this large between two reads is a teleport (cutscenes and dialogues place the player's body; the first
+// headset run, 2026-10-20, showed 70 such jumps rejected by the old 10 m sanity limit, leaving the camera behind).
+constexpr float kTeleportDistance = 2.0f;
+constexpr float kWorldLimit = 100000.0f; // beyond this a read is garbage, not a position
+bool g_teleport_turn = true;             // [vr] teleport_turn: face where the body faces after a teleport
 
 // Moves the held pose to the followed character, if the read looks sane. Under g_mutex.
 void update_follow() {
     float translate[3];
     if (!mem::try_copy(translate, g_follow->transform + layout::kTransformTranslate, sizeof(translate)) ||
-        !std::isfinite(translate[0]) || !std::isfinite(translate[1]) || !std::isfinite(translate[2])) {
+        !std::isfinite(translate[0]) || !std::isfinite(translate[1]) || !std::isfinite(translate[2]) ||
+        std::abs(translate[0]) > kWorldLimit || std::abs(translate[1]) > kWorldLimit ||
+        std::abs(translate[2]) > kWorldLimit) {
         g_follow_rejects.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     if (g_follow_has_last) {
         const float dx = translate[0] - g_follow_last[0], dy = translate[1] - g_follow_last[1],
                     dz = translate[2] - g_follow_last[2];
-        if (dx * dx + dy * dy + dz * dz > kFollowMaxJump * kFollowMaxJump) {
-            g_follow_rejects.fetch_add(1, std::memory_order_relaxed);
-            return;
+        const float jump = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (jump > kTeleportDistance) {
+            // The body was placed somewhere else (cutscene, dialogue, teleport): come along, and optionally turn to
+            // where the body now faces (same yaw as the Lua follow start: 2 atan2(q.y, q.w) + 180).
+            g_follow_teleports.fetch_add(1, std::memory_order_relaxed);
+            float q[4]{};
+            const bool have_rotation = mem::try_copy(q, g_follow->transform, sizeof(q)) && std::isfinite(q[1]) &&
+                                       std::isfinite(q[3]) && (q[1] != 0.0f || q[3] != 0.0f);
+            const float yaw = have_rotation ? std::atan2(q[1], q[3]) * 2.0f * 57.2957795f + 180.0f : g_pose->yaw_deg;
+            if (g_teleport_turn && have_rotation) {
+                g_pose->yaw_deg = std::fmod(yaw + 540.0f, 360.0f) - 180.0f;
+            }
+            log::info("camera: the followed body moved {:.1f} m in one update (teleport / cutscene); following{}", jump,
+                      g_teleport_turn && have_rotation ? std::format(", now facing yaw {:.1f}", g_pose->yaw_deg)
+                                                       : std::string());
         }
     }
     g_follow_last = {translate[0], translate[1], translate[2]};
@@ -345,6 +365,7 @@ void install(const Config& config, const ModuleInfo& module) {
     if (!scale.empty()) {
         g_world_scale = std::strtof(scale.c_str(), nullptr);
     }
+    g_teleport_turn = config.get_bool("vr", "teleport_turn", true);
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
     install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
     install_mid_hook("camera_set_projection_call", &on_set_projection, g_set_projection_hook);
@@ -510,8 +531,8 @@ void report() {
               g_force_view ? " (force_view on)" : "", g_projection_overrides.load(std::memory_order_relaxed));
     log::info("camera: head-tracked writes {} (world scale {:.2f})", g_head_writes.load(std::memory_order_relaxed),
               g_world_scale);
-    log::info("camera: follow reads {}, rejected {}", g_follow_reads.load(std::memory_order_relaxed),
-              g_follow_rejects.load(std::memory_order_relaxed));
+    log::info("camera: follow reads {}, rejected {}, teleports followed {}", g_follow_reads.load(std::memory_order_relaxed),
+              g_follow_rejects.load(std::memory_order_relaxed), g_follow_teleports.load(std::memory_order_relaxed));
     g_view_max_error.store(0.0f, std::memory_order_relaxed);
     g_last_reported_calls = calls;
 
