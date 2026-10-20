@@ -56,6 +56,10 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s);
 // Game thread: eye-height calibration from the head bone.
 void on_frame();
 
+// How hard the right stick is smooth-turning right now, 0..1 (snap turns: 0); and the [vr] comfort_vignette strength.
+float turn_rate();
+float comfort_vignette();
+
 void report();
 
 } // namespace bg3vr::vrplay

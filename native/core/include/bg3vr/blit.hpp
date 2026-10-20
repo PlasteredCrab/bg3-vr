@@ -36,6 +36,7 @@ public:
         float cursor_u = 0.0f;
         float cursor_v = 0.0f;
         float cursor_radius = 0.0f;
+        float vignette = 0.0f; // comfort vignette strength, 0..1 (darkens toward the edges)
     };
 
     // Draws `rect` of `source` (same size and format as create()) over the whole `target` view of a

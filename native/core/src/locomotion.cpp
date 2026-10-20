@@ -32,6 +32,7 @@ bool g_invert_forward = false;
 // Game thread only.
 bool g_patched = false;
 bool g_moving = false;
+std::atomic<float> g_speed{0.0f};
 std::uint64_t g_frames = 0;
 std::uint64_t g_moving_frames = 0;
 
@@ -117,6 +118,7 @@ void on_frame() {
         if (!wanted) {
             write_override(0.0f, 0.0f, false);
             g_moving = false;
+            g_speed.store(0.0f, std::memory_order_relaxed);
         }
         if (ok) {
             g_patched = wanted;
@@ -143,6 +145,7 @@ void on_frame() {
         z *= scaled / length;
     }
     const bool moving = x != 0.0f || z != 0.0f;
+    g_speed.store(std::sqrt(x * x + z * z), std::memory_order_relaxed);
     write_override(x, z, moving);
     if (moving) {
         ++g_moving_frames;
@@ -151,6 +154,10 @@ void on_frame() {
         g_moving = moving;
         log::info("locomotion: {} (stick x {:.2f} forward {:.2f})", moving ? "moving" : "stopped", x, z);
     }
+}
+
+float speed() {
+    return g_speed.load(std::memory_order_relaxed);
 }
 
 void report() {

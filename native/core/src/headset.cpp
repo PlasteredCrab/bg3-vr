@@ -408,6 +408,18 @@ void start(IDXGISwapChain* swapchain) {
     g_ready = true;
 }
 
+// The comfort vignette for this frame: eased toward max(stick speed, smooth turn rate) times [vr] comfort_vignette.
+float g_vignette = 0.0f;
+float comfort_vignette_now(double dt) {
+    const float strength = vrplay::comfort_vignette();
+    const float want = vrplay::active() && strength > 0.0f ? strength * std::max(locomotion::speed(), vrplay::turn_rate())
+                                                           : 0.0f;
+    const float rate = static_cast<float>(dt) / 0.15f; // about 0.15 s in and out
+    g_vignette += std::clamp(want - g_vignette, -rate, rate);
+    return g_vignette;
+}
+float g_frame_vignette = 0.0f; // set once per headset frame
+
 // `rect` (back buffer pixels; width 0 = all of it) into the whole image.
 void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, const blit::Blitter::Rect& rect = {}) {
     ID3D11Texture2D* back_buffer = nullptr;
@@ -418,7 +430,9 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, con
         D3D11_TEXTURE2D_DESC source{};
         back_buffer->GetDesc(&source);
         if (source.Width == g_image_width && source.Height == g_image_height) {
-            g_blitter.draw(back_buffer, rect, target.view, g_image_width, g_image_height, g_linearize);
+            blit::Blitter::Overlay overlay;
+            overlay.vignette = g_frame_vignette;
+            g_blitter.draw(back_buffer, rect, target.view, g_image_width, g_image_height, g_linearize, overlay);
         }
         back_buffer->Release();
         return;
@@ -996,6 +1010,12 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     }
     publish_status(true);
     update_input(frame);
+    {
+        static XrTime last = 0;
+        const double dt = last ? static_cast<double>(frame.state.predictedDisplayTime - last) * 1e-9 : 0.0;
+        last = frame.state.predictedDisplayTime;
+        g_frame_vignette = comfort_vignette_now(std::clamp(dt, 0.0, 0.1));
+    }
     update_ui_panel(swapchain, frame);
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);

@@ -87,6 +87,8 @@ bool g_snap = true;
 float g_snap_degrees = 30.0f;
 float g_smooth_degrees_per_s = 120.0f;
 bool g_wheel = true;
+float g_vignette = 0.5f;
+std::atomic<float> g_turn_rate{0.0f};
 float g_recenter_hold_s = 0.8f;
 
 // Eye height.
@@ -206,6 +208,7 @@ void install(const Config& config, const ModuleInfo& module) {
     g_snap_degrees = number("snap_degrees", 30.0f, 5.0f, 90.0f);
     g_smooth_degrees_per_s = number("smooth_degrees_per_second", 120.0f, 10.0f, 720.0f);
     g_wheel = config.get_bool("vr", "stick_scroll", true);
+    g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
     g_eye_offset = number("eye_offset", 0.10f, -0.5f, 0.5f);
     log::info("vr: bindings {}; turn {} ({}), right stick scroll {}, eye height {}", bound.empty() ? "none" : bound,
@@ -274,6 +277,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     }
 
     // Right stick: x turns, y scrolls.
+    g_turn_rate.store(0.0f, std::memory_order_relaxed);
     if (r.active) {
         const float x = r.stick_x;
         if (g_snap) {
@@ -286,6 +290,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             }
         } else if (std::abs(x) > 0.2f) {
             const float t = (std::abs(x) - 0.2f) / 0.8f;
+            g_turn_rate.store(t, std::memory_order_relaxed);
             camera::add_yaw((x > 0.0f ? 1.0f : -1.0f) * t * g_smooth_degrees_per_s * static_cast<float>(dt));
         }
         const float y = r.stick_y;
@@ -333,6 +338,14 @@ void on_frame() {
     camera::set_follow_height(height);
     log::info("vr: eye height {:.2f} m (head bone {:.2f} m above the character's origin {:+.2f} m)", height, median,
               g_eye_offset);
+}
+
+float turn_rate() {
+    return g_turn_rate.load(std::memory_order_relaxed);
+}
+
+float comfort_vignette() {
+    return g_vignette;
 }
 
 void report() {

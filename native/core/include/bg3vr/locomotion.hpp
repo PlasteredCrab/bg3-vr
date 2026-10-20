@@ -35,6 +35,9 @@ void set_stick(float x, float y);
 // Game thread (camera view update): applies or removes the patch and writes the override.
 void on_frame();
 
+// The current stick speed 0..1 (0 when off or idle), for the comfort vignette (any thread).
+float speed();
+
 void report();
 
 } // namespace bg3vr::locomotion
