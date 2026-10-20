@@ -356,7 +356,8 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
         }
         vr::Vec3 start = from;
         for (int attempt = 0; attempt < 3 && !done && !near_hand; ++attempt) {
-            const auto hit = rayprobe::raycast(start, to, 5, 0xFFFFFFFF, 0xC);
+            // Exclude 0x8 only: the ragdoll group 0x4004 shares bit 0x4 with the old 0xC, which hid every corpse (agent Q).
+            const auto hit = rayprobe::raycast(start, to, 5, 0xFFFFFFFF, 0x8);
             if (!hit) {
                 break;
             }

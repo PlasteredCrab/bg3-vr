@@ -221,6 +221,10 @@ std::atomic<bool> g_beam{false};
 std::atomic<float> g_beam_range{12.0f};
 std::atomic<float> g_beam_distance{-1.0f};
 
+std::uintptr_t main_scene() {
+    return find_scene();
+}
+
 void set_beam(bool on, float range) {
     g_beam.store(on, std::memory_order_relaxed);
     g_beam_range.store(range, std::memory_order_relaxed);

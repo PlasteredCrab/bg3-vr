@@ -55,6 +55,8 @@ void on_frame();
 // picking ground job's masks 5 / 0x820 / 0x194280) and characters and items (0xF / 0x4CA20 / 0x210080), up to
 // `range` metres; beam_distance() is the nearer hit (game units), nullopt when nothing is hit.
 void set_beam(bool on, float range);
+// The client's main physics scene (phx::PhysXScene), or 0 while no level is loaded.
+std::uintptr_t main_scene();
 std::optional<float> beam_distance();
 
 // One raycast through the game's RaycastClosest (game thread). Masks as at the game's call sites; the defaults are

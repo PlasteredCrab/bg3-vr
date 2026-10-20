@@ -158,6 +158,7 @@ Menu::Menu() {
            4);
     on_off("Point to select", "vr.hand_pointing", true);
     on_off("Grab objects", "grab.hold", false);
+    on_off("Grab bodies", "grab.bodies", true);
     on_off("Holsters", "holster.enabled", true);
     choice("Swing attacks", "combat.swing",
            {{"Off", "off", true}, {"At who you look at", "gaze"}, {"Blade contact", "hit"}}, 1);

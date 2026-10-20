@@ -5,6 +5,7 @@
 #include "bg3vr/bridge.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/combat.hpp"
+#include "bg3vr/corpse.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/cull.hpp"
 #include "bg3vr/events.hpp"
@@ -144,6 +145,7 @@ void on_game_frame() {
     hold::on_frame();
     melee::on_frame();
     combat::on_frame();
+    corpse::on_frame();
 }
 
 // The VR menu's settings (menu.ini next to bg3vr.ini; overrides it). Only touched on the bridge thread after start-up.
@@ -198,6 +200,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
 #endif
     holster::set_enabled(g_config.get_bool("holster", "enabled", true));
     hold::set_hold(g_config.get_bool("grab", "hold", false));
+    corpse::set_enabled(g_config.get_bool("grab", "bodies", true));
     combat::configure(g_config);
     // Swings: "hit" is the physical blade contact (melee.cpp); "gaze" clicks on who you look at (combat.cpp).
     melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
@@ -404,6 +407,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     melee::report();
     holster::report();
     combat::report();
+    corpse::report();
     weaponset::report();
     resolution::report();
     paperdoll::report();
@@ -466,6 +470,7 @@ int init(const wchar_t* root_dir) {
     melee::install(g_config);
     holster::install(g_config);
     combat::install(g_config);
+    corpse::install(g_config, module);
     melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
     weaponset::install(g_config, module);
     resolution::install(g_config, module);

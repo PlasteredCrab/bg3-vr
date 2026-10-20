@@ -4,6 +4,7 @@
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/combat.hpp"
+#include "bg3vr/corpse.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/holster.hpp"
@@ -863,8 +864,24 @@ void update_input(const xr::Frame& frame) {
         if (now[h].aim_valid) {
             aim_world = camera::tracked_to_world(now[h].aim);
         }
-        hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f && !g_menu_is_open.load(std::memory_order_relaxed) &&
-                              !holsters.grip_taken[h],
+        const bool grab = (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f &&
+                          !g_menu_is_open.load(std::memory_order_relaxed) && !holsters.grip_taken[h];
+        // Bodies (corpse.cpp): the hand's velocity in the world for throws.
+        std::optional<vr::Vec3> world_velocity;
+        if (now[h].world_valid && now[h].velocity_valid) {
+            vr::RigidPose ahead = now[h].grip;
+            for (int i = 0; i < 3; ++i) {
+                ahead.position[static_cast<std::size_t>(i)] += now[h].velocity[static_cast<std::size_t>(i)];
+            }
+            if (const auto moved = camera::tracked_to_world(ahead)) {
+                world_velocity = vr::Vec3{moved->position[0] - now[h].world_grip.position[0],
+                                          moved->position[1] - now[h].world_grip.position[1],
+                                          moved->position[2] - now[h].world_grip.position[2]};
+            }
+        }
+        corpse::set_hand(h, grab, now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt,
+                         aim_world, world_velocity);
+        hold::set_hand(h, grab && !corpse::holding(h),
                        now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world,
                        static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     }

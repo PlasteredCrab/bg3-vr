@@ -60,6 +60,13 @@ is tracked instead:
 
 The log says at start-up whether hand tracking is available (`xr input: ... hand tracking`).
 
+## Dead bodies
+
+Close a hand (squeeze the grip, or close a tracked hand from open) on a body part of a corpse: it is grabbed and the
+whole body follows through the game's own ragdoll joints; let go mid-swing to throw it. For now a body stays within
+about a metre of where it fell (the game ties every ragdoll to the character's position); carrying bodies away comes
+next. On / off: VR menu Body page, Grab bodies.
+
 ## Fighting
 
 Every attack is the game's own click, so its rules decide everything: attack rolls, range, action costs, the
