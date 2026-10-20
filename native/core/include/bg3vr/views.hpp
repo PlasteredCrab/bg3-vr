@@ -68,6 +68,9 @@ void set_split_index(int index);
 // After a build that completed: the pipeline's main view and the built split view (view addresses,
 // not ReadStates), the pair that draws the two eyes in same-frame stereo.
 std::optional<std::array<std::uintptr_t, 2>> eye_views();
+// Stops applying the stereo layout without touching the views (a level is unloading: they may be gone). The next
+// create() reuses the eye view if it is still live, or makes a new one.
+void forget_layout();
 // Same-frame stereo layout: the main view in the left half, the split view in the right half, both
 // enabled (on), or both back to full screen (off). Needs a completed build.
 bool set_stereo_layout(bool on);

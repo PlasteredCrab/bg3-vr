@@ -37,6 +37,7 @@ std::uint64_t g_reads = 0;
 std::uint64_t g_failures = 0;
 std::uint64_t g_stale = 0;
 constexpr std::uint64_t kLogEvery = 300;
+std::atomic<std::uint64_t> g_generation{0};
 
 // Slot 30 watch (the hook runs on animation threads; everything it touches is atomic).
 safetyhook::MidHook g_slot30_hook;
@@ -330,6 +331,7 @@ void attach_now(std::uintptr_t visual) {
     }
     g_visual = visual;
     g_skeleton = skeleton;
+    g_generation.fetch_add(1, std::memory_order_relaxed);
     g_reads = g_failures = g_stale = 0;
     g_watched.store(skeleton, std::memory_order_relaxed);
     g_read_after_slot30 = g_read_before_slot30 = 0;
@@ -457,6 +459,10 @@ void on_frame() {
 std::optional<Head> head() {
     std::scoped_lock lock(g_mutex);
     return g_head;
+}
+
+std::uint64_t generation() {
+    return g_generation.load(std::memory_order_relaxed);
 }
 
 void report() {

@@ -33,7 +33,7 @@
 --                             (native, every frame; your yaw stays put while walking)
 --   !vr_recenter              headset: your current head position and facing become the character's eyes
 --   !vr_stereo on|off|report  same-frame stereo on the second view (after !vr_views create)
---   !vr_go [height]           follow the character's eyes + !vr_views create + !vr_stereo on (3 s later)
+--   !vr_go [height]           start VR by hand (normally automatic: Client/VRAuto.lua); !vr_stop stops it
 --   !vr_hands [buzz]          log the motion controllers (poses, buttons, bound profile); buzz pulses both
 --   !vr_ray camera|hand|off|report  physics raycast probe from the screen centre or the right hand's aim
 --   !vr_quality               log LOD / texture streaming state per eye view ([quality] in bg3vr.ini)
@@ -405,27 +405,9 @@ end
 -- game's player view), and switch the stereo layout on three seconds later (the view is built on the render
 -- thread and gets its camera on the game thread first).
 Ext.RegisterConsoleCommand("vr_go", Safely(function(_, a)
-    local height = tonumber(a or "1.7") or 1.7
-    local extra = { "views=create" }
-    local skeleton = SkeletonBridgeLine and SkeletonBridgeLine()
-    if skeleton then
-        extra[#extra + 1] = skeleton -- bones and the head bone logged alongside, for the first-person eye point
-    end
-    if not StartNativeFollow(height, extra) then
-        return
-    end
-    BG3VR.Log("creating the second view; stereo layout in 3 s")
-    local waited = 0
-    local handle
-    handle = Ext.Events.Tick:Subscribe(function(e)
-        waited = waited + ((e and e.Time and e.Time.DeltaTime) or 0.016)
-        if waited >= 3.0 then
-            Ext.Events.Tick:Unsubscribe(handle)
-            if BG3VR.WriteBridge({ "stereo=on" }) then
-                BG3VR.Log("stereo layout on")
-            end
-        end
-    end)
+    -- The same start as the automatic one (Client/VRAuto.lua): follow, eye view, skeleton, head hide, the [vr]
+    -- profile, then stereo after 3 s. The height is only the start value; the core calibrates it from the head bone.
+    VRStart(tonumber(a or "1.7") or 1.7, "!vr_go")
 end))
 -- Headset: take the current head pose as the centre (also automatic when head tracking starts).
 Ext.RegisterConsoleCommand("vr_recenter", Safely(function()

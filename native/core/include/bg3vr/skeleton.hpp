@@ -62,6 +62,9 @@ struct Head {
 };
 std::optional<Head> head();
 
+// Increases every time a skeleton is (re)attached; 0 = none yet. Lets consumers redo per-skeleton calibration.
+std::uint64_t generation();
+
 void report();
 
 } // namespace bg3vr::skeleton

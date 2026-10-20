@@ -419,6 +419,32 @@ void set_mouselook(bool enabled) {
               enabled ? "on" : "off", g_mouselook_sensitivity);
 }
 
+void set_follow_height(float height) {
+    std::scoped_lock lock(g_mutex);
+    if (g_follow && std::isfinite(height)) {
+        g_follow->height = height;
+    }
+}
+
+std::optional<vr::Vec3> follow_position() {
+    std::scoped_lock lock(g_mutex);
+    if (!g_follow || !g_follow_has_last) {
+        return std::nullopt;
+    }
+    return vr::Vec3{g_follow_last[0], g_follow_last[1], g_follow_last[2]};
+}
+
+void add_yaw(float degrees) {
+    std::scoped_lock lock(g_mutex);
+    if (!g_pose || !std::isfinite(degrees)) {
+        return;
+    }
+    g_pose->yaw_deg = std::fmod(g_pose->yaw_deg + degrees + 540.0f, 360.0f) - 180.0f;
+    if (g_sweep) {
+        g_sweep_base.yaw_deg = g_pose->yaw_deg;
+    }
+}
+
 void set_follow(std::optional<Follow> follow) {
     std::scoped_lock lock(g_mutex);
     const bool changed = follow.has_value() != g_follow.has_value() ||

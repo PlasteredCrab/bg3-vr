@@ -2,6 +2,7 @@ Ext.Require("Shared/Log.lua")
 Ext.Require("Shared/Bridge.lua")
 Ext.Require("Client/CameraProbe.lua")
 Ext.Require("Client/FirstPerson.lua")
+Ext.Require("Client/VRAuto.lua")
 
 -- The client context will host the native bridge (camera, UI, input).
 Ext.Events.SessionLoaded:Subscribe(function()

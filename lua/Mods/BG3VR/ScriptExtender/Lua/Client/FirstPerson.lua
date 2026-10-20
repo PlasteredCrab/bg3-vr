@@ -72,11 +72,12 @@ local function Dump()
     end)
 end
 
-local function Hide(match)
+-- The "hide=" bridge line for the controlled character's head parts (or those matching `match`), and their names;
+-- nil when there is no visual or nothing matches.
+function HeadHideBridgeLine(match)
     local root = RootVisual()
     if not root then
-        BG3VR.Warn("no controlled character visual")
-        return
+        return nil, {}
     end
     local patterns = match and { string.lower(match) } or HEAD_PATTERNS
     local addresses, names = {}, {}
@@ -87,11 +88,23 @@ local function Hide(match)
         end
     end)
     if #addresses == 0 then
+        return nil, names
+    end
+    return "hide=" .. table.concat(addresses, ","), names
+end
+
+local function Hide(match)
+    if not RootVisual() then
+        BG3VR.Warn("no controlled character visual")
+        return
+    end
+    local line, names = HeadHideBridgeLine(match)
+    if not line then
         BG3VR.Warn("no matching parts")
         return
     end
-    if BG3VR.WriteBridge({ "hide=" .. table.concat(addresses, ",") }) then
-        BG3VR.Log("head hide requested for %d parts (%s); see bg3vr.log", #addresses, table.concat(names, ", "))
+    if BG3VR.WriteBridge({ line }) then
+        BG3VR.Log("head hide requested for %d parts (%s); see bg3vr.log", #names, table.concat(names, ", "))
     end
 end
 

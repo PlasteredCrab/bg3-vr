@@ -52,6 +52,7 @@ struct Request {
     bool quality_report = false;                               // log LOD / texture quality state
     std::optional<bool> pick_hand;                             // picking ray from the right hand (true) or mouse
     std::optional<bool> move_stick;                            // thumbstick locomotion on/off
+    std::optional<std::string> vr;                             // VR play: start | stop | pause (level unloading)
 };
 
 // Parses the bridge file:
@@ -75,11 +76,17 @@ struct Request {
 //   quality=report                    (LOD and texture streaming state per view)
 //   pick=hand | pick=off              (the game's picking ray from the right hand's aim, or the mouse)
 //   move=stick | move=off             (left thumbstick locomotion through the game's movement override)
+//   vr=start | vr=stop | vr=pause     (VR play: [vr] profile, bindings, turning, eye height; pause = loading)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 
 // Starts the watcher thread ([camera] bridge / bridge_file in bg3vr.ini). `on_request` runs on that
 // thread for every new version of the file.
 void start(const Config& config, std::function<void(const Request&)> on_request);
+
+// The other direction (docs/decisions/0002-native-lua-bridge.md): replaces `to_lua.txt` next to the bridge file
+// with `content` (key=value lines), atomically, so the Lua side can read the core's state with Ext.IO.LoadFile
+// ("BG3VR/to_lua.txt"). Any thread; no-op before start() or when the bridge is off.
+void write_status(std::string_view content);
 
 } // namespace bg3vr::bridge

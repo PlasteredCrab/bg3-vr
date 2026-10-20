@@ -27,6 +27,7 @@ add_library(bg3vr_base STATIC
     src/stereo.cpp
     src/trace.cpp
     src/views.cpp
+    src/vrplay.cpp
     src/vr_math.cpp
     src/watchdog.cpp
     src/watch.cpp

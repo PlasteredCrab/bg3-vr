@@ -98,6 +98,14 @@ void set_hidden(const std::vector<std::uintptr_t>& objects) {
     log::info("hide: {} object(s) hidden from the main view, {} to restore", g_targets.size(), g_restore.size());
 }
 
+void forget() {
+    std::scoped_lock lock(g_mutex);
+    const std::size_t dropped = g_targets.size() + g_restore.size();
+    g_targets.clear();
+    g_restore.clear();
+    log::info("hide: forgot {} object(s) without touching them", dropped);
+}
+
 void on_frame() {
     const bool due = g_frames.fetch_add(1, std::memory_order_relaxed) % kCheckInterval == 0;
     if (!due && !g_pending.load(std::memory_order_acquire)) {

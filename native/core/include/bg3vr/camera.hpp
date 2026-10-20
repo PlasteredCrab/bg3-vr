@@ -77,6 +77,13 @@ struct Follow {
 };
 // nullopt stops following (the pose stays where it is).
 void set_follow(std::optional<Follow> follow);
+// Changes the height above the followed transform (e.g. calibrated from the head bone); no-op when not following.
+void set_follow_height(float height);
+// The followed transform's last accepted position (game world), or nullopt when not following.
+std::optional<vr::Vec3> follow_position();
+// Turns the held pose's yaw (snap / smooth turn): with head tracking this rotates the whole tracked space around
+// the anchor. No-op while no pose is held.
+void add_yaw(float degrees);
 // Head tracking (Phase 1 step 3). A view located by OpenXR, in OpenXR's LOCAL space and convention:
 // while a pose is held, the camera is placed at that pose's position and yaw (vr::anchor) plus this
 // view (vr::from_openxr, position times [xr] world_scale), with full head rotation, and the

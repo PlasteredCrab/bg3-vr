@@ -30,6 +30,9 @@ void set_hidden(const std::vector<std::uintptr_t>& objects);
 // 32nd call (the game hasn't been seen to restore the flags).
 void on_frame();
 
+// Drops every hidden object without showing it again (a level is unloading: the objects may be gone).
+void forget();
+
 void report();
 
 } // namespace bg3vr::cull

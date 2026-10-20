@@ -981,6 +981,11 @@ void apply_game_layout() {
 }
 } // namespace
 
+void forget_layout() {
+    g_game_layout.store(0);
+    log::info("views: stereo layout dropped without touching the views (eye views kept for reuse checks)");
+}
+
 void create(const ModuleInfo& module, std::uintptr_t controller) {
     g_module = module;
     if (controller) {
@@ -1011,6 +1016,30 @@ void create(const ModuleInfo& module, std::uintptr_t controller) {
         if (!pipeline || !manager || !frame || !main_view) {
             log::warn("views: create: missing pipeline, manager, frame or main view; not creating");
             return;
+        }
+        // Asked again (VR auto-start after a level load or a character switch): reuse the view made earlier while it
+        // is still a live player view of this frame, so views never pile up.
+        if (g_created.load()) {
+            std::uintptr_t existing = 0;
+            {
+                std::scoped_lock lock(g_mutex);
+                existing = g_eye_views ? (*g_eye_views)[1] : 0;
+            }
+            std::uintptr_t existing_vtable = 0;
+            mem::try_copy(&existing_vtable, existing, sizeof(existing_vtable));
+            if (existing && existing_vtable == base + kGameRenderViewVtableRva && frame_has_view(frame, existing)) {
+                log::info("views: create: the view 0x{:X} from before is still live; reusing it", existing);
+                std::scoped_lock lock(g_mutex);
+                g_eye_views = std::array<std::uintptr_t, 2>{main_view, existing};
+                if (driven) {
+                    g_pending_camera_view = existing;
+                    g_pending_camera = driven;
+                }
+                return;
+            }
+            log::info("views: create: the view 0x{:X} from before is gone (vtable {}); creating a new one", existing,
+                      mem::describe(g_module, existing_vtable));
+            g_created.store(false);
         }
         {
             std::scoped_lock lock(g_mutex);

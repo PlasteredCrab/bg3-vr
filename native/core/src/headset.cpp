@@ -4,12 +4,14 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
+#include "bg3vr/bridge.hpp"
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/render.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
 #include "bg3vr/views.hpp"
+#include "bg3vr/vrplay.hpp"
 #include "bg3vr/win_util.hpp"
 #include "bg3vr/xr.hpp"
 
@@ -663,6 +665,22 @@ void update_input(const xr::Frame& frame) {
     // The left stick drives locomotion (when it is on); zero while the hand isn't active.
     locomotion::set_stick(now[kLeftHand].active ? now[kLeftHand].stick_x : 0.0f,
                           now[kLeftHand].active ? now[kLeftHand].stick_y : 0.0f);
+    // Buttons, turning and recentring while VR play is on.
+    vrplay::Hand play[2];
+    for (std::size_t h = 0; h < 2; ++h) {
+        play[h] = {now[h].active, now[h].trigger, now[h].squeeze, now[h].stick_x, now[h].stick_y,
+                   now[h].stick_click, now[h].primary, now[h].secondary, now[h].menu};
+    }
+    const vrplay::Feedback feedback =
+        vrplay::on_controllers(play, static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
+    if (feedback.recenter) {
+        g_recenter_request.store(true, std::memory_order_relaxed);
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+        if (feedback.haptic[h] > 0.0f) {
+            g_session->haptic(h, feedback.haptic[h], 0.02f);
+        }
+    }
     if (g_hand_samples % kHandLogEvery == 1) {
         for (std::size_t h = 0; h < 2; ++h) {
             log::info("xr input: {} {}", hand_name(h), hand_text(now[h]));
@@ -687,6 +705,19 @@ void update_input(const xr::Frame& frame) {
     }
 }
 
+// The headset state for the Lua side (bridge::write_status, read by Client/VRAuto.lua): written on changes only.
+int g_status_written = -1; // -1 unknown, 0 off, 1 ready
+bool g_autostart = true;   // [vr] autostart
+void publish_status(bool ready) {
+    if (g_status_written == static_cast<int>(ready)) {
+        return;
+    }
+    g_status_written = ready;
+    bridge::write_status(std::string(ready ? "xr=ready\n" : "xr=off\n") + "mode=" + mode_name(g_mode) + "\n" +
+                         "autostart=" + (g_autostart ? "1" : "0") + "\n");
+    log::info("xr: status for Lua: {}", ready ? "ready" : "off");
+}
+
 // Just before the game's Present.
 void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     if (g_failed) {
@@ -700,6 +731,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     }
     if (!g_session->poll()) {
         log::info("xr: the runtime ended the session");
+        publish_status(false);
         camera::set_head(std::nullopt);
         render::set_sync_interval_override(-1);
         g_session.reset();
@@ -710,8 +742,10 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     xr::Frame frame;
     if (!g_session->running() || !g_session->begin_frame(frame)) {
         g_skipped.fetch_add(1, std::memory_order_relaxed);
+        publish_status(false);
         return;
     }
+    publish_status(true);
     update_input(frame);
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
@@ -747,6 +781,7 @@ void install(const Config& config) {
     g_desktop_vsync = config.get_bool("xr", "desktop_vsync", false);
     g_input_wanted = config.get_bool("xr", "input", true);
     g_input_haptics = config.get_bool("xr", "input_haptics", true);
+    g_autostart = config.get_bool("vr", "autostart", true);
     const std::string lag = text::to_lower(config.get("xr", "lag", "auto"));
     if (lag != "auto") {
         set_lag(static_cast<int>(std::strtol(lag.c_str(), nullptr, 10)));

@@ -17,6 +17,7 @@
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
 #include "bg3vr/locomotion.hpp"
+#include "bg3vr/vrplay.hpp"
 #include "bg3vr/picking.hpp"
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
@@ -123,6 +124,7 @@ void on_game_frame() {
     rayprobe::on_frame();
     quality::on_frame();
     locomotion::on_frame();
+    vrplay::on_frame();
 }
 
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
@@ -188,6 +190,22 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     }
     if (request.skeleton) {
         skeleton::attach_visual(*request.skeleton);
+    }
+    if (request.vr) {
+        // The VR play profile: what turns on together when the headset is ready (Lua sends vr=start).
+        const bool on = *request.vr == "start";
+        picking::set_hand(on && g_config.get_bool("vr", "hand_pointing", true));
+        locomotion::set_enabled(on && g_config.get_bool("vr", "stick_locomotion", true));
+        vrplay::set_active(on);
+        if (*request.vr == "pause") {
+            // A level is unloading: drop everything that points at game objects without touching them.
+            views::forget_layout();
+            stereo::clear();
+#if BG3VR_HAVE_OPENXR
+            headset::set_stereo(false);
+#endif
+            cull::forget();
+        }
     }
     if (request.move_stick) {
         locomotion::set_enabled(*request.move_stick);
@@ -270,6 +288,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     dialogue::report();
     picking::report();
     locomotion::report();
+    vrplay::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -313,8 +332,10 @@ int init(const wchar_t* root_dir) {
     dialogue::install(g_config, module);
     picking::install(g_config, module);
     locomotion::install(g_config, module);
+    vrplay::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
+    bridge::write_status("xr=off\n"); // a fresh start: nothing from a previous run counts
 
     if (HANDLE thread = CreateThread(nullptr, 0, watch_modules, nullptr, 0, nullptr)) {
         CloseHandle(thread);

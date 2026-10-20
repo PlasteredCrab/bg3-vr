@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -39,6 +40,9 @@ std::filesystem::path default_path() {
     return std::filesystem::path(std::wstring(buffer, length)) / L"Larian Studios" / L"Baldur's Gate 3" /
            L"Script Extender" / L"BG3VR" / L"camera_bridge.txt";
 }
+
+std::mutex g_status_mutex;
+std::filesystem::path g_status_path; // under g_status_mutex
 
 struct WatchArgs {
     std::filesystem::path path;
@@ -256,6 +260,11 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "vr") {
+            const std::string word = text::to_lower(value);
+            if (word == "start" || word == "stop" || word == "pause") {
+                request.vr = word;
+            }
         } else if (key == "move") {
             const std::string word = text::to_lower(value);
             if (word == "stick" || word == "off") {
@@ -325,10 +334,32 @@ void start(const Config& config, std::function<void(const Request&)> on_request)
         log::error("bridge: no file path (LOCALAPPDATA unset?)");
         return;
     }
+    {
+        std::scoped_lock lock(g_status_mutex);
+        g_status_path = args->path.parent_path() / L"to_lua.txt";
+    }
     if (HANDLE thread = CreateThread(nullptr, 0, watch, args.get(), 0, nullptr)) {
         args.release(); // owned by the thread now
         CloseHandle(thread);
     }
+}
+
+void write_status(std::string_view content) {
+    std::scoped_lock lock(g_status_mutex);
+    if (g_status_path.empty()) {
+        return;
+    }
+    std::error_code ignored;
+    std::filesystem::create_directories(g_status_path.parent_path(), ignored);
+    const std::filesystem::path temp = std::filesystem::path(g_status_path).concat(L".tmp");
+    HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+    CloseHandle(file);
+    MoveFileExW(temp.c_str(), g_status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
 } // namespace bg3vr::bridge
