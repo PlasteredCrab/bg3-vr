@@ -26,6 +26,7 @@
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/melee.hpp"
 #include "bg3vr/vrplay.hpp"
+#include "bg3vr/paperdoll.hpp"
 #include "bg3vr/picking.hpp"
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
@@ -405,6 +406,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     combat::report();
     weaponset::report();
     resolution::report();
+    paperdoll::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -467,6 +469,7 @@ int init(const wchar_t* root_dir) {
     melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
     weaponset::install(g_config, module);
     resolution::install(g_config, module);
+    paperdoll::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });
     bridge::reset_status(); // a fresh start: nothing from a previous run counts

@@ -13,6 +13,7 @@ add_library(bg3vr_base STATIC
     src/log.cpp
     src/memory.cpp
     src/module_info.cpp
+    src/paperdoll.cpp
     src/pattern.cpp
     src/pose.cpp
     src/probe.cpp

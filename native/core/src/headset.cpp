@@ -14,6 +14,7 @@
 #include "bg3vr/bridge.hpp"
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/rayprobe.hpp"
+#include "bg3vr/paperdoll.hpp"
 #include "bg3vr/render.hpp"
 #include "bg3vr/resolution.hpp"
 #include "bg3vr/stereo.hpp"
@@ -1602,6 +1603,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     }
     publish_status(true);
     follow_back_buffer(swapchain);
+    paperdoll::on_present();
     if (frame.views.size() == 2) {
         // The interpupillary distance the runtime reports (the headset's IPD setting), applied 1:1 at world scale 1.
         static float logged_ipd = -1.0f;
