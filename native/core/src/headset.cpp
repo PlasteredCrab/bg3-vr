@@ -1,6 +1,7 @@
 #include "bg3vr/headset.hpp"
 
 #include "bg3vr/blit.hpp"
+#include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/log.hpp"
@@ -530,6 +531,7 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
         if (g_recenter_request.exchange(false, std::memory_order_relaxed)) {
             camera::set_recenter(centre_view(views).pose);
             g_ui_place_request.store(true, std::memory_order_relaxed); // the UI panel moves in front again
+            bodyik::recalibrate();                                      // and the hands take their orientation again
         }
         if (stereo) {
             // The game camera at the head centre covering both eyes (culling sees both); the stereo hook
@@ -667,6 +669,9 @@ void update_input(const xr::Frame& frame) {
         aim = camera::tracked_to_world(now[kRightHand].aim);
     }
     rayprobe::set_hand_aim(aim);
+    // The grips for the arm IK (world, game convention).
+    bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
+                        now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);
     // The left stick drives locomotion (when it is on); zero while the hand isn't active.
     locomotion::set_stick(now[kLeftHand].active ? now[kLeftHand].stick_x : 0.0f,
                           now[kLeftHand].active ? now[kLeftHand].stick_y : 0.0f);

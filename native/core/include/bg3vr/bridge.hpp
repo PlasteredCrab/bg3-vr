@@ -53,6 +53,7 @@ struct Request {
     std::optional<bool> pick_hand;                             // picking ray from the right hand (true) or mouse
     std::optional<bool> move_stick;                            // thumbstick locomotion on/off
     std::optional<std::string> vr;                             // VR play: start | stop | pause (level unloading)
+    std::optional<bool> ik;                                    // arm IK on/off
 };
 
 // Parses the bridge file:
@@ -77,6 +78,7 @@ struct Request {
 //   pick=hand | pick=off              (the game's picking ray from the right hand's aim, or the mouse)
 //   move=stick | move=off             (left thumbstick locomotion through the game's movement override)
 //   vr=start | vr=stop | vr=pause     (VR play: [vr] profile, bindings, turning, eye height; pause = loading)
+//   ik=on | ik=off                    (arms follow the controllers)
 //   trace=on | trace=off | trace=dump
 Request parse(std::string_view content);
 

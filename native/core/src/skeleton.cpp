@@ -1,5 +1,6 @@
 #include "bg3vr/skeleton.hpp"
 
+#include "bg3vr/bodyik.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -77,6 +78,7 @@ void on_slot30(safetyhook::Context& ctx) {
         return;
     }
     g_slot30_calls.fetch_add(1, std::memory_order_relaxed);
+    bodyik::apply(ctx.rcx); // arms to the controllers, before skinning reads the pose
     std::uint32_t frame = 0;
     std::memcpy(&frame, reinterpret_cast<const void*>(g_module.base + layout::kFrameCounter), sizeof(frame));
     if (g_slot30_frame.exchange(frame, std::memory_order_relaxed) == frame) {
@@ -263,6 +265,7 @@ void attach_now(std::uintptr_t visual) {
     g_skeleton = 0;
     g_head_bone = -1;
     g_watched.store(0, std::memory_order_relaxed);
+    bodyik::set_rig(0, 0, {});
     {
         std::scoped_lock lock(g_mutex);
         g_head.reset();
@@ -334,6 +337,12 @@ void attach_now(std::uintptr_t visual) {
     g_generation.fetch_add(1, std::memory_order_relaxed);
     g_reads = g_failures = g_stale = 0;
     g_watched.store(skeleton, std::memory_order_relaxed);
+    std::vector<bodyik::Bone> rig;
+    rig.reserve(bones.size());
+    for (const Bone& b : bones) {
+        rig.push_back({b.name, b.parent});
+    }
+    bodyik::set_rig(skeleton, visual, rig);
     g_read_after_slot30 = g_read_before_slot30 = 0;
     g_last_slot30_calls = g_slot30_calls.load(std::memory_order_relaxed);
 }

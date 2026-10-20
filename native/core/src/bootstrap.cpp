@@ -1,6 +1,7 @@
 // Core entry point. Phase 0: identify the game build, report graphics modules as they load,
 // and scan signatures.txt so reverse-engineering finds can be checked without recompiling.
 
+#include "bg3vr/bodyik.hpp"
 #include "bg3vr/bridge.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/config.hpp"
@@ -207,6 +208,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
             cull::forget();
         }
     }
+    if (request.ik) {
+        bodyik::set_enabled(*request.ik);
+    }
     if (request.move_stick) {
         locomotion::set_enabled(*request.move_stick);
     }
@@ -289,6 +293,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     picking::report();
     locomotion::report();
     vrplay::report();
+    bodyik::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -326,6 +331,7 @@ int init(const wchar_t* root_dir) {
     headset::install(g_config);
 #endif
     cull::init(module);
+    bodyik::configure(g_config, module);
     skeleton::init(module);
     rayprobe::init(module);
     quality::install(g_config, module);

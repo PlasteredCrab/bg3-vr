@@ -39,6 +39,7 @@
 --   !vr_quality               log LOD / texture streaming state per eye view ([quality] in bg3vr.ini)
 --   !vr_pick hand|off         point with the right controller instead of the mouse (hover, path preview, click target)
 --   !vr_move stick|off        walk with the left thumbstick (relative to where you look)
+--   !vr_ik on|off             the character's arms follow the controllers ([ik] in bg3vr.ini)
 --   !vr_fps                   log the frame rate since the last report (and the other native reports)
 --   !vr_trace on|off|dump     log who calls the render view / pipeline functions (reverse engineering)
 --   !vr_split [on|off]        set the game's ForceSplitscreen global switch (no argument: show it);
@@ -474,6 +475,16 @@ Ext.RegisterConsoleCommand("vr_move", Safely(function(_, mode)
     end
     if BG3VR.WriteBridge({ "move=" .. mode }) then
         BG3VR.Log("thumbstick locomotion %s ('locomotion:' lines in bg3vr.log)", mode == "stick" and "on" or "off")
+    end
+end))
+Ext.RegisterConsoleCommand("vr_ik", Safely(function(_, mode)
+    mode = mode or "on"
+    if mode ~= "on" and mode ~= "off" then
+        BG3VR.Log("usage: !vr_ik on|off")
+        return
+    end
+    if BG3VR.WriteBridge({ "ik=" .. mode }) then
+        BG3VR.Log("arm IK %s ('ik:' lines in bg3vr.log)", mode)
     end
 end))
 Ext.RegisterConsoleCommand("vr_quality", Safely(function()

@@ -1,6 +1,7 @@
 # bg3vr_base: everything except the DLL entry points, so the unit tests can link it.
 add_library(bg3vr_base STATIC
     src/blit.cpp
+    src/bodyik.cpp
     src/bridge.cpp
     src/camera.cpp
     src/config.cpp

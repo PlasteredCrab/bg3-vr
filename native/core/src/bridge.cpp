@@ -260,6 +260,11 @@ Request parse(std::string_view content) {
             if (word == "on" || word == "off" || word == "report") {
                 request.stereo = word;
             }
+        } else if (key == "ik") {
+            const std::string word = text::to_lower(value);
+            if (word == "on" || word == "off") {
+                request.ik = word == "on";
+            }
         } else if (key == "vr") {
             const std::string word = text::to_lower(value);
             if (word == "start" || word == "stop" || word == "pause") {
