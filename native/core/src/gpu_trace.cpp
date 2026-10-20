@@ -359,6 +359,12 @@ void ui_on_draw() {
     }
     D3D11_TEXTURE2D_DESC desc{};
     texture->GetDesc(&desc);
+    if (desc.Width < 640 || desc.Height < 360) {
+        // With the UI kept out of the eye images the composite binds a small placeholder in slot 1 (16x16 seen in
+        // game, 2026-10-20): not the UI.
+        texture->Release();
+        return;
+    }
     if (g_ui_texture) {
         g_ui_texture->Release();
     }

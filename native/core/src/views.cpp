@@ -2,6 +2,7 @@
 
 #include "bg3vr/camera.hpp"
 #include "bg3vr/events.hpp"
+#include "bg3vr/eyefix.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/render.hpp"
@@ -1029,6 +1030,7 @@ void create(const ModuleInfo& module, std::uintptr_t controller) {
             mem::try_copy(&existing_vtable, existing, sizeof(existing_vtable));
             if (existing && existing_vtable == base + kGameRenderViewVtableRva && frame_has_view(frame, existing)) {
                 log::info("views: create: the view 0x{:X} from before is still live; reusing it", existing);
+                eyefix::link_eyes(main_view, existing);
                 std::scoped_lock lock(g_mutex);
                 g_eye_views = std::array<std::uintptr_t, 2>{main_view, existing};
                 if (driven) {
@@ -1077,6 +1079,7 @@ void create(const ModuleInfo& module, std::uintptr_t controller) {
         if (!ok) {
             return;
         }
+        eyefix::link_eyes(main_view, view); // before its first frame: stage 0x47 after the main view's recording
         events::arm(g_module, 10, 20000);
         std::scoped_lock lock(g_mutex);
         if (driven) {

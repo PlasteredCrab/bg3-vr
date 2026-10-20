@@ -18,6 +18,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
+#include "bg3vr/eyefix.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/locomotion.hpp"
 #include "bg3vr/melee.hpp"
@@ -300,6 +301,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     cull::report();
     skeleton::report();
     dialogue::report();
+    eyefix::report();
     picking::report();
     locomotion::report();
     vrplay::report();
@@ -348,6 +350,7 @@ int init(const wchar_t* root_dir) {
     rayprobe::init(module);
     quality::install(g_config, module);
     dialogue::install(g_config, module);
+    eyefix::install(g_config, module);
     picking::install(g_config, module);
     locomotion::install(g_config, module);
     vrplay::install(g_config, module);

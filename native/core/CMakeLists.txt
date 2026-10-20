@@ -24,6 +24,7 @@ add_library(bg3vr_base STATIC
     src/rayprobe.cpp
     src/skeleton.cpp
     src/dialogue.cpp
+    src/eyefix.cpp
     src/grab_math.cpp
     src/health.cpp
     src/hold.cpp
