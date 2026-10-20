@@ -37,6 +37,15 @@ public:
         float cursor_v = 0.0f;
         float cursor_radius = 0.0f;
         float vignette = 0.0f; // comfort vignette strength, 0..1 (darkens toward the edges)
+        // An aiming beam from (beam_u0, beam_v0) to (beam_u1, beam_v1) in target uv: linear colour and opacity,
+        // width at its start (uv of the target's height; it tapers to a third), style 0 off, 1 solid, 2 dashed,
+        // 3 flowing dots, 4 pulse; animation time in seconds; an end ring of radius beam_end (uv, 0 = none).
+        float beam_u0 = 0.0f, beam_v0 = 0.0f, beam_u1 = 0.0f, beam_v1 = 0.0f;
+        float beam_rgba[4] = {1.0f, 0.8f, 0.4f, 0.5f};
+        float beam_width = 0.0f;
+        int beam_style = 0;
+        float beam_time = 0.0f;
+        float beam_end = 0.0f;
     };
 
     // Draws `rect` of `source` (same size and format as create()) over the whole `target` view of a

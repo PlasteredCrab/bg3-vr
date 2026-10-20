@@ -15,6 +15,9 @@ cbuffer Params : register(b0) {
     float4 uv_rect;  // offset.xy, scale.zw
     float4 options;  // x: linearize, y: keep the source alpha (else 1), z: comfort vignette strength (0..1)
     float4 cursor;   // xy: cursor centre in target uv, z: radius in uv (0 = none), w: aspect (width / height)
+    float4 beam;     // the aiming beam: start xy, end zw (target uv)
+    float4 beam_colour; // linear rgb, opacity
+    float4 beam_style;  // x width (uv of height, 0 = none), y style, z time (s), w end ring radius
 };
 Texture2D source : register(t0);
 SamplerState linear_clamp : register(s0);
@@ -47,6 +50,36 @@ float4 ps_main(Varyings i) : SV_Target {
         // Comfort vignette: darken toward the edges of the image while moving or turning artificially.
         const float2 centred = ((i.uv - uv_rect.xy) / uv_rect.zw - 0.5) * 2.0;
         c *= 1.0 - options.z * smoothstep(0.45, 1.05, length(centred));
+    }
+    if (beam_style.x > 0.0) {
+        // The aiming beam: a soft tapered line with a faint glow, patterned by style, fading along its length.
+        const float2 aspect = float2(cursor.w, 1.0);
+        const float2 p = (i.uv - uv_rect.xy) / uv_rect.zw * aspect;
+        const float2 a0 = beam.xy * aspect;
+        const float2 ab = beam.zw * aspect - a0;
+        const float len = max(length(ab), 1e-5);
+        const float t = saturate(dot(p - a0, ab) / (len * len));
+        const float d = length(p - (a0 + ab * t));
+        const float w = beam_style.x * lerp(1.0, 0.33, t);
+        const float core = pow(saturate(1.0 - d / w), 2.0);
+        const float glow = saturate(1.0 - d / (w * 3.5)) * 0.35;
+        const float s = t * len / beam_style.x; // distance along the beam, in start widths
+        float pattern = 1.0;
+        if (beam_style.y > 1.5 && beam_style.y < 2.5) {
+            pattern = step(0.45, frac(s * 0.06 - beam_style.z * 1.2));
+        } else if (beam_style.y > 2.5 && beam_style.y < 3.5) {
+            pattern = smoothstep(0.32, 0.0, abs(frac(s * 0.08 - beam_style.z * 1.6) - 0.5));
+        } else if (beam_style.y > 3.5) {
+            pattern = 0.55 + 0.45 * sin(s * 0.12 - beam_style.z * 7.0);
+        }
+        float alpha = beam_colour.a * max(core, glow) * pattern * lerp(1.0, 0.45, t);
+        if (beam_style.w > 0.0) {
+            const float r = length(p - beam.zw * aspect) / beam_style.w;
+            const float ring = saturate(1.0 - abs(r - 0.8) * 6.0) + saturate(1.0 - r * 3.0);
+            alpha = max(alpha, beam_colour.a * saturate(ring));
+        }
+        c = lerp(c, beam_colour.rgb, saturate(alpha));
+        a = max(a, saturate(alpha));
     }
     if (cursor.z > 0.0) {
         // A laser dot: white with a dark ring, premultiplied over the image.
@@ -91,6 +124,9 @@ struct Constants {
     float uv_rect[4];
     float options[4];
     float cursor[4];
+    float beam[4];
+    float beam_colour[4];
+    float beam_style[4];
 };
 
 } // namespace
@@ -229,7 +265,11 @@ void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTarget
                                static_cast<float>(h) / static_cast<float>(height_)},
                               {linearize ? 1.0f : 0.0f, overlay.keep_alpha ? 1.0f : 0.0f, overlay.vignette, 0.0f},
                               {overlay.cursor_u, overlay.cursor_v, overlay.cursor_radius,
-                               static_cast<float>(target_width) / static_cast<float>(target_height ? target_height : 1)}};
+                               static_cast<float>(target_width) / static_cast<float>(target_height ? target_height : 1)},
+                              {overlay.beam_u0, overlay.beam_v0, overlay.beam_u1, overlay.beam_v1},
+                              {overlay.beam_rgba[0], overlay.beam_rgba[1], overlay.beam_rgba[2], overlay.beam_rgba[3]},
+                              {overlay.beam_style > 0 ? overlay.beam_width : 0.0f, static_cast<float>(overlay.beam_style),
+                               overlay.beam_time, overlay.beam_end}};
     context_->UpdateSubresource(constants_, 0, nullptr, &constants, 0, 0);
 
     const D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(target_width), static_cast<float>(target_height),

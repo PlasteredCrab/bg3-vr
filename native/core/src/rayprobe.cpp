@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <tuple>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
@@ -216,7 +217,42 @@ std::optional<Hit> raycast(const vr::Vec3& from, const vr::Vec3& to, std::uint32
     return out;
 }
 
+std::atomic<bool> g_beam{false};
+std::atomic<float> g_beam_range{12.0f};
+std::atomic<float> g_beam_distance{-1.0f};
+
+void set_beam(bool on, float range) {
+    g_beam.store(on, std::memory_order_relaxed);
+    g_beam_range.store(range, std::memory_order_relaxed);
+    if (!on) {
+        g_beam_distance.store(-1.0f, std::memory_order_relaxed);
+    }
+}
+
+std::optional<float> beam_distance() {
+    const float d = g_beam_distance.load(std::memory_order_relaxed);
+    return d >= 0.0f ? std::optional<float>(d) : std::nullopt;
+}
+
 void on_frame() {
+    if (g_beam.load(std::memory_order_relaxed)) {
+        float best = -1.0f;
+        if (const auto aim = hand_aim()) {
+            const vr::Vec3 dir = vr::rotate(aim->orientation, {0.0f, 0.0f, 1.0f}); // game convention: forward +Z
+            const float range = g_beam_range.load(std::memory_order_relaxed);
+            const vr::Vec3 to{aim->position[0] + dir[0] * range, aim->position[1] + dir[1] * range,
+                              aim->position[2] + dir[2] * range};
+            for (const auto& [flags, group, exclude] : {std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>{5, 0x820, 0x194280},
+                                                        {0xF, 0x4CA20, 0x210080}}) {
+                if (const auto hit = raycast(aim->position, to, flags, group, exclude)) {
+                    if (best < 0.0f || hit->distance < best) {
+                        best = hit->distance;
+                    }
+                }
+            }
+        }
+        g_beam_distance.store(best, std::memory_order_relaxed);
+    }
     if (g_report.exchange(false, std::memory_order_relaxed)) {
         log::info("ray: {} casts, {} with a hit, {} failed", g_casts, g_hits, g_failures);
     }

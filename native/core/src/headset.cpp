@@ -465,6 +465,31 @@ float comfort_vignette_now(double dt) {
     return g_vignette;
 }
 float g_frame_vignette = 0.0f; // set once per headset frame
+
+// The aiming beam ([pointer], the VR menu's View page): from the pointing hand to where its ray hits the ground or a
+// character / item (rayprobe), drawn into each eye's copy with that eye's rendered pose and field of view.
+std::atomic<int> g_beam_style{3};              // 0 off, 1 solid, 2 dashed, 3 flowing dots, 4 pulse
+std::array<std::atomic<float>, 3> g_beam_colour{}; // linear rgb
+std::atomic<float> g_beam_opacity{0.55f};
+std::atomic<float> g_beam_width{0.006f};       // uv of the image height at the hand
+std::atomic<float> g_beam_range{12.0f};        // metres when nothing is hit
+float g_beam_time = 0.0f;
+std::uint64_t g_beam_frames = 0;
+
+// A LOCAL-space point in an eye image's uv, for the pose and field of view the image was rendered with.
+std::optional<std::array<float, 2>> eye_uv(const vr::Vec3& point, const vr::RigidPose& eye, const camera::EyeFov& fov) {
+    const vr::Quat inverse{-eye.orientation[0], -eye.orientation[1], -eye.orientation[2], eye.orientation[3]};
+    const vr::Vec3 p = vr::rotate(inverse, {point[0] - eye.position[0], point[1] - eye.position[1], point[2] - eye.position[2]});
+    if (p[2] > -0.02f) {
+        return std::nullopt; // behind the eye
+    }
+    const float x = p[0] / -p[2], y = p[1] / -p[2];
+    const float l = std::tan(fov.left_deg / kDegrees), r = std::tan(fov.right_deg / kDegrees);
+    const float u = std::tan(fov.up_deg / kDegrees), d = std::tan(fov.down_deg / kDegrees);
+    return std::array<float, 2>{(x - l) / (r - l), (u - y) / (u - d)};
+}
+
+blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeFov& fov);
 std::optional<std::array<float, 2>> g_screen_cursor; // third person: the laser dot on the flat screen (uv)
 
 // `rect` (back buffer pixels; width 0 = all of it) into the whole image.
@@ -594,7 +619,8 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
                 const blit::Blitter::Rect rect{eye == 0 ? 0u : half, 0u, eye == 0 ? half : g_image_width - half,
                                                g_image_height};
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
-                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect);
+                const blit::Blitter::Overlay overlay = beam_overlay(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
+                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect, &overlay);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
                 g_has_image[eye] = true;
@@ -605,7 +631,8 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
             const int last = g_mode == Mode::Mono ? 1 : rendered->head.eye;
             for (int eye = first; eye <= last; ++eye) {
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
-                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height);
+                const blit::Blitter::Overlay overlay = beam_overlay(rendered->head.pose, rendered->head.fov);
+                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, {}, &overlay);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head);
                 g_has_image[eye] = true;
@@ -1478,6 +1505,43 @@ void update_menu(const xr::Frame& frame) {
     ++g_menu_frames;
 }
 
+blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeFov& fov) {
+    blit::Blitter::Overlay overlay;
+    overlay.vignette = g_frame_vignette;
+    const int style = g_beam_style.load(std::memory_order_relaxed);
+    if (style <= 0 || !vrplay::active() || vrplay::third_person() || g_menu_is_open.load(std::memory_order_relaxed)) {
+        return overlay;
+    }
+    const HandState hand = hands()[pointer_hand()];
+    if (!hand.aim_valid) {
+        return overlay;
+    }
+    const vr::Vec3 dir = vr::rotate(hand.aim.orientation, {0.0f, 0.0f, -1.0f});
+    const float scale = std::max(camera::world_scale(), 0.01f);
+    const float length = rayprobe::beam_distance().value_or(g_beam_range.load(std::memory_order_relaxed)) / scale;
+    const vr::Vec3 start = hand.hand_tracked ? hand.tip : hand.aim.position;
+    const vr::Vec3 end{start[0] + dir[0] * length, start[1] + dir[1] * length, start[2] + dir[2] * length};
+    const auto a = eye_uv(start, eye, fov);
+    const auto b = eye_uv(end, eye, fov);
+    if (!a || !b) {
+        return overlay;
+    }
+    overlay.beam_u0 = (*a)[0];
+    overlay.beam_v0 = (*a)[1];
+    overlay.beam_u1 = (*b)[0];
+    overlay.beam_v1 = (*b)[1];
+    for (int i = 0; i < 3; ++i) {
+        overlay.beam_rgba[i] = g_beam_colour[static_cast<std::size_t>(i)].load(std::memory_order_relaxed);
+    }
+    overlay.beam_rgba[3] = g_beam_opacity.load(std::memory_order_relaxed);
+    overlay.beam_width = g_beam_width.load(std::memory_order_relaxed);
+    overlay.beam_style = style;
+    overlay.beam_time = g_beam_time;
+    overlay.beam_end = rayprobe::beam_distance() ? 0.012f : 0.0f;
+    ++g_beam_frames;
+    return overlay;
+}
+
 // Just before the game's Present.
 void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     if (g_failed) {
@@ -1525,6 +1589,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         const double dt = last ? static_cast<double>(frame.state.predictedDisplayTime - last) * 1e-9 : 0.0;
         last = frame.state.predictedDisplayTime;
         g_frame_vignette = comfort_vignette_now(std::clamp(dt, 0.0, 0.1));
+        g_beam_time += static_cast<float>(std::clamp(dt, 0.0, 0.1));
     }
     update_menu(frame);
     update_ui_panel(swapchain, frame);
@@ -1595,6 +1660,39 @@ void configure_ui(const Config& config) {
         log::info("vr: dominant hand {} (points and gets the right_* bindings); the wrist UI is on the {} wrist",
                   dominant == kLeftHand ? "left" : "right", dominant == kLeftHand ? "right" : "left");
     }
+    {
+        // The aiming beam.
+        const std::string style = text::to_lower(config.get("pointer", "style", "dots"));
+        const int s = style == "off" ? 0 : style == "solid" ? 1 : style == "dashed" ? 2 : style == "pulse" ? 4 : 3;
+        // Named colours, sRGB values given as linear (the eye images are sRGB).
+        struct Named {
+            const char* name;
+            float r, g, b;
+        };
+        constexpr Named kColours[] = {{"gold", 0.85f, 0.55f, 0.15f}, {"white", 0.9f, 0.9f, 0.9f}, {"blue", 0.15f, 0.45f, 1.0f},
+                                      {"green", 0.2f, 0.85f, 0.3f},  {"red", 0.95f, 0.15f, 0.1f},  {"purple", 0.6f, 0.25f, 0.95f}};
+        const std::string colour = text::to_lower(config.get("pointer", "colour", "gold"));
+        Named chosen = kColours[0];
+        for (const Named& n : kColours) {
+            if (colour == n.name) {
+                chosen = n;
+            }
+        }
+        const auto number = [&](const char* key, float fallback, float lo, float hi) {
+            const std::string v = config.get("pointer", key);
+            return v.empty() ? fallback : std::clamp(std::strtof(v.c_str(), nullptr), lo, hi);
+        };
+        g_beam_style = s;
+        g_beam_colour[0] = chosen.r;
+        g_beam_colour[1] = chosen.g;
+        g_beam_colour[2] = chosen.b;
+        g_beam_opacity = number("opacity", 0.55f, 0.05f, 1.0f);
+        g_beam_width = number("width", 0.006f, 0.001f, 0.03f);
+        g_beam_range = number("range", 12.0f, 1.0f, 60.0f);
+        rayprobe::set_beam(s > 0, g_beam_range.load());
+        log::info("pointer: aiming beam {} ({}, opacity {:.2f}, width {:.3f}, range {:.0f} m)",
+                  s == 0 ? "off" : style, chosen.name, g_beam_opacity.load(), g_beam_width.load(), g_beam_range.load());
+    }
     const std::string v = config.get("ui", "wrist_width");
     const float width = v.empty() ? 0.3f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 1.0f);
     if (g_ui_wrist_width.exchange(width) != width) {
@@ -1644,6 +1742,8 @@ void report() {
               g_ui_shown ? "shown" : "hidden", g_ui_wrist.load(std::memory_order_relaxed) ? "wrist" : "world", g_ui_frames,
               g_ui_laser_hits, g_ui_touches, g_menu_is_open.load(std::memory_order_relaxed) ? "open" : "closed",
               g_menu_frames, g_menu_clicks, g_menu_failed ? ", FAILED to start" : "");
+    log::info("pointer: aiming beam drawn in {} eye copies; last hit {}", g_beam_frames,
+              rayprobe::beam_distance() ? std::format("{:.2f} m", *rayprobe::beam_distance()) : std::string("none"));
     log::info("xr input: hand tracking {}; tracked-hand clicks left {} right {}, grabs left {} right {}",
               g_session && g_session->has_hand_tracking() ? "on" : "off", g_hand_clicks[0], g_hand_clicks[1],
               g_hand_grabs[0], g_hand_grabs[1]);

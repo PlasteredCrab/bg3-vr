@@ -447,6 +447,10 @@ void set_world_scale(float scale) {
     }
 }
 
+float world_scale() {
+    return g_world_scale.load(std::memory_order_relaxed);
+}
+
 void set_follow_height(float height) {
     std::scoped_lock lock(g_mutex);
     if (g_follow && std::isfinite(height)) {

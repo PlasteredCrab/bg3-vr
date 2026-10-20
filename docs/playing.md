@@ -76,7 +76,7 @@ Press the left menu button. A panel opens in front of you with tabs along the to
 
 - View: first or third person, the render resolution (a share of the headset's own resolution per eye; 80% by
   default, "Game's own" uses the game's setting), where the game UI sits (in front of you or on your wrist), the
-  wrist UI size.
+  wrist UI size, and the aiming beam (off, solid, dashed, flowing dots or pulse; its colour and opacity).
 - Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement.
 - Body: dominant hand (which hand points; the wrist UI goes on the other), arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
 - Scale: IPD (the headset's own, or a fixed 56-72 mm), world scale (100% is true scale), eye height.

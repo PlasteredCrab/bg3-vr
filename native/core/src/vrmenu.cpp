@@ -131,6 +131,12 @@ Menu::Menu() {
            {{"Game's own", "0", true}, {"60%", "60"}, {"70%", "70"}, {"80%", "80"}, {"90%", "90"}, {"100%", "100"},
             {"120%", "120"}},
            3);
+    choice("Aiming beam", "pointer.style",
+           {{"Off", "off", true}, {"Solid", "solid"}, {"Dashed", "dashed"}, {"Flowing dots", "dots"}, {"Pulse", "pulse"}}, 3);
+    choice("Beam colour", "pointer.colour",
+           {{"Gold", "gold"}, {"White", "white"}, {"Blue", "blue"}, {"Green", "green"}, {"Red", "red"}, {"Purple", "purple"}}, 0);
+    choice("Beam opacity", "pointer.opacity",
+           {{"25%", "0.25"}, {"40%", "0.4"}, {"55%", "0.55"}, {"70%", "0.7"}, {"85%", "0.85"}, {"100%", "1"}}, 2);
     choice("Wrist interface size", "ui.wrist_width",
            {{"Small", "0.24"}, {"Medium", "0.3"}, {"Large", "0.36"}, {"Huge", "0.44"}}, 1);
     section("Comfort");

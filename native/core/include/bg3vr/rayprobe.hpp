@@ -51,6 +51,12 @@ std::optional<vr::RigidPose> hand_aim();
 // Game thread (camera view update): casts every few updates while a source is set; logs changes.
 void on_frame();
 
+// The aiming beam (headset): while on, every game frame casts the pointing hand's aim ray against the ground (the
+// picking ground job's masks 5 / 0x820 / 0x194280) and characters and items (0xF / 0x4CA20 / 0x210080), up to
+// `range` metres; beam_distance() is the nearer hit (game units), nullopt when nothing is hit.
+void set_beam(bool on, float range);
+std::optional<float> beam_distance();
+
 // One raycast through the game's RaycastClosest (game thread). Masks as at the game's call sites; the defaults are
 // the picking objects job's (characters and items, agent I 1.4).
 struct Hit {

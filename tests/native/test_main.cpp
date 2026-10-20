@@ -637,6 +637,19 @@ void test_blit() {
         CHECK(std::abs(red_at(8, 8) - 128) <= 2 && std::abs(red_at(56, 8) - 51) <= 2);
         blitter.draw(source, {kWidth / 2, 0, kWidth / 2, kHeight}, target_view, kWidth, kHeight, true);
         CHECK(std::abs(red_at(8, 8) - 51) <= 2 && std::abs(red_at(56, 24) - 51) <= 2);
+        // The aiming beam: a solid red line across the middle; pixels on it turn red, far off it stay as they were.
+        blit::Blitter::Overlay beam;
+        beam.beam_u0 = 0.05f;
+        beam.beam_v0 = 0.5f;
+        beam.beam_u1 = 0.95f;
+        beam.beam_v1 = 0.5f;
+        beam.beam_rgba[0] = 1.0f;
+        beam.beam_rgba[1] = beam.beam_rgba[2] = 0.0f;
+        beam.beam_rgba[3] = 1.0f;
+        beam.beam_width = 0.12f;
+        beam.beam_style = 1;
+        blitter.draw(source, {}, target_view, kWidth, kHeight, true, beam);
+        CHECK(red_at(8, 16) > 200 && std::abs(red_at(8, 1) - 128) <= 2);
 
         D3D11_VIEWPORT after{};
         UINT count = 1;
