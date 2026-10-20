@@ -834,6 +834,8 @@ std::optional<xr::PanelPlacement> g_ui_place;
 bool g_ui_shown = false;
 int g_ui_flag_saved = -1; // GlobalSwitches+0x0D before it was cleared (-1: not cleared)
 bool g_ui_cursor_on_panel = false;
+bool g_ui_touch_down = false; // the controller tip pressed the panel: the left mouse button is held
+std::uint64_t g_ui_touches = 0;
 std::uint64_t g_ui_frames = 0;
 std::uint64_t g_ui_laser_hits = 0;
 
@@ -947,6 +949,20 @@ void move_cursor(float u, float v) {
     POINT point{static_cast<LONG>(u * static_cast<float>(client.right)), static_cast<LONG>(v * static_cast<float>(client.bottom))};
     ClientToScreen(g_window, &point);
     SetCursorPos(point.x, point.y);
+}
+
+// Where `position` is on the panel: uv and the distance in front of its face (metres; negative = behind).
+std::optional<std::array<float, 3>> panel_point(const vr::Vec3& position, const xr::PanelPlacement& place, float height_m) {
+    const vr::Quat q{place.pose.orientation.x, place.pose.orientation.y, place.pose.orientation.z, place.pose.orientation.w};
+    const vr::Vec3 local{position[0] - place.pose.position.x, position[1] - place.pose.position.y,
+                         position[2] - place.pose.position.z};
+    const auto dot = [](const vr::Vec3& a, const vr::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    const float u = dot(local, vr::rotate(q, {1.0f, 0.0f, 0.0f})) / place.width_m + 0.5f;
+    const float v = 0.5f - dot(local, vr::rotate(q, {0.0f, 1.0f, 0.0f})) / height_m;
+    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+        return std::nullopt;
+    }
+    return std::array<float, 3>{u, v, dot(local, vr::rotate(q, {0.0f, 0.0f, 1.0f}))};
 }
 
 // Third person: the laser points at the flat screen quad (LOCAL, g_screen_distance_m ahead, g_screen_width_m wide).
@@ -1068,7 +1084,30 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         } else if (both[kLeftHand].tracked) {
             target = in_local(place, both[kLeftHand].grip);
         }
-        const auto uv = right.aim_valid && target ? panel_uv(right.aim, *target, height_m) : std::nullopt;
+        // Touch: the right controller's tip within 3 cm of the face (or up to 3 cm through it) points there; pushing in
+        // past 5 mm holds the left mouse button until the tip comes back out past 12 mm or leaves the panel.
+        std::optional<std::array<float, 2>> touch;
+        if (right.aim_valid && target) {
+            const auto p = panel_point(right.aim.position, *target, height_m);
+            if (p && (*p)[2] < 0.03f && (*p)[2] > -0.03f) {
+                touch = std::array<float, 2>{(*p)[0], (*p)[1]};
+                const bool in = (*p)[2] < (g_ui_touch_down ? 0.012f : 0.005f);
+                if (in != g_ui_touch_down) {
+                    move_cursor((*touch)[0], (*touch)[1]); // the press lands where the tip is
+                    vrplay::mouse_left(in);
+                    g_ui_touch_down = in;
+                    if (in) {
+                        ++g_ui_touches;
+                        g_session->haptic(kRightHand, 0.3f, 0.015f);
+                    }
+                }
+            }
+        }
+        if (!touch && g_ui_touch_down) {
+            vrplay::mouse_left(false);
+            g_ui_touch_down = false;
+        }
+        const auto uv = touch ? touch : right.aim_valid && target ? panel_uv(right.aim, *target, height_m) : std::nullopt;
         if (uv) {
             overlay.cursor_u = (*uv)[0];
             overlay.cursor_v = (*uv)[1];
@@ -1161,20 +1200,6 @@ void set_menu_open(bool open) {
     if (!open) {
         g_session->set_panel(std::nullopt, 1);
     }
-}
-
-// Where `position` is on the panel: uv and the distance in front of its face (metres; negative = behind).
-std::optional<std::array<float, 3>> panel_point(const vr::Vec3& position, const xr::PanelPlacement& place, float height_m) {
-    const vr::Quat q{place.pose.orientation.x, place.pose.orientation.y, place.pose.orientation.z, place.pose.orientation.w};
-    const vr::Vec3 local{position[0] - place.pose.position.x, position[1] - place.pose.position.y,
-                         position[2] - place.pose.position.z};
-    const auto dot = [](const vr::Vec3& a, const vr::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
-    const float u = dot(local, vr::rotate(q, {1.0f, 0.0f, 0.0f})) / place.width_m + 0.5f;
-    const float v = 0.5f - dot(local, vr::rotate(q, {0.0f, 1.0f, 0.0f})) / height_m;
-    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
-        return std::nullopt;
-    }
-    return std::array<float, 3>{u, v, dot(local, vr::rotate(q, {0.0f, 0.0f, 1.0f}))};
 }
 
 void update_menu(const xr::Frame& frame) {
@@ -1433,6 +1458,10 @@ void report() {
               g_skipped.load(std::memory_order_relaxed), g_matched.load(std::memory_order_relaxed),
               g_unmatched.load(std::memory_order_relaxed), g_guessed.load(std::memory_order_relaxed),
               g_measured_lag.load(std::memory_order_relaxed));
+    log::info("ui: panel {} ({}), {} frames, laser on it {} frames, {} touch click(s); VR menu {} ({} frames, {} click(s)){}",
+              g_ui_shown ? "shown" : "hidden", g_ui_wrist.load(std::memory_order_relaxed) ? "wrist" : "world", g_ui_frames,
+              g_ui_laser_hits, g_ui_touches, g_menu_is_open.load(std::memory_order_relaxed) ? "open" : "closed",
+              g_menu_frames, g_menu_clicks, g_menu_failed ? ", FAILED to start" : "");
 }
 
 std::array<HandState, 2> hands() {

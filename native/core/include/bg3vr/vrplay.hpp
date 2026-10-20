@@ -57,6 +57,9 @@ void recalibrate();
 // turning or scrolling. The "vrmenu" binding still closes it.
 void set_menu_open(bool open);
 
+// The left mouse button from elsewhere on the presenting thread (touching the UI panel with the controller tip).
+void mouse_left(bool down);
+
 // VR play on/off (bridge vr=start / vr=stop). Turning it off releases every held key and button.
 void set_active(bool on);
 bool active();

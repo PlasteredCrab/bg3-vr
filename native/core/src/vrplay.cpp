@@ -241,6 +241,12 @@ void configure(const Config& config) {
     g_eye_offset = number("eye_offset", 0.10f, -0.5f, 0.5f);
 }
 
+void mouse_left(bool down) {
+    if (g_active.load(std::memory_order_relaxed) || !down) {
+        inject(layout::kDeviceMouse, layout::kMouseLeft, down);
+    }
+}
+
 void recalibrate() {
     g_recalibrate.store(true, std::memory_order_relaxed);
 }

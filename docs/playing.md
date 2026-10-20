@@ -38,6 +38,7 @@ them; they are marked "(off)".
 | Hold right stick click | Recentre: you face forward again, and the UI panel comes in front of you |
 | Left stick | Walk where you look (half push strolls, full push runs) |
 | Left stick click | Move the UI panel to your left wrist and back |
+| Touch the UI panel with the right controller's tip | Click there (push in to press, pull back to release); handy on the wrist panel |
 | Left trigger (hold) | Highlight items |
 | X | Map |
 | Y | Switch between first person and third person (the game's own camera on a big screen in front of you; the laser works as the mouse there) |
