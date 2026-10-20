@@ -193,6 +193,34 @@ Static RE only.
   `d6b2369d-84f0-4ca4-a3a7-62d2d192a185`. Where walking spends it is not found yet; it matters for limiting
   room-scale walking in combat.
 
+## 2d. Weapons in the hands (agent K, `re-local/ghidra/agents/K_weapons.md`)
+
+Static RE only; the skeleton probe now logs the live attachments to confirm the runtime parts.
+
+- **Weapons hang from dummy bones.** They attach to `Dummy_R_Hand` / `Dummy_L_Hand`, real bones of the base skeleton
+  (selector 0x1B53800 + `EquipmentTypes.lsx`). Greataxe, maul, warhammer, quarterstaff, bows and crossbows use
+  `Dummy_L_Hand` as their main bone.
+- **Placement runs after slot 30.** Every frame the finish job places attachments from the parent bone in the
+  current pose (`UpdateAttachment` 0x3C68F40, reading `+0xE0`). So the slot-30 IK hook moves the weapon too, as long
+  as it also rewrites the dummy hand bones: the world pose isn't hierarchical, so moving `Wrist_R` alone leaves the
+  weapon behind. Same for `Dummy_*HandFX` / `Dummy_CastFX` if spell effects should start at the real hand.
+- **Attachment record** (`Visual+0xB8`, 0x30 each, count `+0xC4`): child visual +0x0, child bone +0x8, parent bone
+  +0xC, parent bone name +0x10, flags +0x18 (Weapon 0x8000, DoNotUpdate 0x800), target type +0x1D.
+- **Two-handed and free placement.**
+  - Set DoNotUpdate and place the weapon visual ourselves, or detour 0x3C68F40 for the weapon only.
+  - Re-parent through 0x3C630D0 / 0x3C63610.
+  - The game re-attaches on sheathe, weapon-set changes and visual refreshes, so an override must be re-applied.
+- **Draw / sheathe.** The state is at `eoc::unsheath::StateComponent+0x14` (0 instrument, 1 melee, 2 ranged,
+  3 sheathed). Client toggle: SheathUnsheath task Enter 0x4265D90, message 0x2D. Server: `Osi.SetWeaponUnsheathed`.
+  VR gesture: reach over the shoulder or to the hip and grip.
+- **Blade capsule.** Weapon models have their grip at the origin with the blade along -Z (e.g. longsword z
+  -1.156..+0.363). Bounds per model are in `K/weapon_visual_bounds.csv`. Weapon flags are at
+  `eoc::WeaponComponent+0x30` (getter 0xB08E10: two-handed 0x400, versatile 0x800, melee 0x1000).
+- **Per-eye hiding.** AddAttachment copies the parent's per-view cull bits to the weapon, so hiding the body in one
+  eye would hide the weapon too. The head-hiding code must leave weapons visible.
+- **Spells and thrown objects.** Objects about to be thrown attach to `Dummy_CastFX` (0x1A2A860). The projectile
+  start can be overridden on the server at 0x2E8DE30 (`+0x0C`), so VR casts can start at the real hand.
+
 ## 3a. Body and input (agent C, `re-local/ghidra/agents/C_animation_systems.md`)
 
 Answered from agent C's report; the parts our code uses are re-checked in `docs/re-notes/skeleton.md`.

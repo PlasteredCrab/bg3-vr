@@ -294,6 +294,35 @@ void attach_now(std::uintptr_t visual) {
             g_head_bone = static_cast<short>(i);
         }
     }
+    // The visual's attachments (agent K, K_weapons.md 1.1: Visual+0xB8, 0x30 each, count +0xC4): which bone each
+    // hangs from, so the body IK knows which dummy bones to move with the hands (weapons ride Dummy_R/L_Hand).
+    std::uintptr_t attachments = 0;
+    std::uint32_t attachment_count = 0;
+    copy(attachments, visual + 0xB8);
+    copy(attachment_count, visual + 0xC4);
+    log::info("skeleton: {} attachment(s) on the visual", attachment_count);
+    for (std::uint32_t i = 0; i < attachment_count && i < 64 && attachments; ++i) {
+        const std::uintptr_t a = attachments + i * 0x30;
+        std::uintptr_t child = 0;
+        std::int32_t source = -1, attach = -1;
+        std::uint32_t flags = 0;
+        std::uint8_t source_type = 0, target_type = 0;
+        float offset[3]{};
+        copy(child, a + 0x00);
+        copy(source, a + 0x08);
+        copy(attach, a + 0x0C);
+        copy(flags, a + 0x18);
+        copy(source_type, a + 0x1C);
+        copy(target_type, a + 0x1D);
+        mem::try_copy(offset, a + 0x24, sizeof(offset));
+        const std::string bone = target_type == 1 && attach >= 0 && static_cast<std::size_t>(attach) < bones.size()
+                                     ? bones[static_cast<std::size_t>(attach)].name
+                                     : std::string(attach < 0 ? "(root)" : "(socket or other skeleton)");
+        log::info("skeleton:   attachment {}: child visual 0x{:X} from source {} (type {}) on parent {} '{}' (type {}), "
+                  "flags 0x{:X}{}{}{}, offset ({:.3f}, {:.3f}, {:.3f})",
+                  i, child, source, source_type, attach, bone, target_type, flags, flags & 0x8000 ? " weapon" : "",
+                  flags & 0x4000 ? " armor" : "", flags & 0x800 ? " do-not-update" : "", offset[0], offset[1], offset[2]);
+    }
     if (g_head_bone < 0) {
         log::warn("skeleton: no Head_M bone; head tracking from the skeleton is off");
     } else {
