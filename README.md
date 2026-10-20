@@ -4,6 +4,7 @@ First-person, full-body VR for Baldur's Gate 3: IK body, 6DOF hands, physical in
 
 - Design document: <https://claude.ai/code/artifact/63345b98-a063-4e6d-bb3b-96ef72457b15>
 - **Start here when picking the project up:** handoff document (state, findings, gotchas, next steps): <https://claude.ai/code/artifact/a07cab45-ea42-4c61-922a-da2d654f703c>
+- **How to play** (setup, controls, settings): [docs/playing.md](docs/playing.md). First headset test plan: [docs/headset-test-2026-10-20.md](docs/headset-test-2026-10-20.md).
 - Current phase: **Phase 1, Stereo viewer**. See [docs/phase-1.md](docs/phase-1.md) (Phase 0 is done: [docs/phase-0.md](docs/phase-0.md)).
 
 ## Layout
