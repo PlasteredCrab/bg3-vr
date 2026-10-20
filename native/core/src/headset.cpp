@@ -5,6 +5,7 @@
 #include "bg3vr/camera.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
+#include "bg3vr/melee.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/bridge.hpp"
@@ -694,6 +695,9 @@ void update_input(const xr::Frame& frame) {
         hold::set_hand(h, now[h].active && now[h].squeeze > 0.5f,
                        now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world);
     }
+    // The right hand's swing for physical melee.
+    melee::set_hand(now[kRightHand].aim_valid ? camera::tracked_to_world(now[kRightHand].aim) : std::nullopt,
+                    static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     // The grips for the arm IK (world, game convention).
     bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
                         now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);
@@ -756,8 +760,9 @@ void publish_status(bool ready) {
         return;
     }
     g_status_written = ready;
-    bridge::write_status(std::string(ready ? "xr=ready\n" : "xr=off\n") + "mode=" + mode_name(g_mode) + "\n" +
-                         "autostart=" + (g_autostart ? "1" : "0") + "\n");
+    bridge::set_status("mode", mode_name(g_mode));
+    bridge::set_status("autostart", g_autostart ? "1" : "0");
+    bridge::set_status("xr", ready ? "ready" : "off");
     log::info("xr: status for Lua: {}", ready ? "ready" : "off");
 }
 

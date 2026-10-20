@@ -86,9 +86,11 @@ Request parse(std::string_view content);
 // thread for every new version of the file.
 void start(const Config& config, std::function<void(const Request&)> on_request);
 
-// The other direction (docs/decisions/0002-native-lua-bridge.md): replaces `to_lua.txt` next to the bridge file
-// with `content` (key=value lines), atomically, so the Lua side can read the core's state with Ext.IO.LoadFile
-// ("BG3VR/to_lua.txt"). Any thread; no-op before start() or when the bridge is off.
-void write_status(std::string_view content);
+// The other direction (docs/decisions/0002-native-lua-bridge.md): `to_lua.txt` next to the bridge file holds the
+// core's state as key=value lines, which the Lua side reads with Ext.IO.LoadFile("BG3VR/to_lua.txt"). set_status
+// changes one key and rewrites the file atomically (any thread; written once start() knows the path). An empty
+// value removes the key. reset_status() clears every key (start-up: nothing from a previous run counts).
+void set_status(std::string_view key, std::string_view value);
+void reset_status();
 
 } // namespace bg3vr::bridge

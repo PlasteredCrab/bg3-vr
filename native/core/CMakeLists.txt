@@ -18,6 +18,7 @@ add_library(bg3vr_base STATIC
     src/render.cpp
     src/signatures.cpp
     src/locomotion.cpp
+    src/melee.cpp
     src/picking.cpp
     src/quality.cpp
     src/rayprobe.cpp

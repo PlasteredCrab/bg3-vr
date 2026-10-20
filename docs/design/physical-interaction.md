@@ -280,6 +280,7 @@ Answered from agent C's report; the parts our code uses are re-checked in `docs/
 | Physics raycast from the hand | `rayprobe.cpp` (`raycast()`, `!vr_ray`) | probe off |
 | Arms and the held weapon follow the controllers | `bodyik.cpp` (slot 30), `!vr_ik` | off (`[ik] arms`) until the chain is confirmed |
 | Grab / hold / put down items | `hold.cpp` (client item setters, report on release) | off (`[grab] probe` / `hold`) |
+| Physical melee: swing through a character -> the game's attack and roll | `melee.cpp` -> `to_lua.txt` hit -> `Client/Combat.lua` (nearest character) -> `Server/Combat.lua` `Osi.Attack(a, t, 0)` | off (`[combat] physical`) |
 | Velocity hold, throw, gravity pull math | `grab_math.cpp` | not wired yet |
 | Physics bodies of held items, throwing, ragdolls | wrapper calls from section 2a | not built yet |
 

@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -42,7 +43,30 @@ std::filesystem::path default_path() {
 }
 
 std::mutex g_status_mutex;
-std::filesystem::path g_status_path; // under g_status_mutex
+std::filesystem::path g_status_path;                // under g_status_mutex
+std::map<std::string, std::string, std::less<>> g_status; // under g_status_mutex
+
+// Under g_status_mutex.
+void write_status_file() {
+    if (g_status_path.empty()) {
+        return;
+    }
+    std::string content;
+    for (const auto& [key, value] : g_status) {
+        content += key + "=" + value + "\n";
+    }
+    std::error_code ignored;
+    std::filesystem::create_directories(g_status_path.parent_path(), ignored);
+    const std::filesystem::path temp = std::filesystem::path(g_status_path).concat(L".tmp");
+    HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    DWORD written = 0;
+    WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+    CloseHandle(file);
+    MoveFileExW(temp.c_str(), g_status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
 
 struct WatchArgs {
     std::filesystem::path path;
@@ -349,22 +373,20 @@ void start(const Config& config, std::function<void(const Request&)> on_request)
     }
 }
 
-void write_status(std::string_view content) {
+void set_status(std::string_view key, std::string_view value) {
     std::scoped_lock lock(g_status_mutex);
-    if (g_status_path.empty()) {
-        return;
+    if (value.empty()) {
+        g_status.erase(std::string(key));
+    } else {
+        g_status[std::string(key)] = std::string(value);
     }
-    std::error_code ignored;
-    std::filesystem::create_directories(g_status_path.parent_path(), ignored);
-    const std::filesystem::path temp = std::filesystem::path(g_status_path).concat(L".tmp");
-    HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    DWORD written = 0;
-    WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
-    CloseHandle(file);
-    MoveFileExW(temp.c_str(), g_status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    write_status_file();
+}
+
+void reset_status() {
+    std::scoped_lock lock(g_status_mutex);
+    g_status.clear();
+    write_status_file();
 }
 
 } // namespace bg3vr::bridge
