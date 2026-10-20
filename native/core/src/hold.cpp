@@ -1,6 +1,7 @@
 #include "bg3vr/hold.hpp"
 
 #include "bg3vr/grab_math.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/pattern.hpp"
@@ -401,11 +402,13 @@ void install(const Config& config, const ModuleInfo& module) {
     g_pull_range = number("pull_range", 6.0f, 1.0f, 30.0f);
     g_catch_radius = number("catch_radius", 0.35f, 0.1f, 1.5f);
     if (!g_probe && !g_hold) {
+        health::set("grabbing", health::State::Off, "[grab] probe / hold");
         log::info("grab: off ([grab] probe / hold)");
         return;
     }
     g_ready = check(kEntityToItem) && check(kSetTranslate) && check(kSetRotate) && check(kSuspend) && check(kResume) &&
               check(kSetFlags);
+    health::set("grabbing", g_ready ? health::State::Ready : health::State::Unavailable, g_ready ? (g_hold ? "hold, throw, pull" : "probe") : "a function didn't match");
     log::info("grab: {} (reach {:.1f} m{}{}){}",
               g_hold ? "picking items up with the grips" : "probe only (logs what a grip hits)", g_reach,
               g_hold && g_throw ? std::format(", throws above {:.1f} m/s", g_throw_min_speed) : std::string(),

@@ -1,6 +1,7 @@
 #include "bg3vr/skeleton.hpp"
 
 #include "bg3vr/bodyik.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -353,6 +354,7 @@ void init(const ModuleInfo& module) {
     g_module = module;
     const auto site = sig::lookup("skeleton_update_mesh_bindings");
     if (!site) {
+        health::set("body hook (slot 30)", health::State::Unavailable, "signature skeleton_update_mesh_bindings");
         log::warn("skeleton: signature skeleton_update_mesh_bindings not resolved; no slot 30 watch");
         return;
     }
@@ -363,10 +365,12 @@ void init(const ModuleInfo& module) {
     }
     auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), &on_slot30);
     if (!hook) {
+        health::set("body hook (slot 30)", health::State::Unavailable, "hook failed");
         log::error("skeleton: slot 30 mid-hook failed (error type {})", static_cast<int>(hook.error().type));
         return;
     }
     g_slot30_hook = std::move(*hook);
+    health::set("body hook (slot 30)", health::State::Ready);
     log::info("skeleton: slot 30 watch installed at exe+0x{:X} (counts only, for the followed skeleton)",
               *site - module.base);
 }

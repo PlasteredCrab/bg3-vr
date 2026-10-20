@@ -1,5 +1,6 @@
 #include "bg3vr/locomotion.hpp"
 
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -74,6 +75,7 @@ void install(const Config& config, const ModuleInfo& module) {
     g_invert_forward = config.get_bool("locomotion", "invert_forward", false);
     const auto site = sig::lookup("move_controller_mode_check");
     if (!site) {
+        health::set("stick locomotion", health::State::Unavailable, "signature move_controller_mode_check");
         log::warn("locomotion: signature move_controller_mode_check not resolved; stick locomotion unavailable");
         return;
     }
@@ -84,6 +86,7 @@ void install(const Config& config, const ModuleInfo& module) {
     mem::try_copy(jz.data(), *site + 7, jz.size());
     const std::uintptr_t operand = *site + 7 + static_cast<std::intptr_t>(disp);
     if (operand != module.base + layout::kControllerModeByte || jz[0] != 0x0F || jz[1] != 0x84) {
+        health::set("stick locomotion", health::State::Unavailable, "controller-mode check changed");
         log::warn("locomotion: the check at exe+0x{:X} reads {} (expected exe+0x{:X}) / jz bytes {:02X} {:02X}; stick "
                   "locomotion unavailable",
                   *site - module.base, mem::describe(module, operand), layout::kControllerModeByte, jz[0], jz[1]);
@@ -91,6 +94,7 @@ void install(const Config& config, const ModuleInfo& module) {
     }
     g_patch_site = *site + 7;
     g_original = jz;
+    health::set("stick locomotion", health::State::Ready);
     log::info("locomotion: controller-mode check at exe+0x{:X}; stick locomotion via the movement override "
               "(deadzone {:.2f}{})",
               *site - module.base, g_deadzone, g_invert_forward ? ", forward inverted" : "");

@@ -1,6 +1,7 @@
 #include "bg3vr/dialogue.hpp"
 
 #include "bg3vr/camera.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -84,15 +85,18 @@ void install(const Config& config, const ModuleInfo& module) {
     g_only_when_driven = config.get_bool("dialogue", "only_in_vr", true);
     const auto site = sig::lookup("timeline_player_joined");
     if (!site) {
+        health::set("first-person dialogue", health::State::Unavailable, "signature timeline_player_joined");
         log::warn("dialogue: signature timeline_player_joined not resolved; dialogues use the game camera");
         return;
     }
     auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), &on_player_joined);
     if (!hook) {
+        health::set("first-person dialogue", health::State::Unavailable, "hook failed");
         log::error("dialogue: mid-hook failed (error type {})", static_cast<int>(hook.error().type));
         return;
     }
     g_hook = std::move(*hook);
+    health::set("first-person dialogue", health::State::Ready);
     log::info("dialogue: hook at exe+0x{:X}; first person for timeline types [{}]{}", *site - module.base,
               listed.empty() ? "none" : listed, g_only_when_driven ? " while the mod drives the camera" : "");
 }

@@ -13,6 +13,7 @@
 #endif
 #include "bg3vr/probe.hpp"
 #include "bg3vr/render.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
@@ -202,6 +203,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         picking::set_hand(on && g_config.get_bool("vr", "hand_pointing", true));
         locomotion::set_enabled(on && g_config.get_bool("vr", "stick_locomotion", true));
         vrplay::set_active(on);
+        if (on) {
+            health::log_summary("VR play started");
+        }
         if (*request.vr == "pause") {
             // A level is unloading: drop everything that points at game objects without touching them.
             views::forget_layout();
@@ -291,6 +295,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
             log::warn("probe: no validated controller to probe");
         }
     }
+    health::log_summary("report");
     camera::report();
     cull::report();
     skeleton::report();
@@ -353,6 +358,7 @@ int init(const wchar_t* root_dir) {
     bridge::reset_status(); // a fresh start: nothing from a previous run counts
     bridge::set_status("xr", "off");
 
+    health::log_summary("start-up; the headset and the UI panel report when they start");
     if (HANDLE thread = CreateThread(nullptr, 0, watch_modules, nullptr, 0, nullptr)) {
         CloseHandle(thread);
     }

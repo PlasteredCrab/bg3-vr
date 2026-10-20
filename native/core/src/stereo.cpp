@@ -1,6 +1,7 @@
 #include "bg3vr/stereo.hpp"
 
 #include "bg3vr/camera.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -219,16 +220,19 @@ void install(const Config& config, const ModuleInfo& module) {
     }
     const auto site = sig::lookup("render_view_camera_built");
     if (!site) {
+        health::set("same-frame stereo", health::State::Unavailable, "signature render_view_camera_built");
         log::error("stereo: signature render_view_camera_built not resolved; same-frame stereo unavailable");
         return;
     }
     auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(*site), &on_camera_built);
     if (!hook) {
+        health::set("same-frame stereo", health::State::Unavailable, "hook failed");
         log::error("stereo: mid-hook at exe+0x{:X} failed (error type {})", *site - module.base,
                    static_cast<int>(hook.error().type));
         return;
     }
     g_hook = std::move(*hook);
+    health::set("same-frame stereo", health::State::Ready);
     log::info("stereo: hook render_view_camera_built installed at exe+0x{:X}", *site - module.base);
 }
 

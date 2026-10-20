@@ -2,6 +2,7 @@
 
 #include "bg3vr/ik.hpp"
 #include "bg3vr/rigid.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/text.hpp"
@@ -110,11 +111,13 @@ void configure(const Config& config, const ModuleInfo& module) {
     const bool ok = mem::try_copy(&opcode, call, 1) && mem::try_copy(&rel, call + 1, 4) && opcode == 0xE8 &&
                     call + 5 + static_cast<std::intptr_t>(rel) == module.base + kGetWorldPose4x4;
     if (!ok) {
+        health::set("arm IK", health::State::Unavailable, "Granny getter changed");
         log::error("ik: the Granny world-pose getter isn't where it was checked (exe+0x{:X}); arm IK unavailable",
                    kGetWorldPose4x4);
         g_module = {};
         return;
     }
+    health::set("arm IK", config.get_bool("ik", "arms", false) ? health::State::Ready : health::State::Off, "[ik] arms");
     set_enabled(config.get_bool("ik", "arms", false));
 }
 

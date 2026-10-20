@@ -6,6 +6,7 @@
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/melee.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/bridge.hpp"
@@ -319,6 +320,7 @@ void start(IDXGISwapChain* swapchain) {
     swapchain->GetDesc(&desc);
     g_window = desc.OutputWindow;
     if (!device || !load_loader()) {
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -330,6 +332,7 @@ void start(IDXGISwapChain* swapchain) {
     }
     if (status != xr::Status::Ok) {
         log::error("xr: {}", error);
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -338,6 +341,7 @@ void start(IDXGISwapChain* swapchain) {
               g_system.views.empty() ? 0 : g_system.views[0].recommendedImageRectHeight);
     if (g_system.views.size() != 2) {
         log::error("xr: expected 2 views (stereo), the runtime has {}", g_system.views.size());
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -347,6 +351,7 @@ void start(IDXGISwapChain* swapchain) {
         log::error("xr: the game renders on '{}', but the headset needs a different GPU; set the game and SteamVR "
                    "to the same GPU",
                    adapter);
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -368,6 +373,7 @@ void start(IDXGISwapChain* swapchain) {
         !g_session->create_quad(width, height, error)) {
         log::error("xr: {}", error);
         g_session.reset();
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -377,6 +383,7 @@ void start(IDXGISwapChain* swapchain) {
                    "(runtime picked {})",
                    static_cast<int>(desc.BufferDesc.Format), static_cast<int>(g_session->format()));
         g_session.reset();
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -396,6 +403,7 @@ void start(IDXGISwapChain* swapchain) {
     } else {
         log::info("xr input: off ([xr] input = false)");
     }
+    health::set("headset", health::State::Ready, std::string("mode ") + mode_name(g_mode));
     log::info("xr: session open on '{}', mode {}: images {}x{} format {} (game back buffer format {}, {}{}); screen "
               "{:.1f} m wide at {:.1f} m",
               adapter, mode_name(g_mode), width, height, static_cast<int>(g_session->format()),
@@ -958,6 +966,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         if (!g_ui_blitter.create(render::device(), desc.Width, desc.Height, desc.Format, error)) {
             log::error("ui: can't copy the UI texture ({}x{} format {}): {}; panel off", desc.Width, desc.Height,
                        static_cast<int>(desc.Format), error);
+            health::set("UI panel", health::State::Unavailable, "see the ui: lines");
             g_ui_failed = true;
             ui->Release();
             return;
@@ -968,6 +977,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
             if (!g_session->create_panel(static_cast<int32_t>(g_ui_panel_width), static_cast<int32_t>(g_ui_panel_height),
                                          error)) {
                 log::error("ui: can't create the panel layer: {}; panel off", error);
+                health::set("UI panel", health::State::Unavailable, "see the ui: lines");
                 g_ui_failed = true;
                 ui->Release();
                 return;
@@ -1026,6 +1036,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     ui_set_in_eyes(!g_ui_remove_from_eyes);
     if (!g_ui_shown) {
         log::info("ui: panel shown");
+        health::set("UI panel", health::State::Ready);
     }
     g_ui_shown = true;
     ++g_ui_frames;
@@ -1049,6 +1060,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         render::set_sync_interval_override(-1);
         g_session.reset();
         g_blitter.destroy();
+        health::set("headset", health::State::Unavailable, "see the xr: lines above");
         g_failed = true;
         return;
     }
@@ -1079,6 +1091,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
 
 void install(const Config& config) {
     if (!config.get_bool("xr", "enabled", false)) {
+        health::set("headset", health::State::Off, "[xr] enabled = false");
         log::info("xr: disabled ([xr] enabled = false in bg3vr.ini)");
         return;
     }

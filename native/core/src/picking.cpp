@@ -1,5 +1,6 @@
 #include "bg3vr/picking.hpp"
 
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/rayprobe.hpp"
@@ -79,10 +80,12 @@ void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
     const auto site = sig::lookup("camera_screen_to_world_ray");
     if (!site) {
+        health::set("hand pointing", health::State::Unavailable, "signature camera_screen_to_world_ray");
         log::warn("pick: signature camera_screen_to_world_ray not resolved; hand pointing unavailable");
         return;
     }
     if (!calls_target(layout::kPickReturn1, *site) || !calls_target(layout::kPickReturn2, *site)) {
+        health::set("hand pointing", health::State::Unavailable, "picking call sites changed");
         log::warn("pick: the picking call sites (exe+0x{:X}, exe+0x{:X}) don't call exe+0x{:X}; hand pointing unavailable",
                   layout::kPickReturn1, layout::kPickReturn2, *site - module.base);
         return;
@@ -91,11 +94,13 @@ void install(const Config& config, const ModuleInfo& module) {
     g_return2 = module.base + layout::kPickReturn2;
     auto hook = safetyhook::InlineHook::create(reinterpret_cast<void*>(*site), reinterpret_cast<void*>(&hooked_ray));
     if (!hook) {
+        health::set("hand pointing", health::State::Unavailable, "hook failed");
         log::error("pick: inline hook failed (error type {})", static_cast<int>(hook.error().type));
         return;
     }
     g_hook = std::move(*hook);
     set_hand(config.get_bool("pick", "hand", false));
+    health::set("hand pointing", health::State::Ready);
     log::info("pick: hook at exe+0x{:X} (picking rays from exe+0x{:X} / exe+0x{:X})", *site - module.base,
               layout::kPickReturn1, layout::kPickReturn2);
 }

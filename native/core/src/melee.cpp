@@ -1,6 +1,7 @@
 #include "bg3vr/melee.hpp"
 
 #include "bg3vr/bridge.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/vrplay.hpp"
@@ -48,6 +49,7 @@ void install(const Config& config) {
     g_blade = number("blade", 0.9f, 0.2f, 2.5f);
     g_min_speed = number("min_speed", 2.5f, 0.5f, 20.0f);
     g_cooldown = number("cooldown", 0.8f, 0.1f, 5.0f);
+    health::set("physical melee", g_enabled ? health::State::Ready : health::State::Off, "[combat] physical");
     log::info("combat: physical melee {} (blade {:.2f} m, swing speed {:.1f} m/s, cooldown {:.1f} s)",
               g_enabled ? "on" : "off ([combat] physical)", g_blade, g_min_speed, g_cooldown);
 }

@@ -2,6 +2,7 @@
 
 #include "bg3vr/camera.hpp"
 #include "bg3vr/hold.hpp"
+#include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
@@ -216,6 +217,7 @@ void install(const Config& config, const ModuleInfo& module) {
     g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
     g_eye_offset = number("eye_offset", 0.10f, -0.5f, 0.5f);
+    health::set("controller bindings", g_inject ? health::State::Ready : health::State::Unavailable, g_inject ? "" : "signature input_inject_raw");
     log::info("vr: bindings {}; turn {} ({}), right stick scroll {}, eye height {}", bound.empty() ? "none" : bound,
               g_snap ? "snap" : "smooth",
               g_snap ? std::format("{:.0f} deg", g_snap_degrees) : std::format("{:.0f} deg/s", g_smooth_degrees_per_s),
