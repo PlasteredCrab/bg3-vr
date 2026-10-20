@@ -27,11 +27,13 @@ struct System {
     std::vector<XrViewConfigurationView> views;
     LUID adapter{};      // the GPU the runtime needs the session's device on
     D3D_FEATURE_LEVEL min_feature_level{};
+    bool hand_tracking = false; // XR_EXT_hand_tracking enabled and the system supports it
 };
 
 enum class Status { Ok, NoHeadset, Failed };
 
-// Creates an instance with XR_KHR_D3D11_enable and finds the head-mounted display.
+// Creates an instance with XR_KHR_D3D11_enable (and XR_EXT_hand_tracking when the runtime has it) and finds the
+// head-mounted display.
 Status open(System& system, std::string& error);
 void close(System& system);
 
@@ -61,6 +63,17 @@ struct Hand {
     bool primary = false;     // A (right) / X (left)
     bool secondary = false;   // B (right) / Y (left)
     bool menu = false;        // menu button (left on Touch)
+
+    // Hand tracking (XR_EXT_hand_tracking), used when no controller is active for this hand. The joints become the
+    // same inputs: grip = the palm in the controller grip's frame (-Z where the fingers point, +Y up the fist, from
+    // the knuckles), aim = a ray from the index knuckle along wrist -> index knuckle (it stays put when the hand
+    // closes), trigger and squeeze = how closed the hand is.
+    bool hand_tracked = false;
+    XrVector3f index_tip{};   // for touching panels
+    XrVector3f palm_normal{}; // out of the palm (unit)
+    float fist = 0.0f;        // 0 open .. 1 closed (middle, ring and little fingertips to the palm)
+    float pinch = 0.0f;       // 0 apart .. 1 thumb and index tips touching
+    bool index_extended = false; // the index finger is straight (pointing)
 };
 enum HandIndex : std::size_t { kLeft = 0, kRight = 1 };
 
@@ -130,6 +143,8 @@ public:
     // HTC Vive and the Khronos simple controller, attached to the session. Call once after create().
     bool create_input(std::string& error);
     bool has_input() const { return action_set_ != XR_NULL_HANDLE; }
+    // Hand trackers for both hands (System::hand_tracking); called by create_input. False if unavailable.
+    bool has_hand_tracking() const { return hand_trackers_[0] != XR_NULL_HANDLE; }
     // Syncs the actions and samples both hands, poses located at `time` (use the frame's predicted display
     // time). False when the session isn't focused or input wasn't created (hands then read inactive).
     bool sync_input(XrTime time, Hand (&hands)[2]);
@@ -197,6 +212,14 @@ private:
     bool running_ = false;
     bool quit_ = false;
     bool profile_changed_ = false;
+
+    bool hand_tracking_supported_ = false;
+    XrHandTrackerEXT hand_trackers_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};
+    PFN_xrCreateHandTrackerEXT create_hand_tracker_ = nullptr;
+    PFN_xrDestroyHandTrackerEXT destroy_hand_tracker_ = nullptr;
+    PFN_xrLocateHandJointsEXT locate_hand_joints_ = nullptr;
+    void create_hand_trackers();
+    void sample_hand(std::size_t index, XrTime time, Hand& hand);
 };
 
 } // namespace bg3vr::xr

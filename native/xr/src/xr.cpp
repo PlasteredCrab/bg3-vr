@@ -1,5 +1,7 @@
 #include "bg3vr/xr.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -46,21 +48,23 @@ Status open(System& system, std::string& error) {
     std::vector<XrExtensionProperties> extensions(count, {XR_TYPE_EXTENSION_PROPERTIES});
     xrEnumerateInstanceExtensionProperties(nullptr, count, &count, extensions.data());
     bool has_d3d11 = false;
+    bool has_hands = false;
     for (const auto& extension : extensions) {
         has_d3d11 = has_d3d11 || std::strcmp(extension.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0;
+        has_hands = has_hands || std::strcmp(extension.extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0;
     }
     if (!has_d3d11) {
         error = std::string("runtime lacks ") + XR_KHR_D3D11_ENABLE_EXTENSION_NAME;
         return Status::Failed;
     }
 
-    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME, XR_EXT_HAND_TRACKING_EXTENSION_NAME};
     XrInstanceCreateInfo create{XR_TYPE_INSTANCE_CREATE_INFO};
     strcpy_s(create.applicationInfo.applicationName, "BG3 VR");
     create.applicationInfo.applicationVersion = 1;
     strcpy_s(create.applicationInfo.engineName, "BG3VR");
     create.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    create.enabledExtensionCount = 1;
+    create.enabledExtensionCount = has_hands ? 2 : 1;
     create.enabledExtensionNames = enabled;
     result = xrCreateInstance(&create, &system.instance);
     if (XR_FAILED(result)) {
@@ -88,9 +92,11 @@ Status open(System& system, std::string& error) {
         return Status::Failed;
     }
 
-    XrSystemProperties system_properties{XR_TYPE_SYSTEM_PROPERTIES};
+    XrSystemHandTrackingPropertiesEXT hand_properties{XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT};
+    XrSystemProperties system_properties{XR_TYPE_SYSTEM_PROPERTIES, has_hands ? &hand_properties : nullptr};
     xrGetSystemProperties(system.instance, system.id, &system_properties);
     system.headset = system_properties.systemName;
+    system.hand_tracking = has_hands && hand_properties.supportsHandTracking == XR_TRUE;
 
     uint32_t view_count = 0;
     xrEnumerateViewConfigurationViews(system.instance, system.id, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0,
@@ -132,6 +138,7 @@ bool Session::create(const System& system, ID3D11Device* device, std::string& er
                      int32_t eye_width, int32_t eye_height) {
     instance_ = system.instance;
     device_ = device;
+    hand_tracking_supported_ = system.hand_tracking;
     XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
     binding.device = device;
     XrSessionCreateInfo session_info{XR_TYPE_SESSION_CREATE_INFO};
@@ -439,7 +446,161 @@ bool Session::create_input(std::string& error) {
         space_info.action = aim_pose_;
         xrCreateActionSpace(session_, &space_info, &aim_spaces_[h]);
     }
+    create_hand_trackers();
     return true;
+}
+
+void Session::create_hand_trackers() {
+    if (!hand_tracking_supported_ || hand_trackers_[0] != XR_NULL_HANDLE) {
+        return;
+    }
+    xrGetInstanceProcAddr(instance_, "xrCreateHandTrackerEXT", reinterpret_cast<PFN_xrVoidFunction*>(&create_hand_tracker_));
+    xrGetInstanceProcAddr(instance_, "xrDestroyHandTrackerEXT", reinterpret_cast<PFN_xrVoidFunction*>(&destroy_hand_tracker_));
+    xrGetInstanceProcAddr(instance_, "xrLocateHandJointsEXT", reinterpret_cast<PFN_xrVoidFunction*>(&locate_hand_joints_));
+    if (!create_hand_tracker_ || !destroy_hand_tracker_ || !locate_hand_joints_) {
+        return;
+    }
+    for (std::size_t h = 0; h < 2; ++h) {
+        XrHandTrackerCreateInfoEXT info{XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+        info.hand = h == kLeft ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+        info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+        if (XR_FAILED(create_hand_tracker_(session_, &info, &hand_trackers_[h]))) {
+            hand_trackers_[h] = XR_NULL_HANDLE;
+        }
+    }
+    if (hand_trackers_[0] == XR_NULL_HANDLE || hand_trackers_[1] == XR_NULL_HANDLE) {
+        for (XrHandTrackerEXT& t : hand_trackers_) {
+            if (t != XR_NULL_HANDLE) {
+                destroy_hand_tracker_(t);
+                t = XR_NULL_HANDLE;
+            }
+        }
+    }
+}
+
+namespace {
+
+XrVector3f sub(const XrVector3f& a, const XrVector3f& b) {
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+float dot3(const XrVector3f& a, const XrVector3f& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+XrVector3f cross3(const XrVector3f& a, const XrVector3f& b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+XrVector3f unit(const XrVector3f& v) {
+    const float n = std::sqrt(dot3(v, v));
+    return n > 1e-6f ? XrVector3f{v.x / n, v.y / n, v.z / n} : XrVector3f{0.0f, 0.0f, 0.0f};
+}
+float distance3(const XrVector3f& a, const XrVector3f& b) {
+    const XrVector3f d = sub(a, b);
+    return std::sqrt(dot3(d, d));
+}
+
+// A rotation whose -Z axis is `forward` and +Y is `up` (made perpendicular), as a quaternion.
+XrQuaternionf look(const XrVector3f& forward, const XrVector3f& up_hint) {
+    const XrVector3f z{-forward.x, -forward.y, -forward.z};
+    const float along = dot3(up_hint, z);
+    const XrVector3f y = unit({up_hint.x - along * z.x, up_hint.y - along * z.y, up_hint.z - along * z.z});
+    const XrVector3f x = cross3(y, z);
+    // Matrix columns x, y, z -> quaternion.
+    const float m00 = x.x, m11 = y.y, m22 = z.z;
+    const float trace = m00 + m11 + m22;
+    XrQuaternionf q{};
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (y.z - z.y) / s;
+        q.y = (z.x - x.z) / s;
+        q.z = (x.y - y.x) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (y.z - z.y) / s;
+        q.x = 0.25f * s;
+        q.y = (y.x + x.y) / s;
+        q.z = (z.x + x.z) / s;
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (z.x - x.z) / s;
+        q.x = (y.x + x.y) / s;
+        q.y = 0.25f * s;
+        q.z = (z.y + y.z) / s;
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (x.y - y.x) / s;
+        q.x = (z.x + x.z) / s;
+        q.y = (z.y + y.z) / s;
+        q.z = 0.25f * s;
+    }
+    return q;
+}
+
+} // namespace
+
+void Session::sample_hand(std::size_t index, XrTime time, Hand& hand) {
+    if (hand_trackers_[index] == XR_NULL_HANDLE) {
+        return;
+    }
+    XrHandJointLocationEXT joints[XR_HAND_JOINT_COUNT_EXT]{};
+    XrHandJointVelocityEXT velocities[XR_HAND_JOINT_COUNT_EXT]{};
+    XrHandJointVelocitiesEXT velocity_list{XR_TYPE_HAND_JOINT_VELOCITIES_EXT};
+    velocity_list.jointCount = XR_HAND_JOINT_COUNT_EXT;
+    velocity_list.jointVelocities = velocities;
+    XrHandJointLocationsEXT locations{XR_TYPE_HAND_JOINT_LOCATIONS_EXT, &velocity_list};
+    locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+    locations.jointLocations = joints;
+    XrHandJointsLocateInfoEXT info{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+    info.baseSpace = space_;
+    info.time = time;
+    if (XR_FAILED(locate_hand_joints_(hand_trackers_[index], &info, &locations)) || locations.isActive != XR_TRUE) {
+        return;
+    }
+    const auto valid = [&](XrHandJointEXT j) {
+        return (joints[j].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+    };
+    for (XrHandJointEXT j : {XR_HAND_JOINT_PALM_EXT, XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_INDEX_PROXIMAL_EXT,
+                             XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT,
+                             XR_HAND_JOINT_INDEX_TIP_EXT, XR_HAND_JOINT_THUMB_TIP_EXT}) {
+        if (!valid(j)) {
+            return;
+        }
+    }
+    const XrVector3f palm = joints[XR_HAND_JOINT_PALM_EXT].pose.position;
+    const XrVector3f wrist = joints[XR_HAND_JOINT_WRIST_EXT].pose.position;
+    const XrVector3f index_knuckle = joints[XR_HAND_JOINT_INDEX_PROXIMAL_EXT].pose.position;
+    const XrVector3f middle_knuckle = joints[XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT].pose.position;
+    const XrVector3f little_knuckle = joints[XR_HAND_JOINT_LITTLE_PROXIMAL_EXT].pose.position;
+    const XrVector3f fingers = unit(sub(middle_knuckle, wrist));
+    const XrVector3f up = sub(index_knuckle, little_knuckle); // up the fist, for both hands
+    hand.hand_tracked = true;
+    hand.grip = {look(fingers, up), palm};
+    hand.grip_valid = true;
+    hand.aim = {look(unit(sub(index_knuckle, wrist)), up), index_knuckle};
+    hand.aim_valid = true;
+    hand.index_tip = joints[XR_HAND_JOINT_INDEX_TIP_EXT].pose.position;
+    // Out of the palm: the right palm faces -X when the hand is held like a controller (+Y up, -Z forward), the left +X.
+    const XrVector3f back = cross3(fingers, unit(up)); // for the right hand this points out of its back
+    hand.palm_normal = index == kRight ? XrVector3f{-back.x, -back.y, -back.z} : back;
+    hand.palm_normal = unit(hand.palm_normal);
+    float curl = 0.0f;
+    int counted = 0;
+    for (XrHandJointEXT tip : {XR_HAND_JOINT_MIDDLE_TIP_EXT, XR_HAND_JOINT_RING_TIP_EXT, XR_HAND_JOINT_LITTLE_TIP_EXT}) {
+        if (valid(tip)) {
+            curl += std::clamp((0.09f - distance3(joints[tip].pose.position, palm)) / 0.045f, 0.0f, 1.0f);
+            ++counted;
+        }
+    }
+    hand.fist = counted ? curl / static_cast<float>(counted) : 0.0f;
+    hand.pinch = std::clamp((0.035f - distance3(joints[XR_HAND_JOINT_THUMB_TIP_EXT].pose.position, hand.index_tip)) / 0.02f,
+                            0.0f, 1.0f);
+    hand.index_extended = distance3(hand.index_tip, palm) > 0.075f;
+    hand.trigger = hand.fist; // the core decides between click and grab (headset.cpp)
+    hand.squeeze = hand.fist;
+    const XrHandJointVelocityEXT& v = velocities[XR_HAND_JOINT_PALM_EXT];
+    hand.velocity_valid = (v.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+    hand.linear_velocity = v.linearVelocity;
+    hand.angular_velocity = v.angularVelocity;
 }
 
 bool Session::sync_input(XrTime time, Hand (&hands)[2]) {
@@ -508,6 +669,9 @@ bool Session::sync_input(XrTime time, Hand (&hands)[2]) {
         hand.primary = button(primary_);
         hand.secondary = button(secondary_);
         hand.menu = button(menu_);
+        if (!hand.active) {
+            sample_hand(h, time, hand); // no controller in this hand: the tracked hand, if any
+        }
     }
     return true;
 }
@@ -544,6 +708,12 @@ std::string Session::interaction_profile(std::size_t hand) const {
 }
 
 void Session::destroy_input() {
+    for (XrHandTrackerEXT& t : hand_trackers_) {
+        if (t != XR_NULL_HANDLE && destroy_hand_tracker_) {
+            destroy_hand_tracker_(t);
+        }
+        t = XR_NULL_HANDLE;
+    }
     for (std::size_t h = 0; h < 2; ++h) {
         for (XrSpace* space : {&grip_spaces_[h], &aim_spaces_[h]}) {
             if (*space != XR_NULL_HANDLE) {

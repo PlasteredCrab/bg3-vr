@@ -47,6 +47,19 @@ them; they are marked "(off)".
 The key bindings assume BG3's default PC keys; change any of them in `[bindings]`. Every button press gives a
 light buzz.
 
+## Hand tracking
+
+If your headset and runtime offer hand tracking (OpenXR XR_EXT_hand_tracking), put a controller down and that hand
+is tracked instead:
+
+- Point with your index finger (the other fingers curled): the laser follows your hand.
+- Close your hand after pointing: a click (select, walk, talk, cast, attack). Open it to release.
+- Close an open hand: a grab (holsters, items, bodies), the same as squeezing a grip.
+- Touch the wrist UI or the VR menu with your index fingertip.
+- Turn your other palm toward your face and pinch thumb and index finger: the VR menu.
+
+The log says at start-up whether hand tracking is available (`xr input: ... hand tracking`).
+
 ## Holsters
 
 Reach over a shoulder or to a hip, squeeze the grip and pull your hand away: your character draws the weapons kept

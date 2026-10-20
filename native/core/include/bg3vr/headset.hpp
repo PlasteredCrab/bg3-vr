@@ -62,6 +62,13 @@ struct HandState {
     vr::RigidPose world_grip;
     bool world_valid = false;
     std::uint64_t sample = 0; // increases with every sample (0: never sampled)
+    // Hand tracking (no controller in this hand): the index fingertip (touching panels), out of the palm, how far
+    // the thumb and index are pinched. trigger / squeeze then mean click / grab: a hand that closes after pointing
+    // with the index finger clicks, one that closes from open grabs.
+    bool hand_tracked = false;
+    vr::Vec3 tip{};
+    vr::Vec3 palm_normal{};
+    float pinch = 0.0f;
 };
 inline constexpr std::size_t kLeftHand = 0;
 inline constexpr std::size_t kRightHand = 1;

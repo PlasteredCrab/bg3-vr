@@ -408,8 +408,14 @@ void start(IDXGISwapChain* swapchain) {
         g_input = g_session->create_input(input_error);
         if (g_input) {
             log::info("xr input: controller actions attached (Touch, Index, Vive and simple profiles suggested); "
-                      "changes are logged as 'xr input:' lines, poses every {} frames",
-                      kHandLogEvery);
+                      "changes are logged as 'xr input:' lines, poses every {} frames; hand tracking {}",
+                      kHandLogEvery,
+                      g_session->has_hand_tracking() ? "on (a hand without a controller is tracked: point and close "
+                                                       "it to click, close an open hand to grab, palm to face + pinch "
+                                                       "on the other hand for the VR menu)"
+                                                     : "not offered by this runtime / headset (XR_EXT_hand_tracking)");
+            health::set("hand tracking", g_session->has_hand_tracking() ? health::State::Ready : health::State::Unavailable,
+                        g_session->has_hand_tracking() ? "" : "the runtime has no XR_EXT_hand_tracking");
         } else {
             log::warn("xr input: no controllers ({}); the headset still works", input_error);
         }
@@ -653,7 +659,17 @@ void log_hand_changes(std::size_t h, const HandState& before, const HandState& n
     }
 }
 
-HandState hand_state(const xr::Hand& hand, std::uint64_t sample) {
+// Hand tracking: what a closing hand means is decided as it closes. After pointing (index straight, the other fingers
+// curled) it is a click; from an open hand it is a grab. It stays that until the hand opens again.
+struct HandIntent {
+    bool closed = false;
+    bool click = false;
+    bool pointing = false; // the last pose before closing was pointing
+};
+std::array<HandIntent, 2> g_intent{};
+std::array<std::uint64_t, 2> g_hand_clicks{}, g_hand_grabs{};
+
+HandState hand_state(const xr::Hand& hand, std::uint64_t sample, std::size_t index) {
     HandState state;
     state.active = hand.active;
     state.tracked = hand.grip_valid;
@@ -671,6 +687,28 @@ HandState hand_state(const xr::Hand& hand, std::uint64_t sample) {
     state.primary = hand.primary;
     state.secondary = hand.secondary;
     state.menu = hand.menu;
+    if (hand.hand_tracked) {
+        state.hand_tracked = true;
+        state.tip = {hand.index_tip.x, hand.index_tip.y, hand.index_tip.z};
+        state.palm_normal = {hand.palm_normal.x, hand.palm_normal.y, hand.palm_normal.z};
+        state.pinch = hand.pinch;
+        HandIntent& in = g_intent[index];
+        const bool closed = in.closed ? hand.fist > 0.45f && !hand.index_extended
+                                      : hand.fist > 0.7f && !hand.index_extended;
+        if (closed && !in.closed) {
+            in.click = in.pointing;
+            ++(in.click ? g_hand_clicks : g_hand_grabs)[index];
+        } else if (!closed) {
+            if (hand.index_extended && hand.fist > 0.6f) {
+                in.pointing = true;
+            } else if (hand.fist < 0.3f) {
+                in.pointing = false;
+            }
+        }
+        in.closed = closed;
+        state.trigger = closed && in.click ? 1.0f : 0.0f;
+        state.squeeze = closed && !in.click ? 1.0f : 0.0f;
+    }
     if (state.tracked) {
         if (const auto world = camera::tracked_to_world(state.grip)) {
             state.world_grip = *world;
@@ -716,7 +754,7 @@ void update_input(const xr::Frame& frame) {
         }
     }
     ++g_hand_samples;
-    const std::array<HandState, 2> now{hand_state(raw[0], g_hand_samples), hand_state(raw[1], g_hand_samples)};
+    const std::array<HandState, 2> now{hand_state(raw[0], g_hand_samples, 0), hand_state(raw[1], g_hand_samples, 1)};
     {
         std::lock_guard lock(g_hands_mutex);
         g_hands = now;
@@ -775,11 +813,26 @@ void update_input(const xr::Frame& frame) {
     locomotion::set_stick(stick ? now[walk].stick_x : 0.0f, stick ? now[walk].stick_y : 0.0f);
     // Buttons, turning and recentring while VR play is on. vrplay's "right" hand is the dominant one (left-handed: the
     // controllers swap roles).
+    // Tracked hands: the trigger is a click, the grab is no right-click (only grabbing and holsters use it), and the
+    // other hand's palm turned to the face with a pinch is its menu button.
     vrplay::Hand play[2];
     for (std::size_t slot = 0; slot < 2; ++slot) {
         const std::size_t h = slot == 1 ? pointer_hand() : wrist_hand();
-        play[slot] = {now[h].active, now[h].trigger, now[h].squeeze, now[h].stick_x, now[h].stick_y,
-                      now[h].stick_click, now[h].primary, now[h].secondary, now[h].menu, holsters.grip_taken[h]};
+        const HandState& hs = now[h];
+        bool menu = hs.menu;
+        if (hs.hand_tracked && slot == 0 && frame.views.size() == 2) {
+            const vr::Vec3 eye = centre_view(frame.views).pose.position;
+            const vr::Vec3 to_eye{eye[0] - hs.grip.position[0], eye[1] - hs.grip.position[1], eye[2] - hs.grip.position[2]};
+            const float len = std::sqrt(to_eye[0] * to_eye[0] + to_eye[1] * to_eye[1] + to_eye[2] * to_eye[2]);
+            const float facing = len > 1e-3f ? (hs.palm_normal[0] * to_eye[0] + hs.palm_normal[1] * to_eye[1] +
+                                                hs.palm_normal[2] * to_eye[2]) / len
+                                             : 0.0f;
+            static bool pinched = false;
+            pinched = pinched ? hs.pinch > 0.5f : hs.pinch > 0.85f;
+            menu = facing > 0.6f && pinched;
+        }
+        play[slot] = {hs.active || hs.hand_tracked, hs.trigger, hs.hand_tracked ? 0.0f : hs.squeeze, hs.stick_x, hs.stick_y,
+                      hs.stick_click, hs.primary, hs.secondary, menu, holsters.grip_taken[h]};
     }
     const vrplay::Feedback feedback =
         vrplay::on_controllers(play, static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
@@ -1099,7 +1152,12 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     // Where it is this frame: the world panel, or on the left wrist.
     const std::array<HandState, 2> both = hands();
     const bool wrist = g_ui_wrist.load(std::memory_order_relaxed);
-    const xr::PanelPlacement place = wrist ? wrist_place() : *g_ui_place;
+    // A tracked hand has no grip action space for the runtime to anchor the panel to: place it in LOCAL from the
+    // hand's grip every frame instead.
+    const bool wrist_hand_tracked = wrist && both[wrist_hand()].hand_tracked && both[wrist_hand()].tracked;
+    const xr::PanelPlacement place = !wrist                ? *g_ui_place
+                                     : wrist_hand_tracked ? in_local(wrist_place(), both[wrist_hand()].grip)
+                                                          : wrist_place();
     // The laser.
     blit::Blitter::Overlay overlay;
     overlay.keep_alpha = true;
@@ -1108,7 +1166,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     if (g_ui_laser && !g_menu_is_open.load(std::memory_order_relaxed)) {
         const HandState& right = both[pointer_hand()];
         std::optional<xr::PanelPlacement> target;
-        if (!wrist) {
+        if (!wrist || wrist_hand_tracked) {
             target = place;
         } else if (both[wrist_hand()].tracked) {
             target = in_local(place, both[wrist_hand()].grip);
@@ -1117,7 +1175,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         // past 5 mm holds the left mouse button until the tip comes back out past 12 mm or leaves the panel.
         std::optional<std::array<float, 2>> touch;
         if (right.aim_valid && target) {
-            const auto p = panel_point(right.aim.position, *target, height_m);
+            const auto p = panel_point(right.hand_tracked ? right.tip : right.aim.position, *target, height_m);
             if (p && (*p)[2] < 0.03f && (*p)[2] > -0.03f) {
                 touch = std::array<float, 2>{(*p)[0], (*p)[1]};
                 const bool in = (*p)[2] < (g_ui_touch_down ? 0.012f : 0.005f);
@@ -1269,7 +1327,8 @@ void update_menu(const xr::Frame& frame) {
     std::optional<std::array<float, 2>> pointer;
     bool click = false;
     if (right.aim_valid) {
-        if (const auto p = panel_point(right.aim.position, *g_menu_place, height_m); p && (*p)[2] < 0.03f && (*p)[2] > -0.02f) {
+        if (const auto p = panel_point(right.hand_tracked ? right.tip : right.aim.position, *g_menu_place, height_m);
+            p && (*p)[2] < 0.03f && (*p)[2] > -0.02f) {
             pointer = std::array<float, 2>{(*p)[0], (*p)[1]};
             const bool in = (*p)[2] < 0.005f;
             click = in && !g_menu_touching;
@@ -1536,6 +1595,9 @@ void report() {
               g_ui_shown ? "shown" : "hidden", g_ui_wrist.load(std::memory_order_relaxed) ? "wrist" : "world", g_ui_frames,
               g_ui_laser_hits, g_ui_touches, g_menu_is_open.load(std::memory_order_relaxed) ? "open" : "closed",
               g_menu_frames, g_menu_clicks, g_menu_failed ? ", FAILED to start" : "");
+    log::info("xr input: hand tracking {}; tracked-hand clicks left {} right {}, grabs left {} right {}",
+              g_session && g_session->has_hand_tracking() ? "on" : "off", g_hand_clicks[0], g_hand_clicks[1],
+              g_hand_grabs[0], g_hand_grabs[1]);
 }
 
 std::array<HandState, 2> hands() {
