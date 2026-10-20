@@ -1156,8 +1156,8 @@ void test_holster() {
     o = step(hip, false); // closed and opened without leaving: a tap
     CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Tap && o.events[0].zone == Zone::HipRight);
     o = step(out_front, true);
-    o = step(hip, false); // closed outside any zone, opened at the hip: nothing was drawn, nothing to stow
-    CHECK(o.events.empty() && !o.grip_taken[1]);
+    o = step(hip, false); // closed outside any zone (holding the drawn weapon), opened at the hip: put away there
+    CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Stow && o.events[0].zone == Zone::HipRight);
     o = step({0.0f, 1.2f, 0.2f}, true); // the back opens at once
     CHECK(o.events.size() == 1 && o.events[0].kind == Event::Kind::Grab && o.events[0].zone == Zone::Back);
     o = step({0.0f, 1.2f, 0.2f}, false);
@@ -1204,6 +1204,27 @@ void test_stereo_view_block() {
     }
 }
 
+void test_elbow() {
+    // Parger et al. 2018 elbow model.
+    const ik::ArmFrame frame{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    const vr::Vec3 shoulder{0.0f, 0.0f, 0.0f};
+    // Hand straight ahead at shoulder height: the elbow points down (and a little out).
+    const ik::Elbow ahead = ik::elbow_direction(shoulder, {0.0f, 0.0f, 0.55f}, frame);
+    CHECK(near_eq(ahead.phi_deg, 175.0f) && ahead.direction[1] < -0.95f && ahead.direction[0] > 0.0f);
+    CHECK(std::abs(ahead.direction[2]) < 1e-3f); // perpendicular to the shoulder -> hand axis
+    // Swivel 90: outward; 0: up.
+    const vr::Vec3 out = ik::swivel_direction(shoulder, {0.0f, 0.0f, 0.5f}, frame, 90.0f);
+    const vr::Vec3 up = ik::swivel_direction(shoulder, {0.0f, 0.0f, 0.5f}, frame, 0.0f);
+    CHECK(out[0] > 0.99f && up[1] > 0.99f);
+    // Hand behind the shoulder: the fixed relaxed direction (down and back) takes over.
+    const ik::Elbow behind = ik::elbow_direction(shoulder, {0.1f, -0.3f, -0.2f}, frame);
+    const float d = behind.direction[0] * 0.1f + behind.direction[1] * -0.3f + behind.direction[2] * -0.2f;
+    CHECK(std::abs(d) < 0.05f);
+    // Wrist roll beyond the comfortable range moves the elbow, quadratically.
+    CHECK(near_eq(ik::wrist_roll_correction(45.0f), 0.0f) && near_eq(ik::wrist_roll_correction(-30.0f), -1.5f) &&
+          near_eq(ik::wrist_roll_correction(120.0f), 3.0f));
+}
+
 } // namespace
 
 int main() {
@@ -1230,6 +1251,7 @@ int main() {
     test_vrmenu();
     test_holster();
     test_stereo_view_block();
+    test_elbow();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }

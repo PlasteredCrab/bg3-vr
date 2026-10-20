@@ -180,7 +180,10 @@ void configure(const Config& config) {
 }
 
 void set_headset_eye(std::uint32_t width, std::uint32_t height) {
-    if (g_eye_width.exchange(width) != width || g_eye_height.exchange(height) != height) {
+    // Both stored (an || here once skipped the height, so the VR size never applied).
+    const bool width_changed = g_eye_width.exchange(width) != width;
+    const bool height_changed = g_eye_height.exchange(height) != height;
+    if (width_changed || height_changed) {
         log::info("resolution: headset recommends {}x{} per eye", width, height);
         g_pending = g_ready;
     }

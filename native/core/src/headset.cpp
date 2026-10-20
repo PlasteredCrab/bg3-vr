@@ -133,6 +133,7 @@ std::size_t wrist_hand() {
     return 1 - g_dominant.load(std::memory_order_relaxed);
 }
 std::atomic<bool> g_menu_is_open{false};        // the VR menu is up: the controllers drive it
+std::atomic<bool> g_first_run{false};           // open the VR menu on the Guide at the first VR start
 HWND g_window = nullptr;                    // the game window (the laser moves the mouse cursor in it)
 bool g_was_driven = false;
 
@@ -1016,7 +1017,9 @@ void publish_status(bool ready) {
 bool g_ui_enabled = true;          // [ui] panel
 bool g_ui_remove_from_eyes = true; // [ui] remove_from_eyes
 bool g_ui_laser = true;            // [ui] laser
-std::atomic<float> g_ui_wrist_width{0.3f}; // [ui] wrist_width (m)
+std::atomic<float> g_ui_wrist_width{0.4f}; // [ui] wrist_width (m)
+std::atomic<float> g_ui_wrist_out{0.045f};  // [ui] wrist_out: off the back of the hand (m)
+std::atomic<float> g_ui_wrist_along{0.2f};  // [ui] wrist_along: the panel centre up the forearm from the grip (m)
 float g_ui_distance = 1.0f;        // [ui] distance (m)
 float g_ui_width = 1.1f;           // [ui] width (m)
 float g_ui_drop = 0.15f;           // [ui] below_eyes (m)
@@ -1083,13 +1086,19 @@ xr::PanelPlacement place_in_front(const vr::RigidPose& head) {
     return place;
 }
 
-// The panel on the back of the left wrist, facing the eyes when the forearm is raised like reading a watch (left grip
-// space: -Z along the index finger, +Y up).
+// The panel on the back of the off hand's forearm, like a watch face (grip space, OpenXR: -Z up the handle on the thumb
+// side, +Y back toward the elbow, +X to the right for both hands, so the back of the left hand faces -X and the right
+// +X). The panel faces out of the back of the hand, starts just behind the wrist and runs up the forearm; its top is
+// the little-finger side and its text runs toward the hand, so it reads upright when the arm is raised to look at it.
 xr::PanelPlacement wrist_place() {
     xr::PanelPlacement place;
-    place.anchor = wrist_hand() == kLeftHand ? xr::PanelPlacement::Anchor::LeftGrip : xr::PanelPlacement::Anchor::RightGrip;
-    place.pose.position = {0.0f, 0.06f, 0.10f};
-    place.pose.orientation = {-0.5f, 0.0f, 0.0f, 0.8660254f}; // 60 degrees up about X
+    const bool left = wrist_hand() == kLeftHand;
+    place.anchor = left ? xr::PanelPlacement::Anchor::LeftGrip : xr::PanelPlacement::Anchor::RightGrip;
+    const float out = g_ui_wrist_out.load(std::memory_order_relaxed);
+    const float along = g_ui_wrist_along.load(std::memory_order_relaxed);
+    place.pose.position = {left ? -out : out, along, 0.0f};
+    // Columns (panel x, y, z) in grip axes: left (-Y, +Z, -X), right (+Y, +Z, +X).
+    place.pose.orientation = left ? XrQuaternionf{0.5f, -0.5f, -0.5f, 0.5f} : XrQuaternionf{0.5f, 0.5f, 0.5f, 0.5f};
     place.width_m = g_ui_wrist_width;
     return place;
 }
@@ -1413,6 +1422,14 @@ void set_menu_open(bool open) {
 }
 
 void update_menu(const xr::Frame& frame) {
+    if (g_first_run.load(std::memory_order_relaxed) && vrplay::active() && !g_menu_open && g_menu_enabled && !g_menu_failed) {
+        g_first_run = false;
+        g_menu.show_guide();
+        g_menu.show_lesson(0);
+        g_menu_toggle_request.store(true, std::memory_order_relaxed);
+        bridge::post("set=menu.welcomed true\n"); // once
+        log::info("menu: first VR start: opening the VR menu on the Guide");
+    }
     if (g_menu_toggle_request.exchange(false, std::memory_order_relaxed)) {
         if (!g_menu_open && g_menu_enabled && !g_menu_failed && !g_menu_renderer) {
             g_menu_failed = !create_menu();
@@ -1688,7 +1705,7 @@ void install(const Config& config) {
     g_ui_distance = ui_number("distance", 1.0f, 0.3f, 5.0f);
     g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
-    g_ui_wrist_width = ui_number("wrist_width", 0.3f, 0.1f, 1.0f);
+    g_ui_wrist_width = ui_number("wrist_width", 0.4f, 0.1f, 1.0f);
     g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "wrist")) == "wrist", std::memory_order_relaxed);
     g_menu_enabled = config.get_bool("menu", "enabled", true);
     g_menu_width = ui_number("menu_width", 0.62f, 0.2f, 2.0f);
@@ -1701,6 +1718,10 @@ void install(const Config& config) {
     }
     render::set_present_callback(&on_present);
     log::info("xr: enabled, mode {}; the session opens on the first presented frame", mode_name(g_mode));
+}
+
+void set_first_run(bool first) {
+    g_first_run.store(first, std::memory_order_relaxed);
 }
 
 void configure_ui(const Config& config) {
@@ -1742,8 +1763,14 @@ void configure_ui(const Config& config) {
         log::info("pointer: aiming beam {} ({}, opacity {:.2f}, width {:.3f}, range {:.0f} m)",
                   s == 0 ? "off" : style, chosen.name, g_beam_opacity.load(), g_beam_width.load(), g_beam_range.load());
     }
+    const auto ui_value = [&](const char* key, float fallback, float lo, float hi) {
+        const std::string text = config.get("ui", key);
+        return text.empty() ? fallback : std::clamp(std::strtof(text.c_str(), nullptr), lo, hi);
+    };
+    g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
+    g_ui_wrist_along = ui_value("wrist_along", 0.2f, -0.3f, 0.6f);
     const std::string v = config.get("ui", "wrist_width");
-    const float width = v.empty() ? 0.3f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 1.0f);
+    const float width = v.empty() ? 0.4f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 1.0f);
     if (g_ui_wrist_width.exchange(width) != width) {
         log::info("ui: wrist panel {:.2f} m wide", width);
     }

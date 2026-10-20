@@ -127,6 +127,8 @@ Output Tracker::update(const Settings& settings, const vr::RigidPose& head, cons
             } else if (zone != Zone::None) {
                 armed_[h] = zone;
                 out.haptic[h] = 0.3f;
+            } else {
+                holding_[h] = true; // closed in the open: holding whatever is in the hand
             }
         } else if (grip && armed_[h] != Zone::None && zone != armed_[h]) {
             // Pulled out of the zone with the grip closed: drawn.
@@ -139,7 +141,7 @@ Output Tracker::update(const Settings& settings, const vr::RigidPose& head, cons
             if (armed_[h] != Zone::None) {
                 out.events.push_back({Event::Kind::Tap, armed_[h], h});
                 out.haptic[h] = 0.25f;
-            } else if (carrying_[h] != Zone::None && zone != Zone::None &&
+            } else if ((carrying_[h] != Zone::None || holding_[h]) && zone != Zone::None &&
                        (settings.holds[static_cast<std::size_t>(zone)] == "melee" ||
                         settings.holds[static_cast<std::size_t>(zone)] == "ranged")) {
                 out.events.push_back({Event::Kind::Stow, zone, h});
@@ -147,6 +149,7 @@ Output Tracker::update(const Settings& settings, const vr::RigidPose& head, cons
             }
             armed_[h] = Zone::None;
             carrying_[h] = Zone::None;
+            holding_[h] = false;
         }
         out.grip_taken[h] = grip && (armed_[h] != Zone::None || carrying_[h] != Zone::None ||
                                      (zone != Zone::None && settings.holds[static_cast<std::size_t>(zone)] != "melee" &&

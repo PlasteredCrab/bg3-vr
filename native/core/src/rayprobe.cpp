@@ -244,13 +244,18 @@ void on_frame() {
         if (const auto aim = hand_aim()) {
             const vr::Vec3 dir = vr::rotate(aim->orientation, {0.0f, 0.0f, 1.0f}); // game convention: forward +Z
             const float range = g_beam_range.load(std::memory_order_relaxed);
+            // From 0.3 m ahead of the hand: the player's own body is the first thing the ray meets otherwise (the
+            // 2026-10-20 run logged hits at 0.00 m).
+            constexpr float kSkip = 0.3f;
+            const vr::Vec3 from{aim->position[0] + dir[0] * kSkip, aim->position[1] + dir[1] * kSkip,
+                                aim->position[2] + dir[2] * kSkip};
             const vr::Vec3 to{aim->position[0] + dir[0] * range, aim->position[1] + dir[1] * range,
                               aim->position[2] + dir[2] * range};
             for (const auto& [flags, group, exclude] : {std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>{5, 0x820, 0x194280},
                                                         {0xF, 0x4CA20, 0x210080}}) {
-                if (const auto hit = raycast(aim->position, to, flags, group, exclude)) {
-                    if (best < 0.0f || hit->distance < best) {
-                        best = hit->distance;
+                if (const auto hit = raycast(from, to, flags, group, exclude)) {
+                    if (best < 0.0f || hit->distance + kSkip < best) {
+                        best = hit->distance + kSkip;
                     }
                 }
             }

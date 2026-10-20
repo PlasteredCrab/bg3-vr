@@ -537,7 +537,13 @@ void on_frame() {
         return;
     }
     // The character's eyes (Dummy_EyeFX bones) when the skeleton has them, else the head bone plus a typical offset.
-    g_samples.push_back((head->has_eyes ? head->eyes_world[1] : head->world[1] + kHeadBoneToEyes) - (*feet)[1]);
+    // Eye bones that don't sit near the head bone (the 2026-10-20 run read 19 m) aren't trusted: head bone + 0.10 m.
+    const bool eyes_ok = head->has_eyes && std::abs(head->eyes_world[1] - head->world[1]) < 0.3f;
+    if (head->has_eyes && !eyes_ok && g_samples.empty()) {
+        log::warn("vr: the eye bones are {:.2f} m from the head bone (model ({:.3f}, {:.3f}, {:.3f})); using the head bone",
+                  head->eyes_world[1] - head->world[1], head->eyes_model[0], head->eyes_model[1], head->eyes_model[2]);
+    }
+    g_samples.push_back((eyes_ok ? head->eyes_world[1] : head->world[1] + kHeadBoneToEyes) - (*feet)[1]);
     if (g_samples.size() < 45) {
         return;
     }
@@ -555,7 +561,8 @@ void on_frame() {
     camera::set_follow_height(height);
     log::info("vr: eye height {:.2f} m ({} {:.2f} m above the character's origin {:+.2f} m; head bone {:.2f} m; the "
               "character's eyes are {:.3f} m apart)",
-              height, head->has_eyes ? "eye bones" : "head bone + 0.10 m (no eye bones)", median, offset,
+              height, head->has_eyes && std::abs(head->eyes_world[1] - head->world[1]) < 0.3f ? "eye bones" : "head bone + 0.10 m",
+              median, offset,
               head->world[1] - (*feet)[1], head->eye_separation);
 }
 

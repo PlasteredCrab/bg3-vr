@@ -8,6 +8,9 @@
 #include "bg3vr/text.hpp"
 
 #include <array>
+#include <optional>
+#include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -66,6 +69,17 @@ std::atomic<std::uint64_t> g_applied{0};
 std::atomic<std::uint64_t> g_skipped{0};
 std::atomic<int> g_logged{0};
 std::atomic<int> g_logged_hands{0};
+std::atomic<int> g_logged_elbow{0};
+std::atomic<float> g_stretch{1.15f};    // [ik] stretch: how much longer an arm may get to reach the hand
+std::atomic<bool> g_elbow_model{true};  // [ik] elbow = natural (Parger et al. 2018) | down
+std::atomic<bool> g_elbow_wrist{true};  // [ik] elbow_wrist: the wrist's roll moves the elbow
+struct ElbowState {
+    bool valid = false;
+    float phi = 0.0f;
+    std::chrono::steady_clock::time_point when{};
+};
+std::mutex g_elbow_mutex;
+std::array<ElbowState, 2> g_elbow_state{};
 
 int find(const std::vector<Bone>& bones, const std::string& name) {
     for (std::size_t i = 0; i < bones.size(); ++i) {
@@ -143,6 +157,12 @@ void configure(const Config& config, const ModuleInfo& module) {
 void configure_hands(const Config& config) {
     auto hands = std::make_shared<Hands>();
     hands->weapon = text::to_lower(config.get("ik", "hands", "weapon")) != "relative";
+    {
+        const std::string v = config.get("ik", "stretch");
+        g_stretch = v.empty() ? 1.15f : std::clamp(std::strtof(v.c_str(), nullptr), 1.0f, 1.5f);
+        g_elbow_model = text::to_lower(config.get("ik", "elbow", "natural")) != "down";
+        g_elbow_wrist = config.get_bool("ik", "elbow_wrist", true);
+    }
     const auto degrees = [&](const char* key, const char* fallback_key) {
         std::string v = config.get("ik", key);
         if (v.empty() && fallback_key) {
@@ -272,6 +292,7 @@ void apply(std::uintptr_t skeleton) {
         bool weapon = false;
         float weapon_hand[3][3]{};
         vr::Vec3 wrist_goal = goal;
+        std::optional<vr::Vec3> thumb_world; // model space: where the thumb side of the fist points
         if (hands && hands->weapon && side.dummy >= 0 && side.index >= 0 && side.middle >= 0 && side.pinky >= 0) {
             float* md = get(pose, side.dummy);
             float* mi = get(pose, side.index);
@@ -304,12 +325,18 @@ void apply(std::uintptr_t skeleton) {
                     float c[3][3];
                     quat_to_matrix(vr::multiply(vr::multiply(inverse, target->orientation), hands->offset[static_cast<std::size_t>(s)]), c);
                     const vr::Vec3 cf{c[0][2], c[1][2], c[2][2]}, cu{c[0][1], c[1][1], c[2][1]};
-                    const vr::Vec3 cb = cross3(cf, cu);
+                    // The grip frame (logged 2026-10-20: "forward" ran up the handle): the handle axis (OpenXR -Z,
+                    // here cf) is where the fist's up (pinky -> index knuckle) and a held blade point; the fingers
+                    // wrap along OpenXR -Y (here -cu).
+                    const vr::Vec3 target_fingers{-cu[0], -cu[1], -cu[2]};
+                    const vr::Vec3 target_up = cf;
+                    const vr::Vec3 target_third = cross3(target_fingers, target_up);
+                    thumb_world = target_up;
                     for (int i = 0; i < 3; ++i) {
                         for (int j = 0; j < 3; ++j) {
-                            weapon_hand[i][j] = cf[static_cast<std::size_t>(i)] * f_l[static_cast<std::size_t>(j)] +
-                                                cu[static_cast<std::size_t>(i)] * u_l[static_cast<std::size_t>(j)] +
-                                                cb[static_cast<std::size_t>(i)] * b_l[static_cast<std::size_t>(j)];
+                            const auto ii = static_cast<std::size_t>(i), jj = static_cast<std::size_t>(j);
+                            weapon_hand[i][j] = target_fingers[ii] * f_l[jj] + target_up[ii] * u_l[jj] +
+                                                target_third[ii] * b_l[jj];
                         }
                     }
                     const vr::Vec3 d = local(sub(dummy.t, hand.t));
@@ -336,8 +363,88 @@ void apply(std::uintptr_t skeleton) {
         const vr::Vec3 S{upper.t[0], upper.t[1], upper.t[2]};
         const vr::Vec3 E{lower.t[0], lower.t[1], lower.t[2]};
         const vr::Vec3 W{hand.t[0], hand.t[1], hand.t[2]};
-        const vr::Vec3 pole{E[0], E[1] - 0.25f, E[2]}; // elbows bend down
-        const ik::TwoBone solved = ik::solve_two_bone(S, E, W, wrist_goal, pole);
+        // Arms a little longer when the hand is out of reach ([ik] stretch): the elbow and wrist move out from the
+        // shoulder; the skin stretches between the bones.
+        vr::Vec3 E_s = E, W_s = W;
+        {
+            const auto len = [](const vr::Vec3& a, const vr::Vec3& b) {
+                const float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+                return std::sqrt(x * x + y * y + z * z);
+            };
+            const float reach = len(E, S) + len(W, E);
+            const float want = len(wrist_goal, S);
+            const float stretch = g_stretch.load(std::memory_order_relaxed);
+            if (reach > 1e-3f && want > reach && stretch > 1.0f) {
+                const float f = std::min(want / reach, stretch);
+                for (int i = 0; i < 3; ++i) {
+                    const auto k = static_cast<std::size_t>(i);
+                    E_s[k] = S[k] + (E[k] - S[k]) * f;
+                    W_s[k] = S[k] + (W[k] - S[k]) * f;
+                }
+            }
+        }
+        // Where the elbow points (Parger et al. 2018, ik.hpp): model space has +Y up, -Z forward and +X on the
+        // character's left.
+        vr::Vec3 pole{E[0], E[1] - 0.25f, E[2]};
+        if (g_elbow_model.load(std::memory_order_relaxed)) {
+            const ik::ArmFrame frame{{s ? -1.0f : 1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}};
+            const ik::Elbow elbow = ik::elbow_direction(S, wrist_goal, frame);
+            float phi = elbow.phi_deg;
+            float roll = 0.0f;
+            if (thumb_world && g_elbow_wrist.load(std::memory_order_relaxed)) {
+                // Hand roll: the thumb side's turn around the forearm away from "elbow down, thumb up", positive
+                // outward, measured on the arm this elbow direction gives.
+                const ik::TwoBone first = ik::solve_two_bone(S, E_s, W_s, wrist_goal,
+                                                             {(S[0] + wrist_goal[0]) * 0.5f + elbow.direction[0] * 0.4f,
+                                                              (S[1] + wrist_goal[1]) * 0.5f + elbow.direction[1] * 0.4f,
+                                                              (S[2] + wrist_goal[2]) * 0.5f + elbow.direction[2] * 0.4f});
+                const auto sub3 = [](const vr::Vec3& a, const vr::Vec3& b) { return vr::Vec3{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+                const auto dot3v = [](const vr::Vec3& a, const vr::Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+                const auto cross3v = [](const vr::Vec3& a, const vr::Vec3& b) {
+                    return vr::Vec3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+                };
+                const auto perp = [&](const vr::Vec3& v, const vr::Vec3& axis) {
+                    const float d = dot3v(v, axis);
+                    return vr::Vec3{v[0] - axis[0] * d, v[1] - axis[1] * d, v[2] - axis[2] * d};
+                };
+                vr::Vec3 axis = sub3(first.wrist, first.elbow);
+                const float al = std::sqrt(dot3v(axis, axis));
+                if (al > 1e-4f) {
+                    axis = {axis[0] / al, axis[1] / al, axis[2] / al};
+                    const vr::Vec3 elbow_out = perp(sub3(first.elbow, S), axis); // toward the elbow, across the forearm
+                    const vr::Vec3 reference{-elbow_out[0], -elbow_out[1], -elbow_out[2]};
+                    const vr::Vec3 thumb = perp(*thumb_world, axis);
+                    const vr::Vec3 outward = perp(frame.outward, axis);
+                    float angle = std::atan2(dot3v(cross3v(reference, thumb), axis), dot3v(reference, thumb)) * 57.2957795f;
+                    if (dot3v(cross3v(reference, outward), axis) < 0.0f) {
+                        angle = -angle; // positive toward outward
+                    }
+                    roll = angle;
+                    phi += ik::wrist_roll_correction(roll);
+                }
+            }
+            // Smoothed over about 0.1 s so the elbow glides.
+            {
+                std::scoped_lock lock(g_elbow_mutex);
+                const auto now = std::chrono::steady_clock::now();
+                ElbowState& st = g_elbow_state[static_cast<std::size_t>(s)];
+                const float dt = st.valid ? std::chrono::duration<float>(now - st.when).count() : 1.0f;
+                const float k = std::clamp(dt / 0.1f, 0.0f, 1.0f);
+                st.phi = st.valid ? st.phi + (phi - st.phi) * k : phi;
+                st.when = now;
+                st.valid = true;
+                phi = st.phi;
+            }
+            const vr::Vec3 dir = ik::swivel_direction(S, wrist_goal, frame, std::clamp(phi, 0.0f, 180.0f));
+            pole = {(S[0] + wrist_goal[0]) * 0.5f + dir[0] * 0.4f, (S[1] + wrist_goal[1]) * 0.5f + dir[1] * 0.4f,
+                    (S[2] + wrist_goal[2]) * 0.5f + dir[2] * 0.4f};
+            if (g_logged_elbow.load(std::memory_order_relaxed) < 12 && (g_applied.load(std::memory_order_relaxed) % 450) < 2) {
+                g_logged_elbow.fetch_add(1, std::memory_order_relaxed);
+                log::info("ik: {} elbow swivel {:.0f} deg (position model {:.0f}, wrist roll {:.0f} deg){}", s ? "right" : "left",
+                          phi, elbow.phi_deg, roll, W_s[0] != W[0] ? " (arm stretched)" : "");
+            }
+        }
+        const ik::TwoBone solved = ik::solve_two_bone(S, E_s, W_s, wrist_goal, pole);
 
         Rigid new_upper = upper, new_lower = lower, new_hand = hand;
         float r[3][3];

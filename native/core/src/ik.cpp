@@ -102,4 +102,73 @@ TwoBone solve_two_bone(const Vec3& shoulder, const Vec3& elbow, const Vec3& wris
     return result;
 }
 
+namespace {
+
+struct SwivelBasis {
+    Vec3 up{};      // swivel 0
+    Vec3 outward{}; // swivel 90
+};
+
+// The swivel plane around the shoulder -> hand axis: the frame's up and outward made perpendicular to the axis.
+SwivelBasis swivel_basis(const Vec3& shoulder, const Vec3& hand, const ArmFrame& frame) {
+    const Vec3 axis = normalized(sub(hand, shoulder), frame.forward);
+    bool ok = false;
+    Vec3 up = perpendicular_part(frame.up, axis, ok);
+    if (!ok) {
+        up = perpendicular_part(scale(frame.forward, -1.0f), axis, ok); // hand straight above / below the shoulder
+        if (!ok) {
+            up = any_perpendicular(axis);
+        }
+    }
+    const Vec3 out = cross(axis, up); // perpendicular to both; make it point outward
+    const Vec3 outward = dot(out, frame.outward) >= 0.0f ? out : scale(out, -1.0f);
+    return {up, outward};
+}
+
+} // namespace
+
+Vec3 swivel_direction(const Vec3& shoulder, const Vec3& hand, const ArmFrame& frame, float phi_deg) {
+    const SwivelBasis b = swivel_basis(shoulder, hand, frame);
+    const float phi = phi_deg * 3.14159265f / 180.0f;
+    return normalized(add(scale(b.up, std::cos(phi)), scale(b.outward, std::sin(phi))), b.up);
+}
+
+Elbow elbow_direction(const Vec3& shoulder, const Vec3& hand, const ArmFrame& frame) {
+    const Vec3 rel = sub(hand, shoulder);
+    const float x = dot(rel, frame.outward), y = dot(rel, frame.up), z = dot(rel, frame.forward);
+    // 1. From the hand's position relative to the shoulder.
+    const float w[3] = {-50.0f, -60.0f, 260.0f}, b[3] = {30.0f, 120.0f, 65.0f}, h[3] = {x, y, z};
+    float phi = 15.0f;
+    for (int i = 0; i < 3; ++i) {
+        phi += std::max(0.0f, h[i] * w[i] + b[i]);
+    }
+    phi = std::clamp(phi, 13.0f, 175.0f);
+    Vec3 direction = swivel_direction(shoulder, hand, frame, phi);
+    // 2. Near the shoulder's vertical axis or behind the shoulder: toward a fixed relaxed direction.
+    const float horizontal = std::sqrt(x * x + z * z);
+    const float weight = std::max(std::clamp((0.5f - horizontal) / 0.5f, 0.0f, 1.0f), std::clamp((0.1f - z) / 0.1f, 0.0f, 1.0f));
+    if (weight > 0.0f) {
+        const Vec3 axis = normalized(rel, frame.forward);
+        const Vec3 fixed = add(add(scale(frame.outward, 0.133f), scale(frame.up, -0.443f)), scale(frame.forward, -0.886f));
+        bool ok = false;
+        const Vec3 fixed_perp = perpendicular_part(fixed, axis, ok);
+        if (ok) {
+            direction = normalized(add(scale(direction, 1.0f - weight), scale(fixed_perp, weight)), direction);
+            const SwivelBasis basis = swivel_basis(shoulder, hand, frame);
+            phi = std::atan2(dot(direction, basis.outward), dot(direction, basis.up)) * 180.0f / 3.14159265f;
+        }
+    }
+    return {direction, phi};
+}
+
+float wrist_roll_correction(float roll_deg) {
+    if (roll_deg < 0.0f) {
+        return -(roll_deg * roll_deg) / 600.0f;
+    }
+    if (roll_deg > 90.0f) {
+        return (roll_deg - 90.0f) * (roll_deg - 90.0f) / 300.0f;
+    }
+    return 0.0f;
+}
+
 } // namespace bg3vr::ik

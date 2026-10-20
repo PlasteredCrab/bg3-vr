@@ -138,7 +138,7 @@ Menu::Menu() {
     choice("Beam opacity", "pointer.opacity",
            {{"25%", "0.25"}, {"40%", "0.4"}, {"55%", "0.55"}, {"70%", "0.7"}, {"85%", "0.85"}, {"100%", "1"}}, 2);
     choice("Wrist interface size", "ui.wrist_width",
-           {{"Small", "0.24"}, {"Medium", "0.3"}, {"Large", "0.36"}, {"Huge", "0.44"}}, 1);
+           {{"Small", "0.3"}, {"Medium", "0.4"}, {"Large", "0.5"}, {"Huge", "0.6"}}, 1);
     section("Comfort");
     choice("Turning", "vr.turn", {{"Snap", "snap"}, {"Smooth", "smooth"}}, 0);
     choice("Snap angle", "vr.snap_degrees",
@@ -733,7 +733,9 @@ Snapshot Menu::snapshot() const {
         }
         s.rows.push_back(std::move(row));
     }
-    s.footer = "Point and pull the trigger  ·  stick ◂ ▸ changes a row  ·  menu button closes";
+    const std::string opener = control_for("vrmenu");
+    s.footer = std::format("Point and pull the trigger  ·  stick ◂ ▸ changes a row  ·  {} opens and closes this menu",
+                           opener.empty() ? std::string("the menu button") : (opener.size() <= 2 ? opener : "the " + opener));
     return s;
 }
 

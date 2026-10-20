@@ -92,7 +92,9 @@ holds is set in `[holster]` (melee, ranged, inventory, light, none).
 
 ## The VR menu
 
-Press the left menu button. A panel opens in front of you with tabs along the top:
+Press the menu button on the left controller (the small button with three lines, below the left stick on Quest
+Touch). The first time VR starts it opens by itself on the Guide. A panel opens in front of you with tabs along the
+top:
 
 - View: first or third person, the render resolution (a share of the headset's own resolution per eye; 80% by
   default, "Game's own" uses the game's setting), where the game UI sits (in front of you or on your wrist), the

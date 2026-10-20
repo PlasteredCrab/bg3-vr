@@ -15,7 +15,8 @@
 // equipment (draw the weapon kept there, open the inventory, ...), through to_lua requests:
 //   holster grab <zone> <hand>   the grip closed in a zone and the hand pulled out of it (drawing); zones that hold
 //                                no weapon (the back: inventory, the chest: light) fire as soon as the grip closes
-//   holster stow <zone> <hand>   a hand that pulled something out carried it into a zone and opened there
+//   holster stow <zone> <hand>   a closed hand (holding what's in it: a drawn weapon) carried into a weapon zone opens
+//                                there
 //   holster tap <zone> <hand>    the grip closed and opened again without leaving the zone
 // each followed by what the zone holds ([holster] <zone> = melee | ranged | inventory | light | none).
 // Zones: shoulder_right, shoulder_left, hip_right, hip_left, back, chest.
@@ -72,6 +73,7 @@ private:
     bool grip_[2] = {false, false};
     Zone armed_[2] = {Zone::None, Zone::None};   // the grip closed in this zone and the hand hasn't left it yet
     Zone carrying_[2] = {Zone::None, Zone::None}; // pulled out of this zone, grip still closed
+    bool holding_[2] = {false, false};            // the grip closed outside every zone (holding what's in the hand)
 };
 
 void install(const Config& config);

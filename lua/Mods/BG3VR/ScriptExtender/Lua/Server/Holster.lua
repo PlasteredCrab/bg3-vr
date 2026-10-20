@@ -45,6 +45,18 @@ local function HandleHex(character)
     return entity and string.match(tostring(entity), "Entity %((%x+)%)") or nil
 end
 
+-- Drawn now, by the character's own state (eoc::unsheath::StateComponent: Melee / Ranged / Instrument = drawn), so a
+-- weapon the game drew itself can be put away; the holster's own record when the component can't be read.
+local function IsDrawn(character)
+    local entity = Entity(character)
+    local ok, state = pcall(function() return entity.Unsheath.State end)
+    if ok and state ~= nil then
+        local s = tostring(state)
+        return s ~= "Sheathed" and s ~= "3"
+    end
+    return drawn[character] == true
+end
+
 local function Draw(character, why)
     BG3VR.Log("holster: %s draws (%s, set now %s)", character, why, tostring(CurrentSet(character)))
     Osi.SetWeaponUnsheathed(character, 1, 0)
@@ -92,7 +104,7 @@ local function OnHolster(message, user)
         BG3VR.Log("holster: %s %s %s (holds %s; nothing to do on the server)", character, kind, zone, tostring(holds))
         return {}
     end
-    if kind == "stow" or (kind == "tap" and drawn[character]) then
+    if kind == "stow" or (kind == "tap" and IsDrawn(character)) then
         Sheathe(character, kind .. " at " .. zone)
         return {}
     end

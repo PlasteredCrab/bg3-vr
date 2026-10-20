@@ -469,6 +469,9 @@ int init(const wchar_t* root_dir) {
     hold::install(g_config, module);
     melee::install(g_config);
     holster::install(g_config);
+#if BG3VR_HAVE_OPENXR
+    headset::set_first_run(!g_config.get_bool("menu", "welcomed", false));
+#endif
     combat::install(g_config);
     corpse::install(g_config, module);
     melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");

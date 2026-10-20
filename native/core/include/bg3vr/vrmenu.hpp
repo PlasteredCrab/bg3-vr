@@ -104,6 +104,7 @@ public:
     std::vector<Lesson> lessons() const;
     int lesson() const { return lesson_; }
     void show_lesson(int lesson, float anim_time = 0.0f);
+    void show_guide() { show_page(static_cast<int>(pages_.size()) - 1); }
 
 private:
     struct Option {

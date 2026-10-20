@@ -25,4 +25,30 @@ struct TwoBone {
 TwoBone solve_two_bone(const vr::Vec3& shoulder, const vr::Vec3& elbow, const vr::Vec3& wrist,
                        const vr::Vec3& target, const vr::Vec3& pole);
 
+// Where the elbow points, after Parger, Mueller, Schmalstieg, Steinberger, "Human Upper-Body Inverse Kinematics for
+// Increased Embodiment in Consumer-Grade Virtual Reality" (VRST 2018), section 3.3. The swivel angle phi around the
+// shoulder -> hand axis is 0 with the elbow up, 90 degrees outward, 180 down:
+//   1. from the hand position in shoulder coordinates (x outward, y up, z forward; metres):
+//      phi = 15 + sum_i max(0, x_i w_i + b_i), w = (-50, -60, 260), b = (30, 120, 65), clamped to 13..175 degrees;
+//   2. near the shoulder's vertical axis (horizontal distance below 0.5 m) and behind the shoulder (forward 0.1 .. 0 m)
+//      the direction is blended linearly toward a fixed relaxed one, (0.133, -0.443, -0.886) in shoulder coordinates;
+//   3. a wrist turned past its comfortable range moves the elbow: hand roll (the thumb's turn around the forearm away
+//      from "elbow down, thumb up", positive outward) below 0 degrees adds -(roll)^2 / 600, above 90 degrees
+//      (roll - 90)^2 / 300 (degrees).
+struct ArmFrame {
+    vr::Vec3 outward{}; // unit, away from the body on this arm's side
+    vr::Vec3 up{};
+    vr::Vec3 forward{};
+};
+// Swivel (degrees) from steps 1 and 2 as a direction perpendicular to the shoulder -> hand axis, and the angle.
+struct Elbow {
+    vr::Vec3 direction{};
+    float phi_deg = 0.0f;
+};
+Elbow elbow_direction(const vr::Vec3& shoulder, const vr::Vec3& hand, const ArmFrame& frame);
+// The direction for a swivel angle (degrees) around the shoulder -> hand axis.
+vr::Vec3 swivel_direction(const vr::Vec3& shoulder, const vr::Vec3& hand, const ArmFrame& frame, float phi_deg);
+// Step 3: the swivel change (degrees) for a hand roll (degrees).
+float wrist_roll_correction(float roll_deg);
+
 } // namespace bg3vr::ik

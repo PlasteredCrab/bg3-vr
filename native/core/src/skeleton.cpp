@@ -459,6 +459,7 @@ void on_frame() {
                            (eye_matrix[0][14] + eye_matrix[1][14]) * 0.5f};
         const vr::Vec3 mid_scaled{mid[0] * transform[7], mid[1] * transform[8], mid[2] * transform[9]};
         const vr::Vec3 mid_offset = vr::rotate(visual_rotation, mid_scaled);
+        head.eyes_model = mid;
         head.eyes_world = {transform[4] + mid_offset[0], transform[5] + mid_offset[1], transform[6] + mid_offset[2]};
         const float dx = eye_matrix[0][12] - eye_matrix[1][12], dy = eye_matrix[0][13] - eye_matrix[1][13],
                     dz = eye_matrix[0][14] - eye_matrix[1][14];
@@ -470,6 +471,11 @@ void on_frame() {
         g_head = head;
     }
     if (g_reads % kLogEvery == 1) {
+        if (head.has_eyes) {
+            log::info("skeleton: eyes (Dummy_EyeFX_01/02 midpoint) model ({:.3f}, {:.3f}, {:.3f}) world ({:.3f}, {:.3f}, {:.3f}), "
+                      "{:.3f} apart", head.eyes_model[0], head.eyes_model[1], head.eyes_model[2], head.eyes_world[0],
+                      head.eyes_world[1], head.eyes_world[2], head.eye_separation);
+        }
         log::info("skeleton: frame {} (pose frame {}) Head_M model ({:.3f}, {:.3f}, {:.3f}) world ({:.3f}, {:.3f}, "
                   "{:.3f}) rot ({:.3f}, {:.3f}, {:.3f}, {:.3f}); visual at ({:.3f}, {:.3f}, {:.3f}) rot ({:.3f}, "
                   "{:.3f}, {:.3f}, {:.3f}) scale ({:.3f}, {:.3f}, {:.3f}); matrix rows ({:.3f} {:.3f} {:.3f} | {:.3f} "

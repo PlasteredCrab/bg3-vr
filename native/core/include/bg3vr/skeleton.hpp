@@ -62,6 +62,7 @@ struct Head {
     // The eyes (Dummy_EyeFX_01 / _02, children of Head_M), when the skeleton has them: their midpoint in the world
     // and how far apart they are (game units).
     bool has_eyes = false;
+    vr::Vec3 eyes_model{};
     vr::Vec3 eyes_world{};
     float eye_separation = 0.0f;
 };
