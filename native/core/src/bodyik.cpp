@@ -35,6 +35,7 @@ constexpr std::size_t kVisualTransform = 0x08; // quat, translate +0x10, scale +
 
 struct Side {
     short upper = -1, lower = -1, hand = -1;
+    short scapula = -1; // the upper arm's parent: turned forward / up when the hand reaches far (Parger 3.2)
     short dummy = -1; // the weapon bone below the hand
     short index = -1, middle = -1, pinky = -1; // knuckles (IndexFinger1 / MiddleFinger1 / PinkyFinger1): the hand's own frame
     // Finger chains for the curl, root (segment 1) to tip (end bone): index, middle, ring, pinky, thumb.
@@ -76,6 +77,7 @@ std::atomic<int> g_logged_hands{0};
 std::atomic<int> g_logged_elbow{0};
 std::array<std::atomic<float>, 2> g_curl_index{}, g_curl_others{};
 std::atomic<bool> g_fingers{true};     // [ik] fingers
+std::atomic<bool> g_shoulder{true};    // [ik] shoulder: the shoulder girdle turns toward far reaches
 std::atomic<bool> g_weapon_drawn{false};
 std::atomic<float> g_stretch{1.15f};    // [ik] stretch: how much longer an arm may get to reach the hand
 std::atomic<bool> g_elbow_model{true};  // [ik] elbow = natural (Parger et al. 2018) | down
@@ -124,6 +126,7 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     side.hand = static_cast<short>(!overrides[2].empty() ? find(bones, overrides[2]) : parent(dummy_bone));
     side.lower = static_cast<short>(!overrides[1].empty() ? find(bones, overrides[1]) : parent(side.hand));
     side.upper = static_cast<short>(!overrides[0].empty() ? find(bones, overrides[0]) : parent(side.lower));
+    side.scapula = parent(side.upper);
     if (!side.ok()) {
         log::warn("ik: {} arm chain not found ({} is bone {}; set [ik] {}_upper/_lower/_hand)", label, dummy, dummy_bone,
                   label);
@@ -268,6 +271,7 @@ void configure_hands(const Config& config) {
         g_elbow_model = text::to_lower(config.get("ik", "elbow", "natural")) != "down";
         g_elbow_wrist = config.get_bool("ik", "elbow_wrist", true);
         g_fingers = config.get_bool("ik", "fingers", true);
+        g_shoulder = config.get_bool("ik", "shoulder", true);
     }
     const auto degrees = [&](const char* key, const char* fallback_key) {
         std::string v = config.get("ik", key);
@@ -466,9 +470,57 @@ void apply(std::uintptr_t skeleton) {
             }
         }
 
-        const vr::Vec3 S{upper.t[0], upper.t[1], upper.t[2]};
-        const vr::Vec3 E{lower.t[0], lower.t[1], lower.t[2]};
-        const vr::Vec3 W{hand.t[0], hand.t[1], hand.t[2]};
+        // The shoulder (Parger et al. 2018, 3.2): when the hand reaches far forward or up, the shoulder girdle turns
+        // toward it (scapula about its own joint): yaw / roll = 30 deg x (reach along forward / up per arm length - 0.5),
+        // clamped to 0..33 deg. The arm is turned with it before the IK.
+        Rigid upper_s = upper, lower_s = lower, hand_s = hand;
+        if (g_shoulder.load(std::memory_order_relaxed) && side.scapula >= 0) {
+            if (float* ms = get(pose, side.scapula)) {
+                const Rigid scap = from_matrix(ms);
+                const auto len3 = [](float x, float y, float z) { return std::sqrt(x * x + y * y + z * z); };
+                const float arm = len3(lower.t[0] - upper.t[0], lower.t[1] - upper.t[1], lower.t[2] - upper.t[2]) +
+                                  len3(hand.t[0] - lower.t[0], hand.t[1] - lower.t[1], hand.t[2] - lower.t[2]);
+                const vr::Vec3 reach{wrist_goal[0] - upper.t[0], wrist_goal[1] - upper.t[1], wrist_goal[2] - upper.t[2]};
+                if (arm > 1e-3f) {
+                    const float yaw = std::clamp(30.0f * (-reach[2] / arm - 0.5f), 0.0f, 33.0f);  // forward is -Z
+                    const float roll = std::clamp(30.0f * (reach[1] / arm - 0.5f), 0.0f, 33.0f); // up is +Y
+                    if (yaw > 0.0f || roll > 0.0f) {
+                        const vr::Vec3 arm_out{upper.t[0] - scap.t[0], upper.t[1] - scap.t[1], upper.t[2] - scap.t[2]};
+                        // The turn about `axis` that moves the shoulder joint toward `toward` (sign by a test turn).
+                        const auto turn = [&](const vr::Vec3& axis, const vr::Vec3& toward, float degrees) {
+                            const auto q_of = [&](float d) {
+                                const float h = d * 0.5f * 3.14159265f / 180.0f;
+                                return vr::Quat{axis[0] * std::sin(h), axis[1] * std::sin(h), axis[2] * std::sin(h), std::cos(h)};
+                            };
+                            const vr::Vec3 moved = vr::rotate(q_of(1.0f), arm_out);
+                            const float d = (moved[0] - arm_out[0]) * toward[0] + (moved[1] - arm_out[1]) * toward[1] +
+                                            (moved[2] - arm_out[2]) * toward[2];
+                            return q_of(d >= 0.0f ? degrees : -degrees);
+                        };
+                        const vr::Quat q = vr::multiply(turn({0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, roll),
+                                                        turn({0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, yaw));
+                        float rot[3][3];
+                        quat_to_matrix(q, rot);
+                        const auto apply_turn = [&](const Rigid& in) {
+                            Rigid out = in;
+                            const float d[3] = {in.t[0] - scap.t[0], in.t[1] - scap.t[1], in.t[2] - scap.t[2]};
+                            for (int i = 0; i < 3; ++i) {
+                                out.t[i] = scap.t[i] + rot[i][0] * d[0] + rot[i][1] * d[1] + rot[i][2] * d[2];
+                            }
+                            mul(rot, in.R, out.R);
+                            return out;
+                        };
+                        upper_s = apply_turn(upper);
+                        lower_s = apply_turn(lower);
+                        hand_s = apply_turn(hand);
+                        to_matrix(apply_turn(scap), ms);
+                    }
+                }
+            }
+        }
+        const vr::Vec3 S{upper_s.t[0], upper_s.t[1], upper_s.t[2]};
+        const vr::Vec3 E{lower_s.t[0], lower_s.t[1], lower_s.t[2]};
+        const vr::Vec3 W{hand_s.t[0], hand_s.t[1], hand_s.t[2]};
         // Arms a little longer when the hand is out of reach ([ik] stretch): the elbow and wrist move out from the
         // shoulder; the skin stretches between the bones.
         vr::Vec3 E_s = E, W_s = W;
@@ -552,12 +604,12 @@ void apply(std::uintptr_t skeleton) {
         }
         const ik::TwoBone solved = ik::solve_two_bone(S, E_s, W_s, wrist_goal, pole);
 
-        Rigid new_upper = upper, new_lower = lower, new_hand = hand;
+        Rigid new_upper = upper_s, new_lower = lower_s, new_hand = hand_s;
         float r[3][3];
         quat_to_matrix(solved.upper_delta, r);
-        mul(r, upper.R, new_upper.R);
+        mul(r, upper_s.R, new_upper.R);
         quat_to_matrix(solved.lower_delta, r);
-        mul(r, lower.R, new_lower.R);
+        mul(r, lower_s.R, new_lower.R);
         for (int i = 0; i < 3; ++i) {
             new_lower.t[i] = solved.elbow[static_cast<std::size_t>(i)];
             new_hand.t[i] = solved.wrist[static_cast<std::size_t>(i)];
