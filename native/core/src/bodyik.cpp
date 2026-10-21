@@ -47,6 +47,9 @@ struct Rig {
     std::uintptr_t skeleton = 0;
     std::uintptr_t visual = 0;
     std::array<Side, 2> sides; // 0 left, 1 right
+    int bone_count = 0;
+    short head = -1; // Head_M
+    short root = -1; // Root_M: the body turns about its vertical axis
 };
 std::atomic<std::shared_ptr<const Rig>> g_rig; // replaced on the game thread, read in the hook
 
@@ -89,6 +92,14 @@ struct ElbowState {
 };
 std::mutex g_elbow_mutex;
 std::array<ElbowState, 2> g_elbow_state{};
+struct BodyYaw {
+    bool valid = false;
+    bool turning = false;
+    float yaw = 0.0f; // degrees about +Y, model space
+    std::chrono::steady_clock::time_point when{};
+};
+BodyYaw g_body; // guarded by g_elbow_mutex
+std::atomic<bool> g_body_yaw{true}; // [ik] body_yaw
 
 int find(const std::vector<Bone>& bones, const std::string& name) {
     for (std::size_t i = 0; i < bones.size(); ++i) {
@@ -272,6 +283,7 @@ void configure_hands(const Config& config) {
         g_elbow_wrist = config.get_bool("ik", "elbow_wrist", true);
         g_fingers = config.get_bool("ik", "fingers", true);
         g_shoulder = config.get_bool("ik", "shoulder", true);
+        g_body_yaw = config.get_bool("ik", "body_yaw", true);
     }
     const auto degrees = [&](const char* key, const char* fallback_key) {
         std::string v = config.get("ik", key);
@@ -322,6 +334,14 @@ void set_rig(std::uintptr_t skeleton, std::uintptr_t visual, const std::vector<B
     if (skeleton) {
         rig->sides[1] = resolve(bones, "Dummy_R_Hand", &g_names[0], "right");
         rig->sides[0] = resolve(bones, "Dummy_L_Hand", &g_names[3], "left");
+        rig->bone_count = static_cast<int>(bones.size());
+        rig->head = static_cast<short>(find(bones, "Head_M"));
+        rig->root = static_cast<short>(find(bones, "Root_M"));
+    }
+    {
+        std::scoped_lock lock(g_elbow_mutex);
+        g_body = {}; // a new skeleton starts facing its own way
+        g_elbow_state = {};
     }
     g_rig.store(std::shared_ptr<const Rig>(rig));
     g_recalibrate.store(true, std::memory_order_relaxed);
@@ -364,6 +384,72 @@ void apply(std::uintptr_t skeleton) {
     const float scale = visual[7] != 0.0f ? visual[7] : 1.0f;
     const bool recalibrate = g_recalibrate.exchange(false, std::memory_order_relaxed);
     const std::shared_ptr<const Hands> hands = g_hands.load();
+
+    // The body faces where the hands are (Parger et al. 2018, 3.1: the sum of the directions from the head to the
+    // controllers), so turning with the stick, which turns only the view, doesn't leave the torso facing away while the
+    // arms reach around it. Visual only: every bone turns about Root_M's vertical axis; the game's own facing and
+    // movement are untouched. It follows once the hands are more than 25 deg off and stops within 5 deg, eased.
+    if (g_body_yaw.load(std::memory_order_relaxed) && rig->head >= 0 && rig->root >= 0 && (targets[0] || targets[1])) {
+        float* mhead = get(pose, rig->head);
+        float* mroot = get(pose, rig->root);
+        if (mhead && mroot) {
+            const Rigid head_bone = from_matrix(mhead), root_bone = from_matrix(mroot);
+            float dx = 0.0f, dz = 0.0f;
+            for (const auto& t : targets) {
+                if (!t) {
+                    continue;
+                }
+                const vr::Vec3 rel{t->position[0] - visual[4], t->position[1] - visual[5], t->position[2] - visual[6]};
+                const vr::Vec3 m = vr::rotate(inverse, rel);
+                const float hx = m[0] / scale - head_bone.t[0], hz = m[2] / scale - head_bone.t[2];
+                const float n = std::sqrt(hx * hx + hz * hz);
+                if (n > 0.05f) {
+                    dx += hx / n;
+                    dz += hz / n;
+                }
+            }
+            std::scoped_lock lock(g_elbow_mutex);
+            const auto now = std::chrono::steady_clock::now();
+            if (std::sqrt(dx * dx + dz * dz) > 0.5f) {
+                // Yaw (about +Y) that turns the model's forward (-Z) to (dx, dz).
+                const float want = std::atan2(-dx, -dz) * 57.2957795f;
+                float diff = want - g_body.yaw;
+                diff -= 360.0f * std::floor((diff + 180.0f) / 360.0f);
+                if (std::abs(diff) > 25.0f) {
+                    g_body.turning = true;
+                }
+                if (g_body.turning) {
+                    const float dt = g_body.valid ? std::chrono::duration<float>(now - g_body.when).count() : 0.0f;
+                    const float step = std::clamp(dt / 0.3f, 0.0f, 1.0f) * diff;
+                    g_body.yaw += step;
+                    if (std::abs(diff - step) < 5.0f) {
+                        g_body.turning = false;
+                    }
+                }
+            }
+            g_body.when = now;
+            g_body.valid = true;
+            if (std::abs(g_body.yaw) > 0.1f) {
+                const float h = g_body.yaw * 0.5f * 3.14159265f / 180.0f;
+                float rot[3][3];
+                quat_to_matrix(vr::Quat{0.0f, std::sin(h), 0.0f, std::cos(h)}, rot);
+                const float px = root_bone.t[0], pz = root_bone.t[2];
+                for (int b = 0; b < rig->bone_count; ++b) {
+                    float* mb = get(pose, b);
+                    if (!mb) {
+                        continue;
+                    }
+                    Rigid r = from_matrix(mb);
+                    const float x = r.t[0] - px, z = r.t[2] - pz;
+                    Rigid out = r;
+                    out.t[0] = px + rot[0][0] * x + rot[0][2] * z;
+                    out.t[2] = pz + rot[2][0] * x + rot[2][2] * z;
+                    mul(rot, r.R, out.R);
+                    to_matrix(out, mb);
+                }
+            }
+        }
+    }
 
     for (int s = 0; s < 2; ++s) {
         const Side& side = rig->sides[static_cast<std::size_t>(s)];
