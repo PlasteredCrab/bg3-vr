@@ -111,6 +111,7 @@ private:
         std::string text;
         std::string value;
         bool off = false;
+        bool custom = false; // a value from the ini that no option matches, shown as it is
     };
     struct Item {
         Snapshot::Row::Kind kind = Snapshot::Row::Kind::Choice;

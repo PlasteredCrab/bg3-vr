@@ -1,5 +1,6 @@
 #include "bg3vr/hold.hpp"
 
+#include "bg3vr/corpse.hpp"
 #include "bg3vr/grab_math.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
@@ -469,7 +470,8 @@ void on_frame() {
             g_trackers[h].add(input[h].time, *input[h].grip_pose);
             g_tracked_time[h] = input[h].time;
         }
-        const bool down = input[h].grip;
+        // corpse::on_frame ran first this frame: a grip that took a body is that body's, not an item press.
+        const bool down = input[h].grip && !corpse::holding(h);
         if (down && !g_was_down[h] && !g_held[h]) {
             press(h, input[h]);
         } else if (down && g_held[h]) {

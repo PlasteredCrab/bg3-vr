@@ -143,10 +143,10 @@ void on_game_frame() {
     quality::on_frame();
     locomotion::on_frame();
     vrplay::on_frame();
+    corpse::on_frame(); // before hold: a grip that takes a body doesn't also pick up an item
     hold::on_frame();
     melee::on_frame();
     combat::on_frame();
-    corpse::on_frame();
 }
 
 // The VR menu's settings (menu.ini next to bg3vr.ini; overrides it). Only touched on the bridge thread after start-up.

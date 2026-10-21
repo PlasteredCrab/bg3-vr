@@ -954,6 +954,40 @@ void test_rigid() {
     CHECK(same_rotation);
 }
 
+void test_vrmenu_custom_values() {
+    using namespace bg3vr::vrmenu;
+    // A value set by hand that no option matches is shown as it is, in order among the numbers, and stays reachable.
+    Menu menu;
+    Config config;
+    config.load_string("[vr]\nsnap_degrees = 44\nturn = sideways\n[ik]\nstretch = 1.15000\n");
+    menu.load(config);
+    CHECK(menu.value_of("Snap angle") == "Custom (44)");
+    CHECK(menu.value_of("Turning") == "Custom (sideways)");
+    CHECK(menu.value_of("Arm stretch") == "15%"); // the same number, written differently
+    CHECK(menu.setting("vr.snap_degrees") == "44");
+    // Loading again without it drops the custom option.
+    Config plain;
+    plain.load_string("[vr]\nsnap_degrees = 60\n");
+    menu.load(plain);
+    CHECK(menu.value_of("Snap angle") == "60°");
+    CHECK(menu.value_of("Turning") == "Snap");
+
+    // Every value the shipped bg3vr.ini sets is one of the menu's options.
+    Config shipped;
+    CHECK(shipped.load_file(std::filesystem::path(BG3VR_SOURCE_DIR) / "config" / "bg3vr.ini"));
+    Menu defaults;
+    defaults.load(shipped);
+    for (int page = 0; page < 7; ++page) {
+        defaults.show_page(page);
+        for (const auto& row : defaults.snapshot().rows) {
+            if (row.value.starts_with("Custom")) {
+                std::printf("  shipped bg3vr.ini: %s = %s\n", row.label.c_str(), row.value.c_str());
+                CHECK(false);
+            }
+        }
+    }
+}
+
 void test_vrmenu() {
     using namespace bg3vr::vrmenu;
     Menu menu;
@@ -962,7 +996,7 @@ void test_vrmenu() {
     CHECK(menu.value_of("Grab objects") == "Off");
     CHECK(menu.value_of("Arms follow controllers") == "On");
     Config config;
-    config.load_string("[vr]\nturn = smooth\nsnap_degrees = 44\neye_offset = 0.1\n[grab]\nhold = yes\n");
+    config.load_string("[vr]\nturn = smooth\nsnap_degrees = 45\neye_offset = 0.1\n[grab]\nhold = yes\n");
     menu.load(config);
     CHECK(menu.value_of("Turning") == "Smooth");
     CHECK(menu.value_of("Snap angle") == "45°");
@@ -1250,6 +1284,7 @@ int main() {
     test_grab_math();
     test_rigid();
     test_vrmenu();
+    test_vrmenu_custom_values();
     test_holster();
     test_stereo_view_block();
     test_elbow();

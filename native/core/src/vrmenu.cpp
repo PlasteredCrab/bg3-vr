@@ -311,28 +311,46 @@ void Menu::load(const Config& config) {
         }
         const auto dot = item.setting.find('.');
         const std::string raw = config.get(item.setting.substr(0, dot), item.setting.substr(dot + 1));
+        std::erase_if(item.options, [](const Option& o) { return o.custom; });
         item.current = item.fallback;
         if (raw.empty()) {
             continue;
         }
         float number = 0.0f;
+        bool matched = false;
         if (item.options.front().value == "true") {
             item.current = truthy(raw) ? 0 : 1;
+            matched = true;
         } else if (item.control < 0 && parse_float(raw, number)) {
-            float best = 1e30f;
             for (int i = 0; i < static_cast<int>(item.options.size()); ++i) {
                 float option = 0.0f;
-                if (parse_float(item.options[i].value, option) && std::abs(option - number) < best) {
-                    best = std::abs(option - number);
+                if (parse_float(item.options[i].value, option) &&
+                    std::abs(option - number) <= 1e-4f * std::max(1.0f, std::abs(option))) {
                     item.current = i;
+                    matched = true;
                 }
             }
         } else {
             for (int i = 0; i < static_cast<int>(item.options.size()); ++i) {
                 if (text::to_lower(item.options[i].value) == text::to_lower(raw)) {
                     item.current = i;
+                    matched = true;
                 }
             }
+        }
+        // Not one of the options (set by hand in the ini): show it as it is rather than the nearest option, and keep
+        // it in the list so stepping away from it can come back.
+        if (!matched) {
+            auto at = item.options.end();
+            if (item.control < 0 && parse_float(raw, number)) {
+                at = std::find_if(item.options.begin(), item.options.end(), [&](const Option& o) {
+                    float option = 0.0f;
+                    return parse_float(o.value, option) && option > number;
+                });
+            }
+            item.current = static_cast<int>(at - item.options.begin());
+            item.options.insert(at, {std::format("Custom ({})", raw), raw, false, true});
+            log::info("menu: {} = {} isn't one of the menu's options; shown as custom", item.setting, raw);
         }
     }
     ++revision_;
