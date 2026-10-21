@@ -1,5 +1,6 @@
 #include "bg3vr/combat.hpp"
 
+#include "bg3vr/bodyik.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/picking.hpp"
@@ -83,6 +84,7 @@ void set_wield(const std::string& kind) {
         log::info("combat: wielding {}", kind);
         g_wield = kind;
     }
+    bodyik::set_weapon_drawn(kind != "none"); // the game's grip pose holds the weapon; no extra finger curl
 }
 
 Feedback on_headset(const Frame& f) {

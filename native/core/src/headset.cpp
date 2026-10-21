@@ -920,6 +920,15 @@ void update_input(const xr::Frame& frame) {
             }
         }
     }
+    // Finger curl: the index follows the trigger, the others the grip (a tracked hand: how closed it is).
+    for (std::size_t h = 0; h < 2; ++h) {
+        if (now[h].hand_tracked) {
+            const float closed = std::max(now[h].trigger, now[h].squeeze);
+            bodyik::set_fingers(h, closed, closed);
+        } else {
+            bodyik::set_fingers(h, now[h].active ? now[h].trigger : 0.0f, now[h].active ? now[h].squeeze : 0.0f);
+        }
+    }
     // The grips for the arm IK (world, game convention).
     bodyik::set_targets(now[kLeftHand].world_valid ? std::optional<vr::RigidPose>(now[kLeftHand].world_grip) : std::nullopt,
                         now[kRightHand].world_valid ? std::optional<vr::RigidPose>(now[kRightHand].world_grip) : std::nullopt);

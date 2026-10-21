@@ -8,6 +8,8 @@
 #include "bg3vr/text.hpp"
 
 #include <array>
+#include <vector>
+#include <format>
 #include <optional>
 #include <algorithm>
 #include <chrono>
@@ -35,6 +37,8 @@ struct Side {
     short upper = -1, lower = -1, hand = -1;
     short dummy = -1; // the weapon bone below the hand
     short index = -1, middle = -1, pinky = -1; // knuckles (IndexFinger1 / MiddleFinger1 / PinkyFinger1): the hand's own frame
+    // Finger chains for the curl, root (segment 1) to tip (end bone): index, middle, ring, pinky, thumb.
+    std::array<std::vector<short>, 5> fingers;
     std::vector<std::pair<short, int>> followers; // bone, chain slot (0 upper, 1 lower, 2 hand)
     bool ok() const { return upper >= 0 && lower >= 0 && hand >= 0; }
 };
@@ -70,6 +74,9 @@ std::atomic<std::uint64_t> g_skipped{0};
 std::atomic<int> g_logged{0};
 std::atomic<int> g_logged_hands{0};
 std::atomic<int> g_logged_elbow{0};
+std::array<std::atomic<float>, 2> g_curl_index{}, g_curl_others{};
+std::atomic<bool> g_fingers{true};     // [ik] fingers
+std::atomic<bool> g_weapon_drawn{false};
 std::atomic<float> g_stretch{1.15f};    // [ik] stretch: how much longer an arm may get to reach the hand
 std::atomic<bool> g_elbow_model{true};  // [ik] elbow = natural (Parger et al. 2018) | down
 std::atomic<bool> g_elbow_wrist{true};  // [ik] elbow_wrist: the wrist's roll moves the elbow
@@ -99,6 +106,21 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     side.index = static_cast<short>(find(bones, "IndexFinger1" + suffix));
     side.middle = static_cast<short>(find(bones, "MiddleFinger1" + suffix));
     side.pinky = static_cast<short>(find(bones, "PinkyFinger1" + suffix));
+    {
+        const char* names[5] = {"IndexFinger", "MiddleFinger", "RingFinger", "PinkyFinger", "ThumbFinger"};
+        for (int f = 0; f < 5; ++f) {
+            for (int segment = 1; segment <= 3; ++segment) {
+                const int b = find(bones, std::format("{}{}{}", names[f], segment, suffix));
+                if (b >= 0) {
+                    side.fingers[static_cast<std::size_t>(f)].push_back(static_cast<short>(b));
+                }
+            }
+            const int end = find(bones, std::format("{}4{}_endBone", names[f], suffix));
+            if (end >= 0) {
+                side.fingers[static_cast<std::size_t>(f)].push_back(static_cast<short>(end));
+            }
+        }
+    }
     side.hand = static_cast<short>(!overrides[2].empty() ? find(bones, overrides[2]) : parent(dummy_bone));
     side.lower = static_cast<short>(!overrides[1].empty() ? find(bones, overrides[1]) : parent(side.hand));
     side.upper = static_cast<short>(!overrides[0].empty() ? find(bones, overrides[0]) : parent(side.lower));
@@ -128,7 +150,90 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     return side;
 }
 
+// Curls the fingers toward the palm by the controller's trigger (index) and grip (the others), on top of the animated
+// pose: each finger segment turns about the knuckle axis (pinky -> index knuckle) at its own joint, carrying the rest of
+// the finger. The palm side comes from the weapon bone (the grip point sits in the palm).
+template <typename Get>
+void curl_fingers(const Side& side, int s, Get get, std::uintptr_t pose, const Rigid& hand) {
+    if (!g_fingers.load(std::memory_order_relaxed) || g_weapon_drawn.load(std::memory_order_relaxed) || side.index < 0 ||
+        side.pinky < 0 || side.middle < 0 || side.dummy < 0) {
+        return;
+    }
+    const float curl_index = g_curl_index[static_cast<std::size_t>(s)].load(std::memory_order_relaxed);
+    const float curl_others = g_curl_others[static_cast<std::size_t>(s)].load(std::memory_order_relaxed);
+    if (curl_index < 0.02f && curl_others < 0.02f) {
+        return;
+    }
+    float* mi = get(pose, side.index);
+    float* mp = get(pose, side.pinky);
+    float* mm = get(pose, side.middle);
+    float* md = get(pose, side.dummy);
+    if (!mi || !mp || !mm || !md) {
+        return;
+    }
+    const Rigid index = from_matrix(mi), pinky = from_matrix(mp), middle = from_matrix(mm), dummy = from_matrix(md);
+    vr::Vec3 axis{index.t[0] - pinky.t[0], index.t[1] - pinky.t[1], index.t[2] - pinky.t[2]};
+    const vr::Vec3 fingers{middle.t[0] - hand.t[0], middle.t[1] - hand.t[1], middle.t[2] - hand.t[2]};
+    const vr::Vec3 palm{dummy.t[0] - hand.t[0], dummy.t[1] - hand.t[1], dummy.t[2] - hand.t[2]};
+    const float n = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    if (n < 1e-4f) {
+        return;
+    }
+    for (float& c : axis) {
+        c /= n;
+    }
+    // Turning +angle about the axis moves the fingers toward axis x fingers; flip if that's away from the palm.
+    const vr::Vec3 toward{axis[1] * fingers[2] - axis[2] * fingers[1], axis[2] * fingers[0] - axis[0] * fingers[2],
+                          axis[0] * fingers[1] - axis[1] * fingers[0]};
+    const float sign = toward[0] * palm[0] + toward[1] * palm[1] + toward[2] * palm[2] >= 0.0f ? 1.0f : -1.0f;
+    constexpr float kMax[3] = {70.0f, 90.0f, 60.0f}; // degrees per segment at a full curl
+    for (std::size_t f = 0; f < 5; ++f) {
+        const std::vector<short>& chain = side.fingers[f];
+        const float curl = f == 0 ? curl_index : f == 4 ? curl_others * 0.4f : curl_others;
+        if (curl < 0.02f || chain.size() < 2) {
+            continue;
+        }
+        for (std::size_t j = 0; j < 3 && j + 1 < chain.size(); ++j) {
+            const float angle = sign * curl * kMax[j] * (f == 4 ? 0.5f : 1.0f) * 3.14159265f / 180.0f;
+            const vr::Quat q{axis[0] * std::sin(angle * 0.5f), axis[1] * std::sin(angle * 0.5f), axis[2] * std::sin(angle * 0.5f),
+                             std::cos(angle * 0.5f)};
+            float r[3][3];
+            quat_to_matrix(q, r);
+            float* joint = get(pose, chain[j]);
+            if (!joint) {
+                break;
+            }
+            const Rigid at = from_matrix(joint);
+            for (std::size_t k = j; k < chain.size(); ++k) {
+                float* m = get(pose, chain[k]);
+                if (!m) {
+                    continue;
+                }
+                Rigid b = from_matrix(m);
+                const float d[3] = {b.t[0] - at.t[0], b.t[1] - at.t[1], b.t[2] - at.t[2]};
+                Rigid out = b;
+                for (int i = 0; i < 3; ++i) {
+                    out.t[i] = at.t[i] + r[i][0] * d[0] + r[i][1] * d[1] + r[i][2] * d[2];
+                }
+                mul(r, b.R, out.R);
+                to_matrix(out, m);
+            }
+        }
+    }
+}
+
 } // namespace
+
+void set_fingers(std::size_t hand, float index, float others) {
+    if (hand < 2) {
+        g_curl_index[hand].store(std::clamp(index, 0.0f, 1.0f), std::memory_order_relaxed);
+        g_curl_others[hand].store(std::clamp(others, 0.0f, 1.0f), std::memory_order_relaxed);
+    }
+}
+
+void set_weapon_drawn(bool drawn) {
+    g_weapon_drawn.store(drawn, std::memory_order_relaxed);
+}
 
 void configure(const Config& config, const ModuleInfo& module) {
     g_module = module;
@@ -162,6 +267,7 @@ void configure_hands(const Config& config) {
         g_stretch = v.empty() ? 1.15f : std::clamp(std::strtof(v.c_str(), nullptr), 1.0f, 1.5f);
         g_elbow_model = text::to_lower(config.get("ik", "elbow", "natural")) != "down";
         g_elbow_wrist = config.get_bool("ik", "elbow_wrist", true);
+        g_fingers = config.get_bool("ik", "fingers", true);
     }
     const auto degrees = [&](const char* key, const char* fallback_key) {
         std::string v = config.get("ik", key);
@@ -477,6 +583,7 @@ void apply(std::uintptr_t skeleton) {
         to_matrix(new_upper, mu);
         to_matrix(new_lower, ml);
         to_matrix(new_hand, mh);
+        curl_fingers(side, s, get, pose, new_hand);
         if (g_logged.load(std::memory_order_relaxed) < 4) {
             g_logged.fetch_add(1, std::memory_order_relaxed);
             log::info("ik: {} arm: shoulder ({:.3f}, {:.3f}, {:.3f}) elbow ({:.3f}, {:.3f}, {:.3f}) wrist ({:.3f}, {:.3f}, "

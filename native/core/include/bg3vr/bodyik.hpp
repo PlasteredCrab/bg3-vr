@@ -44,6 +44,11 @@ void set_targets(std::optional<vr::RigidPose> left, std::optional<vr::RigidPose>
 // Take the hand orientations again on the next frame (recentre).
 void recalibrate();
 
+// Finger curl per hand (0 left, 1 right), 0 open .. 1 closed: the index finger and the other three ([ik] fingers).
+// From the controllers (trigger, grip) or a tracked hand; ignored while a weapon is drawn (the game's grip pose).
+void set_fingers(std::size_t hand, float index, float others);
+void set_weapon_drawn(bool drawn);
+
 // Slot 30 hook (animation worker thread): applies the IK when `skeleton` is the rig's.
 void apply(std::uintptr_t skeleton);
 
