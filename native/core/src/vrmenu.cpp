@@ -28,7 +28,7 @@ using Kind = Snapshot::Row::Kind;
 constexpr int kHeaderBottom = 184;
 constexpr int kTabsHeight = 78;
 constexpr int kChoiceHeight = 62;
-constexpr int kCompactHeight = 44;
+constexpr int kCompactHeight = 40;
 constexpr int kHeadingHeight = 40;
 constexpr int kButtonsHeight = 110;
 constexpr int kFooterTop = kHeight - 62;
@@ -163,6 +163,16 @@ Menu::Menu() {
     choice("Swing attacks", "combat.swing",
            {{"Off", "off", true}, {"At who you look at", "gaze"}, {"Blade contact", "hit"}}, 1);
     choice("Bow", "combat.bow", {{"Nock, draw, release", "draw"}, {"Point and click", "off"}}, 0);
+    choice("Arm stretch", "ik.stretch", {{"Off", "1", true}, {"10%", "1.1"}, {"15%", "1.15"}, {"25%", "1.25"}}, 2);
+    choice("Elbows", "ik.elbow", {{"Natural", "natural"}, {"Always down", "down"}}, 0);
+    on_off("Shoulders follow reach", "ik.shoulder", true);
+    on_off("Body faces your hands", "ik.body_yaw", true);
+    on_off("Fingers follow buttons", "ik.fingers", true);
+    for (Item& item : items_) {
+        if (item.page == page()) {
+            item.compact = true; // 14 rows on this page
+        }
+    }
     section("Scale");
     choice("IPD (eye distance)", "xr.ipd_mm",
            {{"Headset", "0"}, {"56 mm", "56"}, {"58 mm", "58"}, {"60 mm", "60"}, {"62 mm", "62"}, {"64 mm", "64"},
