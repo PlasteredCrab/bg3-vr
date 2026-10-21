@@ -36,6 +36,7 @@ constexpr std::size_t kVisualTransform = 0x08; // quat, translate +0x10, scale +
 struct Side {
     short upper = -1, lower = -1, hand = -1;
     short scapula = -1; // the upper arm's parent: turned forward / up when the hand reaches far (Parger 3.2)
+    std::vector<short> scapula_followers; // its other descendants (not under the upper arm): turned with it
     short dummy = -1; // the weapon bone below the hand
     short index = -1, middle = -1, pinky = -1; // knuckles (IndexFinger1 / MiddleFinger1 / PinkyFinger1): the hand's own frame
     // Finger chains for the curl, root (segment 1) to tip (end bone): index, middle, ring, pinky, thumb.
@@ -138,6 +139,23 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     side.lower = static_cast<short>(!overrides[1].empty() ? find(bones, overrides[1]) : parent(side.hand));
     side.upper = static_cast<short>(!overrides[0].empty() ? find(bones, overrides[0]) : parent(side.lower));
     side.scapula = parent(side.upper);
+    if (side.scapula >= 0) {
+        for (int b = 0; b < static_cast<int>(bones.size()); ++b) {
+            if (b == side.scapula || b == side.upper) {
+                continue;
+            }
+            // Nearest ancestor that is the scapula or the upper arm: only the scapula's own branch follows it here.
+            for (int a = parent(b), guard = 0; a >= 0 && guard < 256; a = parent(a), ++guard) {
+                if (a == side.upper) {
+                    break;
+                }
+                if (a == side.scapula) {
+                    side.scapula_followers.push_back(static_cast<short>(b));
+                    break;
+                }
+            }
+        }
+    }
     if (!side.ok()) {
         log::warn("ik: {} arm chain not found ({} is bone {}; set [ik] {}_upper/_lower/_hand)", label, dummy, dummy_bone,
                   label);
@@ -600,6 +618,11 @@ void apply(std::uintptr_t skeleton) {
                         lower_s = apply_turn(lower);
                         hand_s = apply_turn(hand);
                         to_matrix(apply_turn(scap), ms);
+                        for (const short b : side.scapula_followers) {
+                            if (float* mf = get(pose, b)) {
+                                to_matrix(apply_turn(from_matrix(mf)), mf);
+                            }
+                        }
                     }
                 }
             }

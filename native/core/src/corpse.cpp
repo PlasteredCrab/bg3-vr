@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <mutex>
+#include <vector>
 
 namespace bg3vr::corpse {
 
@@ -144,6 +145,10 @@ void try_grab(std::size_t h, const HandInput& in) {
     Held held;
     held.container = container;
     held.wrapper = hit->wrapper;
+    // The bodies to wake, collected under the manager's lock and woken after it (their methods take the physics scene's
+    // lock; the game takes the manager's lock first and then the scene's, so never the other way round here).
+    std::vector<std::uintptr_t> to_wake;
+    bool was_frozen = false;
     bool is_ragdoll = with_entry(container, [&](std::uintptr_t entry) {
         held.entity = mem::read<std::uint64_t>(entry + kEntryEntity);
         const auto tmpl = mem::read<std::uintptr_t>(entry + kEntryTemplate);
@@ -157,11 +162,9 @@ void try_grab(std::size_t h, const HandInput& in) {
             if (w == hit->wrapper) {
                 held.body = i;
             }
-            if (flags & 1) {
-                vcall<void>(w, kMakeDynamic); // frozen bodies were made kinematic; the tether (index `bodies`) stays
-            }
-            vcall<void>(w, kWakeUp);
+            to_wake.push_back(w); // only the bodies: the tether (index `bodies`) stays kinematic
         }
+        was_frozen = (flags & 1) != 0;
         *reinterpret_cast<std::uint32_t*>(entry + kEntryFlags) = flags & ~1u;
         *reinterpret_cast<float*>(entry + kEntryElapsed) = 0.0f;
         log::info("corpse: {} hand grabs body {} of {} (wrapper 0x{:X}) of the ragdoll of entity 0x{:X}{} at {:.2f} m; "
@@ -173,6 +176,12 @@ void try_grab(std::size_t h, const HandInput& in) {
         log::info("corpse: {} hand hit wrapper 0x{:X} (container 0x{:X}) that isn't a ragdoll body", h ? "right" : "left",
                   hit->wrapper, container);
         return;
+    }
+    for (const std::uintptr_t w : to_wake) {
+        if (was_frozen) {
+            vcall<void>(w, kMakeDynamic); // frozen bodies were made kinematic
+        }
+        vcall<void>(w, kWakeUp);
     }
     const auto at = body_position(held.wrapper);
     if (!at) {

@@ -24,7 +24,7 @@ void configure(const Config& config);
 // From the headset: the per-eye size the runtime recommends, and the game's window.
 void set_headset_eye(std::uint32_t width, std::uint32_t height);
 void set_window(HWND window);
-// Third person: the game's own size (one view on a flat screen), first person: the VR size again.
+// Off (the game's own size) until first-person VR play starts, in third person and when VR play stops.
 void set_suspended(bool suspended);
 void report();
 

@@ -179,6 +179,10 @@ void set_enabled(bool on) {
     }
 }
 
+void reset() {
+    g_tracker.reset();
+}
+
 Output on_frame(const vr::RigidPose& head, const Hand (&hands)[2]) {
     if (!enabled()) {
         return {};

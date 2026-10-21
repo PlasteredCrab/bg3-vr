@@ -155,6 +155,7 @@ Feedback on_headset(const Frame& f) {
     } else {
         g_nocked = false;
     }
+    out.pointing_grip_busy = g_nocked;
     return out;
 }
 
@@ -174,7 +175,13 @@ void on_frame() {
     const vr::Vec3 to{shot->from[0] + shot->direction[0] * shot->range, shot->from[1] + shot->direction[1] * shot->range,
                       shot->from[2] + shot->direction[2] * shot->range};
     // Characters and items, as the picking objects job casts (agent I 1.4).
-    const auto hit = rayprobe::raycast(shot->from, to);
+    auto hit = rayprobe::raycast(shot->from, to);
+    if (hit && hit->distance < 0.35f) {
+        // That close is the player's own body (looking down at a swing): look past it once.
+        const vr::Vec3 past{hit->position[0] + shot->direction[0] * 0.05f, hit->position[1] + shot->direction[1] * 0.05f,
+                            hit->position[2] + shot->direction[2] * 0.05f};
+        hit = rayprobe::raycast(past, to);
+    }
     if (!hit || hit->entity == rayprobe::kNullEntity) {
         g_misses.fetch_add(1, std::memory_order_relaxed);
         log::info("combat: {} at nothing within {:.1f} m; no click", shot->kind, shot->range);

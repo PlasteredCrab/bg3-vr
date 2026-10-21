@@ -1003,7 +1003,8 @@ void test_vrmenu() {
     CHECK(a.settings.size() == 1 && a.settings[0].second == "45");
     // Eye height changes ask for a new calibration.
     a = menu.update(std::array<float, 2>{0.8f, centre("Eye height")}, true, 0.0f, live);
-    CHECK(a.recalibrate && a.settings.size() == 1 && a.settings[0].first == "vr.eye_offset" && a.settings[0].second == "0.15");
+    // (the core recalibrates once the new offset is applied, not the menu)
+    CHECK(!a.recalibrate && a.settings.size() == 1 && a.settings[0].first == "vr.eye_offset" && a.settings[0].second == "0.15");
     // Live rows ask the owner instead of changing a setting, and show the owner's state.
     a = menu.update(std::array<float, 2>{0.8f, centre("Perspective")}, true, 0.0f, live);
     CHECK(a.toggle_view && a.settings.empty());

@@ -72,7 +72,8 @@ local function OnCharacterChanged()
     if skeleton then
         lines[#lines + 1] = skeleton
     end
-    local hide = HeadHideBridgeLine and HeadHideBridgeLine()
+    -- Third person shows the whole character: no head hiding there.
+    local hide = (not auto.third) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
     lines[#lines + 1] = hide or "hide=off"
     BG3VR.WriteBridge(lines)
     auto.character = CharacterKey()
@@ -93,6 +94,7 @@ local function HandleOne(what)
         auto.third = what == "view_third"
         if auto.started then
             if auto.third then
+                auto.stereoIn = nil -- a pending stereo=on from a just-started first person mustn't follow
                 BG3VR.WriteBridge({ "view=third", "stereo=off", "pose=off", "follow=off", "hide=off" })
                 BG3VR.Log("VR: third person")
             else

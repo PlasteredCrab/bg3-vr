@@ -50,7 +50,7 @@ std::atomic<int> g_percent{80};               // [render] vr_resolution; 0 = the
 std::atomic<std::uint32_t> g_eye_width{0}, g_eye_height{0};
 std::atomic<HWND> g_window{nullptr};
 std::atomic<bool> g_pending{false};           // apply on the next pump
-std::atomic<bool> g_suspended{false};
+std::atomic<bool> g_suspended{true}; // until first-person VR play starts
 std::atomic<bool> g_applied{false};           // the mod's size is in force
 std::atomic<std::int32_t> g_width{0}, g_height{0};
 std::atomic<std::uint64_t> g_resizes{0}, g_overridden{0};

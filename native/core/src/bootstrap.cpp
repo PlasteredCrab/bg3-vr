@@ -42,6 +42,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <format>
@@ -189,27 +190,55 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         g_menu_settings.set(name.substr(0, dot), name.substr(dot + 1), value);
         log::info("menu: {} = {}", name, value);
     }
-    vrplay::configure(g_config);
-    vrplay::configure_bindings(g_config);
-    stereo::configure(g_config);
-    resolution::configure(g_config);
-    const std::string scale = g_config.get("xr", "world_scale");
-    camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));
-#if BG3VR_HAVE_OPENXR
-    headset::configure_ui(g_config);
-#endif
-    holster::set_enabled(g_config.get_bool("holster", "enabled", true));
-    hold::set_hold(g_config.get_bool("grab", "hold", false));
-    corpse::set_enabled(g_config.get_bool("grab", "bodies", true));
-    combat::configure(g_config);
-    // Swings: "hit" is the physical blade contact (melee.cpp); "gaze" clicks on who you look at (combat.cpp).
-    melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
+    // Only the modules whose settings changed are reconfigured (re-running everything recalibrated the arms, reset
+    // combo state and overrode bridge switches such as ik=off on every click).
+    const auto changed = [&](std::string_view prefix) {
+        return std::any_of(settings.begin(), settings.end(), [&](const auto& s) { return s.first.rfind(prefix, 0) == 0; });
+    };
     const bool third = vrplay::third_person();
-    bodyik::configure_hands(g_config);
-    bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
-    if (vrplay::active()) {
-        picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
-        locomotion::set_enabled(g_config.get_bool("vr", "stick_locomotion", true));
+    if (changed("vr.")) {
+        vrplay::configure(g_config);
+        if (changed("vr.eye_offset")) {
+            vrplay::recalibrate(); // after the new offset is in
+        }
+        if (vrplay::active()) {
+            picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
+            locomotion::set_enabled(g_config.get_bool("vr", "stick_locomotion", true));
+        }
+    }
+    if (changed("bindings.") || changed("combos.")) {
+        vrplay::configure_bindings(g_config);
+    }
+    if (changed("xr.")) {
+        stereo::configure(g_config);
+        const std::string scale = g_config.get("xr", "world_scale");
+        camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));
+    }
+    if (changed("render.")) {
+        resolution::configure(g_config);
+    }
+#if BG3VR_HAVE_OPENXR
+    if (changed("ui.") || changed("pointer.") || changed("vr.dominant_hand")) {
+        headset::configure_ui(g_config);
+    }
+#endif
+    if (changed("holster.")) {
+        holster::set_enabled(g_config.get_bool("holster", "enabled", true));
+    }
+    if (changed("grab.")) {
+        hold::set_hold(g_config.get_bool("grab", "hold", false));
+        corpse::set_enabled(g_config.get_bool("grab", "bodies", true));
+    }
+    if (changed("combat.")) {
+        combat::configure(g_config);
+        // Swings: "hit" is the physical blade contact (melee.cpp); "gaze" clicks on who you look at (combat.cpp).
+        melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
+    }
+    if (changed("ik.")) {
+        bodyik::configure_hands(g_config);
+        if (changed("ik.arms")) {
+            bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
+        }
     }
     save_menu_settings();
 }
@@ -293,6 +322,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         picking::set_hand(on && g_config.get_bool("vr", "hand_pointing", true));
         locomotion::set_enabled(on && g_config.get_bool("vr", "stick_locomotion", true));
         vrplay::set_active(on);
+        // The VR render size only while playing in first person (menus, the flat screen and third person keep the
+        // game's own size).
+        resolution::set_suspended(!on || vrplay::third_person());
         if (on) {
             health::log_summary("VR play started");
         }
@@ -392,6 +424,11 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         } else {
             log::warn("probe: no validated controller to probe");
         }
+    }
+    // Every module's report, for requests from the Lua side and the console; not for the in-process / frequent ones
+    // (menu settings, what is wielded, weapon set switches).
+    if (!request.settings.empty() || request.wield || request.weapon_set) {
+        return;
     }
     health::log_summary("report");
     camera::report();

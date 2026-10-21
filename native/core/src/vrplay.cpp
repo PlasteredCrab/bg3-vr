@@ -90,6 +90,7 @@ constexpr ComboDefault kComboDefaults[] = {
     {LeftGrip, LeftY, "key:tab"},         // party view
     {LeftGrip, RightTrigger, "key:space"}, // end turn
     {LeftGrip, RightStickClick, "key:c"}, // sneak
+    {LeftGrip, LeftStickClick, "vrmenu"}, // the VR menu (controllers without a menu button: Index)
 };
 std::vector<Combo> g_combos;
 std::array<bool, kControlCount> g_swallow{};    // pressed as a combo's button: ignore until released
@@ -213,13 +214,17 @@ bool inject(std::uint16_t device, std::uint16_t id, bool pressed) {
     return true;
 }
 
-void release_all() {
+// Releases every key / button this module holds down. `forget_edges`: also forget which controls are down (VR play
+// off); otherwise a control still held doesn't show a new press next frame (opening the menu, new bindings).
+void release_all(bool forget_edges = true) {
     for (int c = 0; c < kControlCount; ++c) {
         if (g_injected[c]) {
             inject(g_bindings[c].device, g_bindings[c].id, false);
             g_injected[c] = false;
         }
-        g_down[c] = false;
+        if (forget_edges) {
+            g_down[c] = false;
+        }
     }
 }
 
@@ -365,7 +370,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     {
         std::scoped_lock lock(g_pending_mutex);
         if (g_pending_bindings) {
-            release_all(); // with the old bindings
+            release_all(false); // with the old bindings
             g_bindings = *g_pending_bindings;
             g_pending_bindings.reset();
         }
@@ -380,13 +385,14 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     const Hand& r = hands[1];
     const std::array<bool, kControlCount> now{
         l.active && analog(l.trigger, g_down[LeftTrigger]), l.active && analog(l.squeeze, g_down[LeftGrip]),
-        l.active && l.primary, l.active && l.secondary, l.active && l.menu, l.active && l.stick_click,
+        // The menu button is whichever controller has one (Touch: the left), so a left-handed layout keeps it.
+        l.active && l.primary, l.active && l.secondary, (l.active && l.menu) || (r.active && r.menu), l.active && l.stick_click,
         r.active && analog(r.trigger, g_down[RightTrigger]), r.active && analog(r.squeeze, g_down[RightGrip]),
         r.active && r.primary, r.active && r.secondary, r.active && r.stick_click};
     const bool grips_grab = hold::enabled(); // the grips pick things up instead
     const bool menu_open = g_menu_open.load(std::memory_order_relaxed);
     if (menu_open && std::any_of(g_injected.begin(), g_injected.end(), [](bool b) { return b; })) {
-        release_all();
+        release_all(false);
     }
     // A tap of a binding: keys and mouse buttons pressed and released, the VR actions as feedback.
     const auto tap = [&](const Binding& action, int c) {
@@ -407,7 +413,9 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     // Combos first: a button pressed while its combo's modifier is held.
     if (!menu_open) {
         for (const Combo& combo : g_combos) {
-            if (now[combo.button] && !g_down[combo.button] && now[combo.modifier]) {
+            // A grip that is holding something (a holster, a body, a drawn bow) isn't a combo modifier.
+            const bool busy = (combo.modifier == LeftGrip && l.grip_taken) || (combo.modifier == RightGrip && r.grip_taken);
+            if (now[combo.button] && !g_down[combo.button] && now[combo.modifier] && !busy) {
                 tap(combo.action, combo.button);
                 g_swallow[combo.button] = true;
                 g_combo_used[combo.modifier] = true;

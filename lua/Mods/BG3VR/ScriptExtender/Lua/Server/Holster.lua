@@ -10,7 +10,7 @@
 --   read, L 2.3), which plays the game's own draw / sheathe animation.
 
 local kChannel = "BG3VR_Holster"
-local kSetWait = 0.8
+local kSetWait = 2.0 -- client -> bridge (250 ms polls) -> core -> next server update
 
 local kTorchEffect = "VFX_LightSources_WPN_Torch_A_01_b6314fa1-8ac0-7a52-5865-5a4e9f98ddad"
 
@@ -142,6 +142,14 @@ Ext.Events.Tick:Subscribe(function(e)
     local ok, err = pcall(Tick, (e and e.Time and e.Time.DeltaTime) or 0.016)
     if not ok then
         BG3VR.Warn("holster: %s", tostring(err))
+    end
+end)
+
+-- Loop effects don't survive a level change: forget the flames' handles then.
+Ext.Events.GameStateChanged:Subscribe(function(e)
+    if tostring(e.ToState) ~= "Running" then
+        lights = {}
+        pending = {}
     end
 end)
 

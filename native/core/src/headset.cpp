@@ -134,6 +134,7 @@ std::size_t wrist_hand() {
 }
 std::atomic<bool> g_menu_is_open{false};        // the VR menu is up: the controllers drive it
 std::atomic<bool> g_first_run{false};           // open the VR menu on the Guide at the first VR start
+std::atomic<bool> g_hand_tracking{false};       // the session has hand trackers (for report(), any thread)
 HWND g_window = nullptr;                    // the game window (the laser moves the mouse cursor in it)
 bool g_was_driven = false;
 
@@ -435,6 +436,7 @@ void start(IDXGISwapChain* swapchain) {
                                                        "it to click, close an open hand to grab, palm to face + pinch "
                                                        "on the other hand for the VR menu)"
                                                      : "not offered by this runtime / headset (XR_EXT_hand_tracking)");
+            g_hand_tracking = g_session->has_hand_tracking();
             health::set("hand tracking", g_session->has_hand_tracking() ? health::State::Ready : health::State::Unavailable,
                         g_session->has_hand_tracking() ? "" : "the runtime has no XR_EXT_hand_tracking");
         } else {
@@ -850,7 +852,8 @@ void update_input(const xr::Frame& frame) {
         frame.views.size() == 2) {
         holster::Hand body_hands[2];
         for (std::size_t h = 0; h < 2; ++h) {
-            body_hands[h] = {now[h].tracked, now[h].grip.position, now[h].active && now[h].squeeze > 0.5f};
+            body_hands[h] = {now[h].tracked, now[h].grip.position,
+                             (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f};
         }
         holsters = holster::on_frame(centre_view(frame.views).pose, body_hands);
         for (std::size_t h = 0; h < 2; ++h) {
@@ -858,6 +861,9 @@ void update_input(const xr::Frame& frame) {
                 g_session->haptic(h, holsters.haptic[h], 0.02f);
             }
         }
+    }
+    else {
+        holster::reset(); // no stale grip edge when holsters resume
     }
     // Grips and aims for picking things up (world, game convention).
     for (std::size_t h = 0; h < 2; ++h) {
@@ -892,6 +898,7 @@ void update_input(const xr::Frame& frame) {
                         : std::nullopt,
                     static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
     // Combat: swings and the bow (combat.cpp), from the head and both grips.
+    combat::Feedback combat_feedback;
     if (frame.views.size() == 2) {
         combat::Frame cf;
         cf.head_world = camera::tracked_to_world(centre_view(frame.views).pose);
@@ -912,6 +919,7 @@ void update_input(const xr::Frame& frame) {
         cf.time_s = static_cast<double>(frame.state.predictedDisplayTime) * 1e-9;
         if (!g_menu_is_open.load(std::memory_order_relaxed)) {
             const combat::Feedback cfb = combat::on_headset(cf);
+            combat_feedback = cfb;
             if (cfb.haptic_pointing > 0.0f) {
                 g_session->haptic(pointer_hand(), cfb.haptic_pointing, 0.02f);
             }
@@ -956,8 +964,11 @@ void update_input(const xr::Frame& frame) {
             pinched = pinched ? hs.pinch > 0.5f : hs.pinch > 0.85f;
             menu = facing > 0.6f && pinched;
         }
+        // A grip holding something (a holster, a body, the bowstring) sends no binding and isn't a combo modifier.
+        const bool grip_busy = holsters.grip_taken[h] || corpse::holding(h) ||
+                               (h == pointer_hand() && combat_feedback.pointing_grip_busy);
         play[slot] = {hs.active || hs.hand_tracked, hs.trigger, hs.hand_tracked ? 0.0f : hs.squeeze, hs.stick_x, hs.stick_y,
-                      hs.stick_click, hs.primary, hs.secondary, menu, holsters.grip_taken[h]};
+                      hs.stick_click, hs.primary, hs.secondary, menu, grip_busy};
     }
     const vrplay::Feedback feedback =
         vrplay::on_controllers(play, static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
@@ -968,7 +979,7 @@ void update_input(const xr::Frame& frame) {
         request_view_toggle();
     }
     if (feedback.toggle_panel) {
-        toggle_ui_wrist();
+        bridge::post(std::format("set=ui.placement {}\n", toggle_ui_wrist() ? "wrist" : "world"));
     }
     if (feedback.toggle_menu) {
         g_menu_toggle_request.store(true, std::memory_order_relaxed);
@@ -1200,11 +1211,19 @@ void update_screen_laser() {
     }
 }
 
+void release_touch() {
+    if (g_ui_touch_down) {
+        vrplay::mouse_left(false);
+        g_ui_touch_down = false;
+    }
+}
+
 void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     update_screen_laser();
     const bool want = g_ui_enabled && !g_ui_failed && vrplay::active() && !vrplay::third_person() && g_mode != Mode::Screen;
     gpu_trace::watch_ui(want);
     if (!want) {
+        release_touch();
         if (g_ui_shown) {
             g_session->set_panel(std::nullopt);
             ui_set_in_eyes(true);
@@ -1245,7 +1264,14 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         ui->Release();
         return;
     }
-    if (ui != g_ui_source_seen) {
+    D3D11_TEXTURE2D_DESC ui_desc{};
+    ui->GetDesc(&ui_desc);
+    static UINT seen_width = 0, seen_height = 0;
+    static DXGI_FORMAT seen_format = DXGI_FORMAT_UNKNOWN;
+    if (ui != g_ui_source_seen || ui_desc.Width != seen_width || ui_desc.Height != seen_height || ui_desc.Format != seen_format) {
+        seen_width = ui_desc.Width;
+        seen_height = ui_desc.Height;
+        seen_format = ui_desc.Format;
         D3D11_TEXTURE2D_DESC desc{};
         ui->GetDesc(&desc);
         std::string error;
@@ -1304,6 +1330,9 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     overlay.keep_alpha = true;
     const float height_m =
         place.width_m * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
+    if (!g_ui_laser || g_menu_is_open.load(std::memory_order_relaxed)) {
+        release_touch();
+    }
     if (g_ui_laser && !g_menu_is_open.load(std::memory_order_relaxed)) {
         const HandState& right = both[pointer_hand()];
         std::optional<xr::PanelPlacement> target;
@@ -1370,7 +1399,7 @@ bool g_menu_enabled = true;    // [menu] enabled
 float g_menu_width = 0.62f;    // [ui] menu_width (m)
 float g_menu_distance = 0.7f;  // [ui] menu_distance (m)
 vrmenu::Menu g_menu;
-std::unique_ptr<vrmenu::Renderer> g_menu_renderer;
+vrmenu::Renderer* g_menu_renderer = nullptr; // never deleted: joining its thread at process exit could hang
 bool g_menu_open = false;
 bool g_menu_failed = false;
 bool g_menu_image = false; // an image has been uploaded
@@ -1386,7 +1415,7 @@ std::uint64_t g_menu_frames = 0;
 
 bool create_menu() {
     std::string error;
-    g_menu_renderer = std::make_unique<vrmenu::Renderer>();
+    g_menu_renderer = new vrmenu::Renderer();
     if (!g_menu_renderer->start()) {
         error = "the menu renderer didn't start (see above)";
     }
@@ -1433,11 +1462,16 @@ void set_menu_open(bool open) {
 void update_menu(const xr::Frame& frame) {
     if (g_first_run.load(std::memory_order_relaxed) && vrplay::active() && !g_menu_open && g_menu_enabled && !g_menu_failed) {
         g_first_run = false;
-        g_menu.show_guide();
-        g_menu.show_lesson(0);
-        g_menu_toggle_request.store(true, std::memory_order_relaxed);
-        bridge::post("set=menu.welcomed true\n"); // once
-        log::info("menu: first VR start: opening the VR menu on the Guide");
+        if (!g_menu_renderer) {
+            g_menu_failed = !create_menu();
+        }
+        if (!g_menu_failed) {
+            g_menu.show_guide();
+            g_menu.show_lesson(0);
+            set_menu_open(true);
+            bridge::post("set=menu.welcomed true\n"); // once
+            log::info("menu: first VR start: opening the VR menu on the Guide");
+        }
     }
     if (g_menu_toggle_request.exchange(false, std::memory_order_relaxed)) {
         if (!g_menu_open && g_menu_enabled && !g_menu_failed && !g_menu_renderer) {
@@ -1489,7 +1523,7 @@ void update_menu(const xr::Frame& frame) {
             pointer = panel_uv(right.aim, *g_menu_place, height_m);
         }
     }
-    const bool trigger = right.active && right.trigger > (g_menu_trigger ? 0.4f : 0.6f);
+    const bool trigger = (right.active || right.hand_tracked) && right.trigger > (g_menu_trigger ? 0.4f : 0.6f);
     click = click || (trigger && !g_menu_trigger && pointer);
     g_menu_trigger = trigger;
     // Which controllers are in use (the Controls page and the Guide name their buttons).
@@ -1830,7 +1864,7 @@ void report() {
     log::info("pointer: aiming beam drawn in {} eye copies; last hit {}", g_beam_frames,
               rayprobe::beam_distance() ? std::format("{:.2f} m", *rayprobe::beam_distance()) : std::string("none"));
     log::info("xr input: hand tracking {}; tracked-hand clicks left {} right {}, grabs left {} right {}",
-              g_session && g_session->has_hand_tracking() ? "on" : "off", g_hand_clicks[0], g_hand_clicks[1],
+              g_hand_tracking.load() ? "on" : "off", g_hand_clicks[0], g_hand_clicks[1],
               g_hand_grabs[0], g_hand_grabs[1]);
 }
 

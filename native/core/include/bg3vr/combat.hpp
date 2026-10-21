@@ -36,6 +36,7 @@ struct Frame {
 struct Feedback {
     float haptic_pointing = 0.0f;
     float haptic_other = 0.0f;
+    bool pointing_grip_busy = false; // an arrow is nocked / drawn: the grip is the bowstring, not a binding
 };
 Feedback on_headset(const Frame& frame);
 

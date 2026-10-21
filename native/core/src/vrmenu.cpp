@@ -225,7 +225,7 @@ Menu::Menu() {
             const char* fallback;
         };
         constexpr ComboRow kCombos[] = {{1, 8, "key:n"}, {1, 9, "key:j"}, {1, 2, "key:k"}, {1, 3, "key:tab"},
-                                        {1, 6, "key:space"}, {1, 10, "key:c"}};
+                                        {1, 6, "key:space"}, {1, 10, "key:c"}, {1, 5, "vrmenu"}};
         Item heading;
         heading.kind = Kind::Section;
         heading.page = page();
@@ -599,11 +599,20 @@ void Menu::step(int index, int direction, Actions& actions) {
         return;
     }
     const int count = static_cast<int>(item.options.size());
+    // The VR menu must stay reachable: the last button or combo that opens it can't be changed away.
+    if (item.control >= 0 && item.options[static_cast<std::size_t>(item.current)].value == "vrmenu") {
+        int openers = 0;
+        for (const Item& other : items_) {
+            openers += other.control >= 0 && !other.options.empty() &&
+                       other.options[static_cast<std::size_t>(other.current)].value == "vrmenu";
+        }
+        if (openers <= 1) {
+            actions.haptic = 0.6f;
+            return;
+        }
+    }
     item.current = (item.current + direction + count) % count;
     actions.settings.emplace_back(item.setting, item.options[item.current].value);
-    if (item.setting == "vr.eye_offset") {
-        actions.recalibrate = true;
-    }
     ++revision_;
 }
 

@@ -531,6 +531,12 @@ void clear() {
     std::scoped_lock lock(g_mutex);
     g_views = {};
     g_eyes.reset();
+    for (auto& slot : g_rewritten) {
+        slot.store(0, std::memory_order_relaxed); // the stage hooks stop following views that may be gone
+    }
+    for (auto& v : g_room_view) {
+        v.store(0, std::memory_order_relaxed);
+    }
     log::info("stereo: off");
 }
 
