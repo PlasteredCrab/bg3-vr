@@ -51,6 +51,11 @@ void set_weapon_drawn(bool drawn);
 
 // Slot 30 hook (animation worker thread): applies the IK when `skeleton` is the rig's.
 void apply(std::uintptr_t skeleton);
+// The eye bones' midpoint (Dummy_EyeFX_01 / 02, model space) as the animation posed it, read in apply() before the
+// body turn moves every bone: the camera sits there, so turning the body toward the hands can't move the camera
+// (which would move the hands relative to the body again). nullopt unless apply() read it for this skeleton in the
+// last 0.25 s (arms off: nothing moves the bones, the skeleton's own eye read is right).
+std::optional<vr::Vec3> animated_eyes(std::uintptr_t skeleton);
 
 void report();
 

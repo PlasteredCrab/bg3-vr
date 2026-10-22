@@ -182,7 +182,7 @@ int call_set_environment(SetEnvironmentFn set_atmosphere, SetEnvironmentFn set_l
     }
 }
 
-void copy_environment(std::uintptr_t view) {
+void copy_environment(std::uintptr_t view, bool verbose = true) {
     const auto set_atmosphere = sig::lookup("view_set_atmosphere");
     const auto set_lighting = sig::lookup("view_set_lighting");
     const auto release_id = sig::lookup("id_pool_release");
@@ -207,8 +207,10 @@ void copy_environment(std::uintptr_t view) {
     mem::try_copy(&atmosphere_id, atmosphere + 8, sizeof(atmosphere_id));
     mem::try_copy(&lighting_id, lighting + 8, sizeof(lighting_id));
     mem::try_copy(&pool_global, base + kIdPoolGlobalRva, sizeof(pool_global));
-    log::info("views: environment from the main view: atmosphere 0x{:X} (id {}), lighting 0x{:X} (id {})", atmosphere,
-              atmosphere_id, lighting, lighting_id);
+    if (verbose) {
+        log::info("views: environment from the main view: atmosphere 0x{:X} (id {}), lighting 0x{:X} (id {})", atmosphere,
+                  atmosphere_id, lighting, lighting_id);
+    }
     const int faulted = call_set_environment(reinterpret_cast<SetEnvironmentFn>(*set_atmosphere),
                                              reinterpret_cast<SetEnvironmentFn>(*set_lighting),
                                              reinterpret_cast<ReleaseIdFn>(*release_id), pool_global + 0xC600, view,
@@ -219,9 +221,64 @@ void copy_environment(std::uintptr_t view) {
     mem::try_copy(&split_lighting, view + 0x28D8, sizeof(split_lighting));
     mem::try_copy(&split_atmosphere_id, split_atmosphere + 8, sizeof(split_atmosphere_id));
     mem::try_copy(&split_lighting_id, split_lighting + 8, sizeof(split_lighting_id));
-    log::info("views:   {}; split view's active atmosphere id now {}, lighting id {}",
-              faulted ? std::format("FAULTED at step {}", faulted) : std::string("copied"), split_atmosphere_id,
-              split_lighting_id);
+    if (verbose || faulted) {
+        log::info("views:   {}; split view's active atmosphere id now {}, lighting id {}",
+                  faulted ? std::format("FAULTED at step {}", faulted) : std::string("copied"), split_atmosphere_id,
+                  split_lighting_id);
+    }
+}
+
+// The main view's active atmosphere / lighting (resource object and its id), to notice when the game applies new
+// ones to it (atmosphere triggers when walking into an area, dialogue lighting): the eye view only gets them from
+// copy_environment, so it would keep the old ones and one eye would be lit differently (the 2026-10-22 run: the right
+// eye clearly darker during a conversation).
+struct Environment {
+    std::uintptr_t atmosphere = 0, lighting = 0;
+    std::int32_t atmosphere_id = -1, lighting_id = -1;
+    bool operator==(const Environment&) const = default;
+};
+Environment read_environment(std::uintptr_t view) {
+    Environment e;
+    mem::try_copy(&e.atmosphere, view + 0x28A0, sizeof(e.atmosphere));
+    mem::try_copy(&e.lighting, view + 0x28D8, sizeof(e.lighting));
+    if (e.atmosphere) {
+        mem::try_copy(&e.atmosphere_id, e.atmosphere + 8, sizeof(e.atmosphere_id));
+    }
+    if (e.lighting) {
+        mem::try_copy(&e.lighting_id, e.lighting + 8, sizeof(e.lighting_id));
+    }
+    return e;
+}
+std::optional<Environment> g_environment_copied; // the main view's, when last copied to the eye (game thread)
+std::uint64_t g_environment_syncs = 0;
+
+// Game thread, every frame with an eye view: copy the main view's environment again when it changed.
+void sync_environment() {
+    std::optional<std::array<std::uintptr_t, 2>> eyes;
+    {
+        std::scoped_lock lock(g_mutex);
+        eyes = g_eye_views;
+    }
+    if (!eyes || !(*eyes)[0] || !(*eyes)[1]) {
+        g_environment_copied.reset();
+        return;
+    }
+    const Environment now = read_environment((*eyes)[0]);
+    if (g_environment_copied && *g_environment_copied == now) {
+        return;
+    }
+    const bool verbose = g_environment_syncs < 20 || g_environment_syncs % 100 == 0;
+    if (g_environment_copied && verbose) {
+        log::info("views: the main view's environment changed (copy {}) (atmosphere 0x{:X} id {} -> 0x{:X} id {}, lighting 0x{:X} "
+                  "id {} -> 0x{:X} id {}); copying it to the eye view",
+                  g_environment_syncs + 1, g_environment_copied->atmosphere, g_environment_copied->atmosphere_id, now.atmosphere, now.atmosphere_id,
+                  g_environment_copied->lighting, g_environment_copied->lighting_id, now.lighting, now.lighting_id);
+    }
+    if (g_environment_copied) {
+        copy_environment((*eyes)[1], verbose);
+        ++g_environment_syncs;
+    }
+    g_environment_copied = now;
 }
 
 void give_scene(std::uintptr_t view) {
@@ -1826,6 +1883,7 @@ bool set_stereo_layout(bool on) {
 void on_frame() {
     apply_pending_camera();
     apply_game_layout();
+    sync_environment();
     std::vector<std::uintptr_t> views;
     std::array<Override, std::size(g_overrides)> overrides;
     {

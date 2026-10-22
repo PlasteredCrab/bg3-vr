@@ -18,6 +18,7 @@
 #include "bg3vr/resolution.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
+#include "bg3vr/memory.hpp"
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
@@ -135,9 +136,24 @@ DWORD WINAPI watch_modules(void*) {
 }
 
 // On the game thread at every camera view update.
+// A conversation (or another camera-taking timeline: the game sets the player view's cinematic flag +0x2961 on join
+// and clears it on leave, agent G 2.5) changes the controls and where the game UI is shown.
+void update_conversation() {
+    bool on = false;
+    if (const auto eyes = views::eye_views(); eyes && (*eyes)[0]) {
+        std::uint8_t flag = 0;
+        on = mem::try_copy(&flag, (*eyes)[0] + stereo::layout::kOutlineGate, sizeof(flag)) && flag != 0;
+    }
+    vrplay::set_dialogue(on);
+#if BG3VR_HAVE_OPENXR
+    headset::set_dialogue(on);
+#endif
+}
+
 void on_game_frame() {
     cull::on_frame();
     views::on_frame();
+    update_conversation();
     skeleton::on_frame();
     rayprobe::on_frame();
     quality::on_frame();
@@ -426,8 +442,10 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         }
     }
     // Every module's report, for requests from the Lua side and the console; not for the in-process / frequent ones
-    // (menu settings, what is wielded, weapon set switches).
-    if (!request.settings.empty() || request.wield || request.weapon_set) {
+    // (menu settings, what is wielded, weapon set switches, the follow tick's new transform address: the 2026-10-22
+    // run got a full report every 0.4 s from that alone).
+    const bool follow_tick = request.follow && !request.controller && !request.pose;
+    if (!request.settings.empty() || request.wield || request.weapon_set || follow_tick) {
         return;
     }
     health::log_summary("report");

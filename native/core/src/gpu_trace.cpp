@@ -48,6 +48,7 @@ struct Run {
     Target target;
     D3D11_VIEWPORT viewport{};
     DWORD thread = 0;
+    ID3D11DeviceContext* context = nullptr; // the context that drew it (raw)
     std::string inputs; // shader resources (and UAVs) bound for the run's draws / dispatches
     std::uint32_t draws = 0, clears = 0, dispatches = 0;
 };
@@ -235,8 +236,20 @@ void close_run() {
                                       g_run.viewport.TopLeftY, g_run.viewport.Width, g_run.viewport.Height, g_run.draws,
                                       g_run.clears, g_run.dispatches, g_run.inputs));
         if (g_run.target.resource && g_run.draws) {
-            g_lines.back() += sample_target(g_run.target.resource);
+            // Read back only on the thread that drew it, through the immediate context it drew with: another thread
+            // (a later run's draw closes this one) or a deferred context would race the game on the immediate context.
+            ID3D11DeviceContext* immediate = nullptr;
+            render::device()->GetImmediateContext(&immediate);
+            if (immediate) {
+                immediate->Release();
+            }
+            g_lines.back() += GetCurrentThreadId() == g_run.thread && g_run.context == immediate
+                                  ? sample_target(g_run.target.resource)
+                                  : std::string(" px n/a (other thread or deferred context)");
         }
+    }
+    if (g_run_open && g_run.target.resource) {
+        reinterpret_cast<ID3D11Resource*>(g_run.target.resource)->Release(); // held for the run
     }
     g_run_open = false;
 }
@@ -270,12 +283,15 @@ bool active() {
     return g_lines.size() < 4000;
 }
 
-Run& run(const std::string& inputs) {
+Run& run(ID3D11DeviceContext* context, const std::string& inputs) {
     if (!g_run_open || g_run.inputs != inputs || g_run.target.resource != g_target.resource || g_run.viewport.TopLeftX != g_viewport.TopLeftX ||
         g_run.viewport.TopLeftY != g_viewport.TopLeftY || g_run.viewport.Width != g_viewport.Width ||
-        g_run.viewport.Height != g_viewport.Height || g_run.thread != GetCurrentThreadId()) {
+        g_run.viewport.Height != g_viewport.Height || g_run.thread != GetCurrentThreadId() || g_run.context != context) {
         close_run();
-        g_run = {g_target, g_viewport, GetCurrentThreadId(), inputs};
+        g_run = {g_target, g_viewport, GetCurrentThreadId(), context, inputs};
+        if (g_run.target.resource) {
+            reinterpret_cast<ID3D11Resource*>(g_run.target.resource)->AddRef(); // still bound here, so alive
+        }
         g_run_open = true;
     }
     return g_run;
@@ -411,37 +427,37 @@ void STDMETHODCALLTYPE rs_set_viewports(ID3D11DeviceContext* self, UINT count, c
     }
     g_hooks[2].call<void>(self, count, viewports);
 }
-void count_draw() {
+void count_draw(ID3D11DeviceContext* self) {
     if (g_watch_ui.load(std::memory_order_relaxed)) {
         ui_on_draw();
     }
     std::scoped_lock lock(g_mutex);
     if (active()) {
-        ++run(slots_text(g_ps_srv)).draws;
+        ++run(self, slots_text(g_ps_srv)).draws;
     }
 }
 void STDMETHODCALLTYPE draw(ID3D11DeviceContext* self, UINT vertices, UINT start) {
-    count_draw();
+    count_draw(self);
     g_hooks[3].call<void>(self, vertices, start);
 }
 void STDMETHODCALLTYPE draw_indexed(ID3D11DeviceContext* self, UINT indices, UINT start, INT base) {
-    count_draw();
+    count_draw(self);
     g_hooks[4].call<void>(self, indices, start, base);
 }
 void STDMETHODCALLTYPE draw_instanced(ID3D11DeviceContext* self, UINT vertices, UINT instances, UINT start, UINT start_instance) {
-    count_draw();
+    count_draw(self);
     g_hooks[5].call<void>(self, vertices, instances, start, start_instance);
 }
 void STDMETHODCALLTYPE draw_indexed_instanced(ID3D11DeviceContext* self, UINT indices, UINT instances, UINT start, INT base,
                                               UINT start_instance) {
-    count_draw();
+    count_draw(self);
     g_hooks[6].call<void>(self, indices, instances, start, base, start_instance);
 }
 void STDMETHODCALLTYPE dispatch(ID3D11DeviceContext* self, UINT x, UINT y, UINT z) {
     {
         std::scoped_lock lock(g_mutex);
         if (active()) {
-            ++run(" cs" + slots_text(g_cs_srv) + " uav" + slots_text(g_cs_uav)).dispatches;
+            ++run(self, " cs" + slots_text(g_cs_srv) + " uav" + slots_text(g_cs_uav)).dispatches;
         }
     }
     g_hooks[7].call<void>(self, x, y, z);

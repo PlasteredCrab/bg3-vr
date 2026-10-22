@@ -66,11 +66,16 @@ void set_sweep(std::optional<Sweep> sweep);
 // dragging turns it ([camera] mouselook / mouselook_sensitivity in bg3vr.ini; on by default).
 void set_mouselook(bool enabled);
 
-// Following the character while a pose is held: every view update reads the character's position
-// from its ls::TransformComponent (rotation quaternion at +0x00, translate at +0x10) and moves the
-// held pose there, `height` above it. The held yaw is kept, so walking doesn't turn the view (the
-// player turns with their head). Implausible reads (not finite, or a jump of more than 10 units
-// in one update) are ignored and counted.
+// Following the character while a pose is held: every view update moves the held pose to the character. The held
+// yaw is kept, so walking doesn't turn the view (the player turns with their head).
+// Where from ([vr] camera_anchor):
+//   head (default): the eyes of the rendered body (the skeleton's Dummy_EyeFX bones, placed with the visual's world
+//                   transform, as animated: the camera is always where the character's head is) + [vr] eye_offset;
+//   body:           the rendered body's position, `height` above it (steady: no animation sway).
+// Both read the visual (skeleton.hpp), which stays at one address. The entity's ls::TransformComponent (rotation
+// quaternion at +0x00, translate at +0x10) at `transform` is only the fallback while no skeleton is attached: the game
+// moves that component in memory when components are added or removed, and the 2026-10-22 run read stale slots
+// (another entity 427 m away) between the Lua side's address updates, every 0.4 s. Implausible reads are ignored.
 struct Follow {
     std::uintptr_t transform = 0;
     float height = 1.7f;
@@ -79,10 +84,13 @@ struct Follow {
 void set_follow(std::optional<Follow> follow);
 // Changes the height above the followed transform (e.g. calibrated from the head bone); no-op when not following.
 void set_follow_height(float height);
+// [vr] camera_anchor (head | body) and [vr] eye_offset (metres added to the eye height in head mode); any thread.
+void set_anchor(bool head, float eye_offset);
 // [xr] world_scale (game units per real metre of head and hand movement); live from the VR menu.
 void set_world_scale(float scale);
 float world_scale();
-// The followed transform's last accepted position (game world), or nullopt when not following.
+// The followed body's last accepted position (the visual's, or the transform's while no skeleton is attached; game
+// world), or nullopt when not following.
 std::optional<vr::Vec3> follow_position();
 // Turns the held pose's yaw (snap / smooth turn): with head tracking this rotates the whole tracked space around
 // the anchor. No-op while no pose is held.

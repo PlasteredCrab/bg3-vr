@@ -121,6 +121,8 @@ std::atomic<bool> g_hands_buzz{false};
 constexpr std::uint64_t kHandLogEvery = 900; // samples between periodic pose lines (~10 s at 90 Hz)
 std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
+std::atomic<bool> g_ui_dialogue{false};       // a conversation is on
+std::atomic<bool> g_ui_dialogue_front{true};  // [ui] dialogue_in_front
 std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist (toggled by the "panel" binding)
 std::atomic<bool> g_menu_toggle_request{false}; // the "vrmenu" binding was pressed
 // [vr] dominant_hand: the hand that points (laser, poke, menu, picking, melee) and gets the "right_*" bindings; the
@@ -1037,7 +1039,7 @@ void publish_status(bool ready) {
 bool g_ui_enabled = true;          // [ui] panel
 bool g_ui_remove_from_eyes = true; // [ui] remove_from_eyes
 bool g_ui_laser = true;            // [ui] laser
-std::atomic<float> g_ui_wrist_width{0.4f}; // [ui] wrist_width (m)
+std::atomic<float> g_ui_wrist_width{1.2f}; // [ui] wrist_width (m); 3x the first 0.4 m, which was too small to read
 std::atomic<float> g_ui_wrist_out{0.045f};  // [ui] wrist_out: off the back of the hand (m)
 std::atomic<float> g_ui_wrist_along{0.2f};  // [ui] wrist_along: the panel centre up the forearm from the grip (m)
 float g_ui_distance = 1.0f;        // [ui] distance (m)
@@ -1318,7 +1320,8 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     }
     // Where it is this frame: the world panel, or on the left wrist.
     const std::array<HandState, 2> both = hands();
-    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed);
+    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed) &&
+                       !(g_ui_dialogue.load(std::memory_order_relaxed) && g_ui_dialogue_front.load(std::memory_order_relaxed));
     // A tracked hand has no grip action space for the runtime to anchor the panel to: place it in LOCAL from the
     // hand's grip every frame instead.
     const bool wrist_hand_tracked = wrist && both[wrist_hand()].hand_tracked && both[wrist_hand()].tracked;
@@ -1748,8 +1751,9 @@ void install(const Config& config) {
     g_ui_distance = ui_number("distance", 1.0f, 0.3f, 5.0f);
     g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
-    g_ui_wrist_width = ui_number("wrist_width", 0.4f, 0.1f, 1.0f);
+    g_ui_wrist_width = ui_number("wrist_width", 1.2f, 0.1f, 2.0f);
     g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "wrist")) == "wrist", std::memory_order_relaxed);
+    g_ui_dialogue_front.store(config.get_bool("ui", "dialogue_in_front", true), std::memory_order_relaxed);
     g_menu_enabled = config.get_bool("menu", "enabled", true);
     g_menu_width = ui_number("menu_width", 0.62f, 0.2f, 2.0f);
     g_menu_distance = ui_number("menu_distance", 0.7f, 0.3f, 3.0f);
@@ -1765,6 +1769,18 @@ void install(const Config& config) {
 
 void set_first_run(bool first) {
     g_first_run.store(first, std::memory_order_relaxed);
+}
+
+void set_dialogue(bool on) {
+    if (g_ui_dialogue.exchange(on, std::memory_order_relaxed) == on) {
+        return;
+    }
+    const bool front = g_ui_dialogue_front.load(std::memory_order_relaxed);
+    if (on && front) {
+        g_ui_place_request.store(true, std::memory_order_relaxed); // in front of where the head is now
+    }
+    log::info("ui: conversation {}{}", on ? "on" : "off",
+              !front ? "" : on ? ": the game interface comes in front of you" : ": the game interface goes back where it was");
 }
 
 void configure_ui(const Config& config) {
@@ -1813,7 +1829,7 @@ void configure_ui(const Config& config) {
     g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
     g_ui_wrist_along = ui_value("wrist_along", 0.2f, -0.3f, 0.6f);
     const std::string v = config.get("ui", "wrist_width");
-    const float width = v.empty() ? 0.4f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 1.0f);
+    const float width = v.empty() ? 1.2f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 2.0f);
     if (g_ui_wrist_width.exchange(width) != width) {
         log::info("ui: wrist panel {:.2f} m wide", width);
     }

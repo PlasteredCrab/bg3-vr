@@ -138,7 +138,7 @@ Menu::Menu() {
     choice("Beam opacity", "pointer.opacity",
            {{"25%", "0.25"}, {"40%", "0.4"}, {"55%", "0.55"}, {"70%", "0.7"}, {"85%", "0.85"}, {"100%", "1"}}, 2);
     choice("Wrist interface size", "ui.wrist_width",
-           {{"Small", "0.3"}, {"Medium", "0.4"}, {"Large", "0.5"}, {"Huge", "0.6"}}, 1);
+           {{"Small", "0.4"}, {"Medium", "0.8"}, {"Large", "1.2"}, {"Huge", "1.6"}}, 2);
     section("Comfort");
     choice("Turning", "vr.turn", {{"Snap", "snap"}, {"Smooth", "smooth"}}, 0);
     choice("Snap angle", "vr.snap_degrees",
@@ -149,6 +149,9 @@ Menu::Menu() {
     choice("Comfort vignette", "vr.comfort_vignette",
            {{"Off", "0", true}, {"Light", "0.25"}, {"Medium", "0.5"}, {"Strong", "0.8"}}, 2);
     on_off("Stick movement", "vr.stick_locomotion", true);
+    choice("Camera", "vr.camera_anchor", {{"At the character's eyes", "head"}, {"Steady (no head sway)", "body"}}, 0);
+    on_off("Answers in front of you", "ui.dialogue_in_front", true);
+    on_off("Sticks and A / B in conversations", "vr.dialogue_buttons", true);
     section("Body");
     choice("Dominant hand", "vr.dominant_hand", {{"Right", "right"}, {"Left", "left"}}, 0);
     on_off("Arms follow controllers", "ik.arms", true);
@@ -541,6 +544,17 @@ std::vector<Menu::Lesson> Menu::lessons() const {
                                            "nock an arrow, pull back, aim along the arrow and let go. The game rolls "
                                            "the shot.", dom, other, squeeze),
                        "bow"});
+    }
+    if (setting("vr.dialogue_buttons") != "false" || setting("ui.dialogue_in_front") != "false") {
+        std::string talk = setting("ui.dialogue_in_front") != "false"
+                               ? "When someone talks to you, the game's interface comes in front of you until the "
+                                 "conversation ends. "
+                               : "";
+        talk += setting("vr.dialogue_buttons") != "false"
+                    ? "Push either stick up or down to move through the answers and press A to pick one (or point at it "
+                      "and click); B skips the line being spoken."
+                    : std::format("Point at an answer and {} to pick it.", hands ? "close your hand" : "pull the trigger");
+        out.push_back({"Conversations", talk, "buttons"});
     }
     std::string buttons;
     for (const Item& item : items_) {

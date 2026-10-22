@@ -217,6 +217,7 @@ LONG CALLBACK on_exception(EXCEPTION_POINTERS* info) {
     if (views::eye_views() && g_fault_dumps.fetch_add(1) < 3) {
         views::dump_jobs("exception", hints);
     }
+    log::flush(); // the process may end right after this
     t_in_handler = false;
     return EXCEPTION_CONTINUE_SEARCH;
 }

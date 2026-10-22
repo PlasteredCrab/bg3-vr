@@ -1,8 +1,11 @@
 #include "bg3vr/camera.hpp"
 
+#include "bg3vr/bodyik.hpp"
+
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/skeleton.hpp"
 #include "bg3vr/vr_math.hpp"
 
 #include <safetyhook.hpp>
@@ -85,16 +88,60 @@ std::atomic<std::uint64_t> g_follow_teleports{0};
 constexpr float kTeleportDistance = 2.0f;
 constexpr float kWorldLimit = 100000.0f; // beyond this a read is garbage, not a position
 bool g_teleport_turn = true;             // [vr] teleport_turn: face where the body faces after a teleport
+std::atomic<bool> g_anchor_head{true};   // [vr] camera_anchor = head
+std::atomic<float> g_eye_offset{0.0f};   // [vr] eye_offset (head mode)
+std::atomic<std::uint64_t> g_follow_from_visual{0};
+std::atomic<std::uint64_t> g_follow_from_eyes{0};
+bool g_follow_source_visual = false; // under g_mutex: the last accepted read came from the visual
+bool g_follow_logged_source = false;
+
+bool sane(const float (&p)[3]) {
+    return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::abs(p[0]) < kWorldLimit &&
+           std::abs(p[1]) < kWorldLimit && std::abs(p[2]) < kWorldLimit;
+}
 
 // Moves the held pose to the followed character, if the read looks sane. Under g_mutex.
 void update_follow() {
-    float translate[3];
-    if (!mem::try_copy(translate, g_follow->transform + layout::kTransformTranslate, sizeof(translate)) ||
-        !std::isfinite(translate[0]) || !std::isfinite(translate[1]) || !std::isfinite(translate[2]) ||
-        std::abs(translate[0]) > kWorldLimit || std::abs(translate[1]) > kWorldLimit ||
-        std::abs(translate[2]) > kWorldLimit) {
+    // The rendered body (the skeleton read this same view update, in the frame callback), else the transform.
+    float translate[3]{};
+    float q[4]{};
+    std::optional<vr::Vec3> eyes;
+    bool from_visual = false;
+    if (const auto head = skeleton::head(); head && head->fresh) {
+        translate[0] = head->visual_position[0];
+        translate[1] = head->visual_position[1];
+        translate[2] = head->visual_position[2];
+        q[0] = head->visual_rotation[0];
+        q[1] = head->visual_rotation[1];
+        q[2] = head->visual_rotation[2];
+        q[3] = head->visual_rotation[3];
+        from_visual = sane(translate);
+        if (from_visual && g_anchor_head.load(std::memory_order_relaxed)) {
+            // The eyes as animated (before the body turn moves the bones), else as read; the head bone + 0.10 m when the
+            // eye bones are missing or don't sit near the head.
+            std::optional<vr::Vec3> model = bodyik::animated_eyes(skeleton::current());
+            if (!model && head->has_eyes) {
+                model = head->eyes_model;
+            }
+            if (!model || std::abs((*model)[1] - head->model[1]) > 0.3f) {
+                model = vr::Vec3{head->model[0], head->model[1] + 0.10f, head->model[2]};
+            }
+            const float s = head->visual_scale;
+            const vr::Vec3 offset = vr::rotate(head->visual_rotation, {(*model)[0] * s, (*model)[1] * s, (*model)[2] * s});
+            eyes = vr::Vec3{translate[0] + offset[0], translate[1] + offset[1], translate[2] + offset[2]};
+        }
+    }
+    if (!from_visual &&
+        (!mem::try_copy(translate, g_follow->transform + layout::kTransformTranslate, sizeof(translate)) || !sane(translate))) {
         g_follow_rejects.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+    if (from_visual != g_follow_source_visual || !g_follow_logged_source) {
+        log::info("camera: following {}", from_visual ? (eyes ? "the rendered body's eyes (skeleton)" : "the rendered body (skeleton)")
+                                                      : "the character's transform (no skeleton yet)");
+        g_follow_logged_source = true;
+        g_follow_has_last = g_follow_has_last && from_visual == g_follow_source_visual; // a new source isn't a teleport
+        g_follow_source_visual = from_visual;
     }
     if (g_follow_has_last) {
         const float dx = translate[0] - g_follow_last[0], dy = translate[1] - g_follow_last[1],
@@ -104,9 +151,8 @@ void update_follow() {
             // The body was placed somewhere else (cutscene, dialogue, teleport): come along, and optionally turn to
             // where the body now faces (same yaw as the Lua follow start: 2 atan2(q.y, q.w) + 180).
             g_follow_teleports.fetch_add(1, std::memory_order_relaxed);
-            float q[4]{};
-            const bool have_rotation = mem::try_copy(q, g_follow->transform, sizeof(q)) && std::isfinite(q[1]) &&
-                                       std::isfinite(q[3]) && (q[1] != 0.0f || q[3] != 0.0f);
+            const bool have_rotation = (from_visual || mem::try_copy(q, g_follow->transform, sizeof(q))) &&
+                                       std::isfinite(q[1]) && std::isfinite(q[3]) && (q[1] != 0.0f || q[3] != 0.0f);
             const float yaw = have_rotation ? std::atan2(q[1], q[3]) * 2.0f * 57.2957795f + 180.0f : g_pose->yaw_deg;
             if (g_teleport_turn && have_rotation) {
                 g_pose->yaw_deg = std::fmod(yaw + 540.0f, 360.0f) - 180.0f;
@@ -118,9 +164,19 @@ void update_follow() {
     }
     g_follow_last = {translate[0], translate[1], translate[2]};
     g_follow_has_last = true;
-    g_pose->x = translate[0];
-    g_pose->y = translate[1] + g_follow->height;
-    g_pose->z = translate[2];
+    if (eyes) {
+        g_pose->x = (*eyes)[0];
+        g_pose->y = (*eyes)[1] + g_eye_offset.load(std::memory_order_relaxed);
+        g_pose->z = (*eyes)[2];
+        g_follow_from_eyes.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_pose->x = translate[0];
+        g_pose->y = translate[1] + g_follow->height;
+        g_pose->z = translate[2];
+    }
+    if (from_visual) {
+        g_follow_from_visual.fetch_add(1, std::memory_order_relaxed);
+    }
     if (g_sweep) {
         g_sweep_base.x = g_pose->x;
         g_sweep_base.y = g_pose->y;
@@ -451,6 +507,14 @@ float world_scale() {
     return g_world_scale.load(std::memory_order_relaxed);
 }
 
+void set_anchor(bool head, float eye_offset) {
+    const bool was = g_anchor_head.exchange(head);
+    g_eye_offset.store(eye_offset);
+    if (was != head) {
+        log::info("camera: anchored at {}", head ? "the character's eyes" : "the character's body (steady)");
+    }
+}
+
 void set_follow_height(float height) {
     std::scoped_lock lock(g_mutex);
     if (g_follow && std::isfinite(height)) {
@@ -542,8 +606,10 @@ void report() {
               g_force_view ? " (force_view on)" : "", g_projection_overrides.load(std::memory_order_relaxed));
     log::info("camera: head-tracked writes {} (world scale {:.2f})", g_head_writes.load(std::memory_order_relaxed),
               g_world_scale.load());
-    log::info("camera: follow reads {}, rejected {}, teleports followed {}", g_follow_reads.load(std::memory_order_relaxed),
-              g_follow_rejects.load(std::memory_order_relaxed), g_follow_teleports.load(std::memory_order_relaxed));
+    log::info("camera: follow reads {} ({} from the rendered body, {} at its eyes), rejected {}, teleports followed {}",
+              g_follow_reads.load(std::memory_order_relaxed), g_follow_from_visual.load(std::memory_order_relaxed),
+              g_follow_from_eyes.load(std::memory_order_relaxed), g_follow_rejects.load(std::memory_order_relaxed),
+              g_follow_teleports.load(std::memory_order_relaxed));
     g_view_max_error.store(0.0f, std::memory_order_relaxed);
     g_last_reported_calls = calls;
 

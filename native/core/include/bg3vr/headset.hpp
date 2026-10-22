@@ -23,6 +23,9 @@ void install(const Config& config);
 void configure_ui(const Config& config);
 // The first VR start ever ([menu] welcomed not set): the VR menu opens by itself on the Guide.
 void set_first_run(bool first);
+// A conversation is on (game thread): the game UI, where the answers are, comes off the wrist to a panel in front of
+// the head until it ends ([ui] dialogue_in_front, default on), so the laser and trigger can pick an answer.
+void set_dialogue(bool on);
 
 // Frames between the camera update a frame was rendered from and its Present: 0..7, or -1 to find
 // it by looking for the applied view matrix in the presenting RenderFrame (the default).

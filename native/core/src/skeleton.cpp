@@ -452,6 +452,9 @@ void on_frame() {
     head.world_rotation = vr::multiply(visual_rotation, rows_to_quat(matrix));
     head.frame = frame;
     head.fresh = fresh;
+    head.visual_position = {transform[4], transform[5], transform[6]};
+    head.visual_rotation = visual_rotation;
+    head.visual_scale = transform[7] != 0.0f ? transform[7] : 1.0f;
     float eye_matrix[2][16];
     if (g_eye_bones[0] >= 0 && g_eye_bones[1] >= 0 && bone_matrix(g_skeleton, g_eye_bones[0], eye_matrix[0]) &&
         bone_matrix(g_skeleton, g_eye_bones[1], eye_matrix[1])) {
@@ -493,6 +496,10 @@ void on_frame() {
                   g_read_before_slot30);
         g_last_slot30_calls = calls;
     }
+}
+
+std::uintptr_t current() {
+    return g_skeleton;
 }
 
 std::optional<Head> head() {

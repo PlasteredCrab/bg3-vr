@@ -126,6 +126,11 @@ std::atomic<float> g_smooth_degrees_per_s{120.0f};
 std::atomic<bool> g_wheel{true};
 std::atomic<float> g_vignette{0.5f};
 std::atomic<bool> g_menu_open{false};
+std::atomic<bool> g_dialogue{false};
+std::atomic<bool> g_dialogue_buttons{true}; // [vr] dialogue_buttons
+double g_next_dialogue_step = 0.0;          // presenting thread: when a held stick steps again
+int g_dialogue_direction = 0;
+std::atomic<std::uint64_t> g_dialogue_keys{0};
 std::atomic<bool> g_recalibrate{false};
 std::atomic<float> g_turn_rate{0.0f};
 float g_recenter_hold_s = 0.8f;
@@ -300,6 +305,8 @@ void configure(const Config& config) {
     g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
     g_eye_offset = number("eye_offset", 0.0f, -0.5f, 0.5f);
+    camera::set_anchor(text::to_lower(config.get("vr", "camera_anchor", "head")) != "body", g_eye_offset.load());
+    g_dialogue_buttons = config.get_bool("vr", "dialogue_buttons", true);
 }
 
 void mouse_left(bool down) {
@@ -340,6 +347,18 @@ void set_menu_open(bool open) {
     if (g_menu_open.exchange(open) != open) {
         log::info("vr: menu {}", open ? "open (the controllers drive it)" : "closed");
     }
+}
+
+void set_dialogue(bool on) {
+    if (g_dialogue.exchange(on) != on) {
+        log::info("vr: conversation {}{}", on ? "on" : "off",
+                  on && g_dialogue_buttons.load() ? " (sticks up / down move through the answers, A picks, B skips the line)"
+                                                  : "");
+    }
+}
+
+bool dialogue() {
+    return g_dialogue.load(std::memory_order_relaxed);
 }
 
 void set_active(bool on) {
@@ -410,6 +429,43 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         }
         feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
     };
+    // In a conversation A picks the highlighted answer and B skips the line; their bindings wait until it ends.
+    const bool talking = !menu_open && g_dialogue.load(std::memory_order_relaxed) && g_dialogue_buttons.load(std::memory_order_relaxed);
+    if (talking) {
+        for (const auto& [c, key] : {std::pair{RightA, "enter"}, std::pair{RightB, "space"}}) {
+            if (g_injected[c]) {
+                inject(g_bindings[c].device, g_bindings[c].id, false);
+                g_injected[c] = false;
+            }
+            if (now[c] && !g_down[c]) {
+                const bool sent = tap_key(key);
+                g_dialogue_keys.fetch_add(1, std::memory_order_relaxed);
+                log::info("vr: conversation: {} -> {}{}", kControlNames[c], key, sent ? "" : " (not sent)");
+                feedback.haptic[1] = std::max(feedback.haptic[1], 0.2f);
+            }
+            if (now[c]) {
+                g_swallow[c] = true; // the loop below leaves them alone until released (no stray key-up)
+            }
+            g_deferred[c] = false;
+        }
+        // Either stick up / down steps through the answers; held, it repeats.
+        const float y = std::abs(l.stick_y) > std::abs(r.stick_y) ? (l.active ? l.stick_y : 0.0f) : (r.active ? r.stick_y : 0.0f);
+        const int direction = y > 0.6f ? 1 : y < -0.6f ? -1 : 0;
+        if (direction == 0) {
+            g_dialogue_direction = 0;
+        } else if (direction != g_dialogue_direction || time_s >= g_next_dialogue_step) {
+            const bool first = direction != g_dialogue_direction;
+            const char* key = direction > 0 ? "up" : "down";
+            const bool sent = tap_key(key);
+            g_dialogue_keys.fetch_add(1, std::memory_order_relaxed);
+            log::info("vr: conversation: stick {} -> {}{}", key, key, sent ? "" : " (not sent)");
+            g_next_dialogue_step = time_s + (first ? 0.45 : 0.18);
+            g_dialogue_direction = direction;
+            feedback.haptic[1] = std::max(feedback.haptic[1], 0.1f);
+        }
+    } else {
+        g_dialogue_direction = 0;
+    }
     // Combos first: a button pressed while its combo's modifier is held.
     if (!menu_open) {
         for (const Combo& combo : g_combos) {
@@ -513,7 +569,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             camera::add_yaw((x > 0.0f ? 1.0f : -1.0f) * t * g_smooth_degrees_per_s * static_cast<float>(dt));
         }
         const float y = r.stick_y;
-        if (g_wheel && std::abs(y) > 0.6f && std::abs(y) > std::abs(x)) {
+        if (g_wheel && !talking && std::abs(y) > 0.6f && std::abs(y) > std::abs(x)) {
             if (time_s >= g_next_wheel) {
                 const std::uint16_t id = y > 0.0f ? layout::kWheelUp : layout::kWheelDown;
                 inject(layout::kDeviceMouse, id, true);
@@ -595,8 +651,9 @@ float comfort_vignette() {
 }
 
 void report() {
-    log::info("vr: play {}, {} inputs injected, {} failed", g_active.load(std::memory_order_relaxed) ? "on" : "off",
-              g_injections, g_failures);
+    log::info("vr: play {}, {} inputs injected, {} failed; conversation {} ({} keys from the sticks / A / B)",
+              g_active.load(std::memory_order_relaxed) ? "on" : "off", g_injections, g_failures,
+              g_dialogue.load(std::memory_order_relaxed) ? "on" : "off", g_dialogue_keys.load(std::memory_order_relaxed));
 }
 
 } // namespace bg3vr::vrplay

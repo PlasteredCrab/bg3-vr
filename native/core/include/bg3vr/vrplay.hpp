@@ -60,6 +60,11 @@ void recalibrate();
 // While the VR menu is open the controllers belong to it: no bindings reach the game (held ones are released), no
 // turning or scrolling. The "vrmenu" binding still closes it.
 void set_menu_open(bool open);
+// A conversation is on (game thread, from the player view's cinematic flag): the sticks move through the answers
+// (the game's UIUp / UIDown: arrow keys), A picks one (UIAccept: Enter) and B skips the line (UISkipDialog: Space),
+// instead of their bindings. [vr] dialogue_buttons = false keeps the bindings.
+void set_dialogue(bool on);
+bool dialogue();
 
 // The left mouse button from elsewhere on the presenting thread (touching the UI panel with the controller tip).
 void mouse_left(bool down);

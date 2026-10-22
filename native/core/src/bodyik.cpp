@@ -51,6 +51,7 @@ struct Rig {
     int bone_count = 0;
     short head = -1; // Head_M
     short root = -1; // Root_M: the body turns about its vertical axis
+    std::array<short, 2> eyes{-1, -1}; // Dummy_EyeFX_01 / 02
 };
 std::atomic<std::shared_ptr<const Rig>> g_rig; // replaced on the game thread, read in the hook
 
@@ -61,6 +62,15 @@ struct Hands {
     std::array<vr::Quat, 2> offset{vr::Quat{0.0f, 0.0f, 0.0f, 1.0f}, vr::Quat{0.0f, 0.0f, 0.0f, 1.0f}};
 };
 std::atomic<std::shared_ptr<const Hands>> g_hands{std::make_shared<const Hands>()};
+
+// The animated eye midpoint, read by apply() before it moves bones (see animated_eyes).
+struct AnimatedEyes {
+    std::uintptr_t skeleton = 0;
+    vr::Vec3 model{};
+    std::chrono::steady_clock::time_point when{};
+};
+std::mutex g_eyes_mutex;
+AnimatedEyes g_eyes;
 
 std::mutex g_targets_mutex;
 std::array<std::optional<vr::RigidPose>, 2> g_targets{}; // world, game convention
@@ -355,6 +365,7 @@ void set_rig(std::uintptr_t skeleton, std::uintptr_t visual, const std::vector<B
         rig->bone_count = static_cast<int>(bones.size());
         rig->head = static_cast<short>(find(bones, "Head_M"));
         rig->root = static_cast<short>(find(bones, "Root_M"));
+        rig->eyes = {static_cast<short>(find(bones, "Dummy_EyeFX_01")), static_cast<short>(find(bones, "Dummy_EyeFX_02"))};
     }
     {
         std::scoped_lock lock(g_elbow_mutex);
@@ -363,6 +374,15 @@ void set_rig(std::uintptr_t skeleton, std::uintptr_t visual, const std::vector<B
     }
     g_rig.store(std::shared_ptr<const Rig>(rig));
     g_recalibrate.store(true, std::memory_order_relaxed);
+}
+
+std::optional<vr::Vec3> animated_eyes(std::uintptr_t skeleton) {
+    std::scoped_lock lock(g_eyes_mutex);
+    if (!g_eyes.skeleton || g_eyes.skeleton != skeleton ||
+        std::chrono::steady_clock::now() - g_eyes.when > std::chrono::milliseconds(250)) {
+        return std::nullopt;
+    }
+    return g_eyes.model;
 }
 
 void set_targets(std::optional<vr::RigidPose> left, std::optional<vr::RigidPose> right) {
@@ -402,6 +422,16 @@ void apply(std::uintptr_t skeleton) {
     const float scale = visual[7] != 0.0f ? visual[7] : 1.0f;
     const bool recalibrate = g_recalibrate.exchange(false, std::memory_order_relaxed);
     const std::shared_ptr<const Hands> hands = g_hands.load();
+    // The animated eyes, before anything below moves the bones (the camera's anchor).
+    if (rig->eyes[0] >= 0 && rig->eyes[1] >= 0) {
+        const float* a = get(pose, rig->eyes[0]);
+        const float* b = get(pose, rig->eyes[1]);
+        if (a && b) {
+            std::scoped_lock lock(g_eyes_mutex);
+            g_eyes = {skeleton, {(a[12] + b[12]) * 0.5f, (a[13] + b[13]) * 0.5f, (a[14] + b[14]) * 0.5f},
+                      std::chrono::steady_clock::now()};
+        }
+    }
 
     // The body faces where the hands are (Parger et al. 2018, 3.1: the sum of the directions from the head to the
     // controllers), so turning with the stick, which turns only the view, doesn't leave the torso facing away while the

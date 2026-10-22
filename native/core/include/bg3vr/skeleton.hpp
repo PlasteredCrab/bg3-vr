@@ -65,11 +65,18 @@ struct Head {
     vr::Vec3 eyes_model{};
     vr::Vec3 eyes_world{};
     float eye_separation = 0.0f;
+    // The visual's world transform the pose was placed with (the rendered body: unlike the entity's Transform
+    // component, the visual stays at one address, so it can be read every frame).
+    vr::Vec3 visual_position{};
+    vr::Quat visual_rotation{0.0f, 0.0f, 0.0f, 1.0f};
+    float visual_scale = 1.0f;
 };
 std::optional<Head> head();
 
 // Increases every time a skeleton is (re)attached; 0 = none yet. Lets consumers redo per-skeleton calibration.
 std::uint64_t generation();
+// The followed skeleton (0 = none). Game thread, like on_frame.
+std::uintptr_t current();
 
 void report();
 
