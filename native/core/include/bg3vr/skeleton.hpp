@@ -14,6 +14,9 @@
 // skeleton's own GetBoneWorldMatrix. See re-local/ghidra/agents/C_animation_systems.md sections 1.4-1.6.
 namespace bg3vr::skeleton {
 
+// The client entity handle of the character the player manager says is controlled (0 for none). Game thread.
+std::uint64_t controlled_character();
+
 // 4.1.1.7631656. The vtables, the frame counter, the skeleton and Granny offsets and slot 10 are confirmed by
 // disassembly (agent C report; slots 1, 10, 18, 19 re-checked with bg3vr_disasm). The visual's slot array and
 // world transform are the Script Extender's layout, used the same way by 0x3C52E10 / 0x3C6B900 (slots) and

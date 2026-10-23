@@ -102,8 +102,8 @@ The analysis behind them is in [re-local/ghidra/agents/](re-local/ghidra/agents/
 | Left grip + right trigger / right stick click | End turn / sneak |
 | Reach over a shoulder or to a hip, squeeze, pull | Draw a weapon (let go back at the holster to stow) |
 | Swing at the enemy you look at | Melee attack (the game rolls) |
-| Point at an item, squeeze a grip | Take it (close by) or lock on (far, the laser turns amber); flick the hand back to pull it |
-| Let go of a held item | Drop it; mid-swing throws it; over a shoulder or behind your back puts it in the inventory |
+| Reach for or point at an item, squeeze a grip | Take it (close by) or lock on (far, the laser turns amber); flick the hand back to pull it |
+| Let go of a held item | Put it down (it drops onto what is below); mid-swing throws it; over a shoulder or behind your back puts it in the inventory |
 | **In the VR menu** | sticks up/down choose, left/right change, A change / press, B close; or point and pull the trigger |
 | **In a conversation** | sticks up/down choose an answer, A picks, B skips the line; or point and pull the trigger |
 

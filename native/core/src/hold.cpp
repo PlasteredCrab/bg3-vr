@@ -8,6 +8,7 @@
 #include "bg3vr/memory.hpp"
 #include "bg3vr/pattern.hpp"
 #include "bg3vr/rayprobe.hpp"
+#include "bg3vr/skeleton.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <format>
 #include <mutex>
+#include <unordered_map>
 
 #include <windows.h>
 
@@ -51,6 +53,18 @@ constexpr Function kSetRotate{"ecl::Item::SetRotate", 0x1C77130,
 constexpr Function kSuspend{"client physics suspend", 0x1C7DD00, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 50 48 8B D9 80 79 6A 00"};
 constexpr Function kResume{"client physics resume", 0x1C7DE60, "48 89 5C 24 08 57 48 83 EC 50 48 8B D9 0F B6 41 6A"};
 constexpr Function kSetFlags{"ecl::Item::SetFlags", 0x1C76D50, "40 53 56 57 48 83 EC 30 48 8B 59 18"};
+// The game's own pick-up rule for the gloves (agent AD, AD_item_weight.md): what the client PickUp task requires.
+constexpr Function kCharacterOf{"ecl::Character of a handle", 0x7841A0, "48 89 5C 24 18 56 48 81 EC 80 00 00 00 48 8B 05"};
+constexpr Function kHasCanBeIn{"HasComponent<CanBeIn>", 0xAB1DB0, "48 89 5C 24 18 48 89 74 24 20 57 48 83 EC 40"};
+constexpr Function kWeight{"item weight (grams)", 0x41D6FE0, "40 53 56 41 54 41 56 41 57 48 83 EC 30"};
+constexpr Function kCanLift{"CanLift (Strength x 5 kg)", 0x1FAB030, "40 56 48 81 EC A0 00 00 00 48 8B F2 48 85 C9"};
+constexpr Function kLiftingWeight{"GetLiftingWeight (stack)", 0x1BA9130, "40 55 53 41 54 41 57 48 8D 6C 24 C1"};
+constexpr Function kStats{"StatsComponent of a handle", 0xAF2FE0, "48 89 5C 24 18 56 48 81 EC 80 00 00 00 48 8B 05"};
+constexpr std::uintptr_t kClientWorldHolder = 0x5FDA240; // [holder] + 0x1A8 = client EntityWorld (the PickUp task's)
+constexpr std::uint64_t kItemCanBePickedUp = 0x2;          // item+0x18, the client copy of the server's CanBePickedUp
+constexpr std::uint64_t kItemBusy = 0x100480100;           // item+0x18 bits that refuse any interaction (0x1F5A030)
+constexpr std::size_t kItemParent = 0x60;                  // in an inventory / attached when not null
+constexpr std::uint64_t kNullHandle = 0xFFC0000000000000ull;
 constexpr std::uintptr_t kEntityHelper = 0x6007F68; // ecl entity helper*
 constexpr std::size_t kItemHandle = 0x10;
 constexpr std::size_t kItemGetTransformSlot = 0xD0 / 8; // returns {quat +0x00, translate +0x10}
@@ -61,6 +75,12 @@ using SetVecFn = void (*)(std::uintptr_t item, const float* value);
 using ItemFn = void (*)(std::uintptr_t item);
 using SetFlagsFn = void (*)(std::uintptr_t item, std::uint64_t mask);
 using GetTransformFn = const float* (*)(std::uintptr_t item);
+using CharacterOfFn = std::uintptr_t (*)(std::uintptr_t world, std::uint64_t handle);
+using HasComponentFn = bool (*)(std::uintptr_t world, const std::uint64_t* handle);
+using WeightFn = int* (*)(int* out, const std::uintptr_t* ctx, const std::uint64_t* handle, int amount, std::uint8_t one_unit);
+using CanLiftFn = bool (*)(std::uintptr_t character, const int* grams);
+using LiftingWeightFn = int (*)(const std::uintptr_t* ctx, std::uint64_t handle, std::uint32_t check_stacks);
+using StatsFn = std::uintptr_t (*)(std::uintptr_t world, std::uint64_t handle);
 
 template <class F>
 F fn(const Function& f) {
@@ -334,6 +354,109 @@ struct Resolved {
     float distance = 0.0f;
 };
 
+// Can the controlled character take this item in the hand, by the game's own pick-up rule? The client PickUp task's
+// checks without the carry-capacity one (a full pack mustn't stop the hand holding a cup): the pick-up flag, the
+// CanBeIn component, not in an inventory or attached, no busy bits, and the weight within Strength x 5 kg (CanLift).
+// Also whether it may be thrown (the game's CanThrowWeight: Strength^2 x 0.2 kg for the whole stack).
+struct Liftable {
+    bool grab = false;
+    bool throwable = false;
+    int grams = -1;
+    int stack_grams = -1;
+    int strength = -1;
+    const char* why = "";
+};
+struct LiftCall {
+    std::uintptr_t world = 0;
+    std::uintptr_t item = 0;
+    std::uint64_t handle = 0;
+    std::uint64_t player = 0;
+};
+
+// The game calls, guarded (no C++ objects here: SEH).
+int lift_calls(const LiftCall& in, Liftable& out) {
+    __try {
+        const std::uint64_t flags = *reinterpret_cast<const std::uint64_t*>(in.item + 0x18);
+        const std::uint64_t parent = *reinterpret_cast<const std::uint64_t*>(in.item + kItemParent);
+        const std::uintptr_t character = fn<CharacterOfFn>(kCharacterOf)(in.world, in.player);
+        const bool can_be_in = fn<HasComponentFn>(kHasCanBeIn)(in.world, &in.handle);
+        const std::uintptr_t ctx[5] = {in.world, in.world, *reinterpret_cast<const std::uintptr_t*>(in.world + 0x210),
+                                       in.world + 0x198, in.world + 0x308};
+        int grams = 0;
+        fn<WeightFn>(kWeight)(&grams, ctx, &in.handle, 1, 1);
+        out.grams = grams;
+        const std::uintptr_t weight_ctx[1] = {in.world};
+        out.stack_grams = fn<LiftingWeightFn>(kLiftingWeight)(weight_ctx, in.handle, 1);
+        const std::uintptr_t stats = fn<StatsFn>(kStats)(in.world, in.player);
+        out.strength = stats ? *reinterpret_cast<const int*>(stats + 8) : -1;
+        if (!(flags & kItemCanBePickedUp)) {
+            out.why = "the game says it can't be picked up";
+        } else if (!can_be_in) {
+            out.why = "it can't go into an inventory";
+        } else if (parent && parent != kNullHandle) {
+            out.why = "it is in an inventory or attached";
+        } else if (flags & kItemBusy) {
+            out.why = "it is busy (the game refuses interactions)";
+        } else if (!character) {
+            out.why = "no controlled character";
+        } else if (!fn<CanLiftFn>(kCanLift)(character, &grams)) {
+            out.why = "too heavy for this character (Strength x 5 kg)";
+        } else {
+            out.grab = true;
+            out.why = "liftable";
+        }
+        const float kg = static_cast<float>(out.stack_grams) / 1000.0f;
+        out.throwable = out.grab && out.strength > 0 &&
+                        static_cast<float>(out.strength * out.strength) * 0.2f >= kg;
+        return 0;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 1;
+    }
+}
+
+bool g_lift_ready = false; // the lift functions matched this build
+struct LiftVerdict {
+    Liftable lift;
+    double until = 0.0;
+};
+std::unordered_map<std::uint64_t, LiftVerdict> g_lift_cache;
+
+double seconds_now();
+
+const Liftable& liftable(std::uintptr_t item, std::uint64_t entity) {
+    const double now = seconds_now();
+    if (const auto it = g_lift_cache.find(entity); it != g_lift_cache.end() && it->second.until > now) {
+        return it->second.lift;
+    }
+    if (g_lift_cache.size() > 512) {
+        g_lift_cache.clear();
+    }
+    LiftVerdict& v = g_lift_cache[entity];
+    v.until = now + 1.0;
+    v.lift = {};
+    std::uintptr_t holder = 0;
+    LiftCall call;
+    call.item = item;
+    call.handle = entity;
+    call.player = skeleton::controlled_character();
+    if (!g_lift_ready) {
+        v.lift.why = "the lift check doesn't match this build (refused to be safe)";
+    } else if (!mem::try_copy(&holder, g_module.base + kClientWorldHolder, sizeof(holder)) || !holder ||
+               !mem::try_copy(&call.world, holder + 0x1A8, sizeof(call.world)) || !call.world || !call.player) {
+        v.lift.why = "no client world or controlled character";
+    } else if (lift_calls(call, v.lift) != 0) {
+        v.lift = {};
+        v.lift.why = "the lift check faulted";
+    }
+    static std::uint64_t logged = 0;
+    if (logged++ < 400) {
+        log::info("gloves: item 0x{:X} (entity 0x{:016X}): {}, {} g (stack {} g), Strength {}, {}", item, entity,
+                  v.lift.grab ? "can be taken" : "can't be taken", v.lift.grams, v.lift.stack_grams, v.lift.strength,
+                  v.lift.why);
+    }
+    return v.lift;
+}
+
 // The client item an entity handle from a ray hit belongs to (0 when it isn't one).
 std::uintptr_t item_of(std::uint64_t entity) {
     if (entity == rayprobe::kNullEntity) {
@@ -373,14 +496,13 @@ std::optional<Highlight> aim_ray(const vr::RigidPose& aim, const vr::Vec3& local
     if (!item || busy_item(hit->entity)) {
         return std::nullopt;
     }
-    // Big and fixed things (chests, crates, furniture) mustn't fly. Until the game's own pick-up / weight check is in
-    // (agent AD), only items with a dynamic PhysX actor (type 5) are taken: static ones (6) can't move anyway.
-    if (hit->actor_type != 5) {
+    // Chests, barrels, furniture and anything else the character couldn't pick up don't fly: the game's own rule.
+    const Liftable& lift = liftable(item, hit->entity);
+    if (!lift.grab) {
         static std::uint64_t last_logged = 0;
         if (hit->entity != last_logged) {
             last_logged = hit->entity;
-            log::info("gloves: item 0x{:X} (entity 0x{:016X}) skipped: its physics actor is type {} (not dynamic)", item,
-                      hit->entity, hit->actor_type);
+            log::info("gloves: item 0x{:X} not highlighted: {} (physics actor type {})", item, lift.why, hit->actor_type);
         }
         return std::nullopt;
     }
@@ -388,9 +510,35 @@ std::optional<Highlight> aim_ray(const vr::RigidPose& aim, const vr::Vec3& local
 }
 
 // Gloves, one hand per frame: the centre ray and one of the cone rays around it (all six every 6 scans of a hand).
+// Reaching for something next to the hand: a short ray from the grip in one of six directions per scan (the hand's
+// own axes), so an item the hand touches is highlighted even when the hand doesn't point at it.
+std::optional<Highlight> touch_ray(std::size_t h, const vr::RigidPose& grip) {
+    static const std::array<vr::Vec3, 6> kDirections{{{0.0f, 0.0f, 1.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+                                                      {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, -1.0f}}};
+    static std::array<int, 2> step{};
+    const vr::Vec3 dir = vr::rotate(grip.orientation, kDirections[static_cast<std::size_t>(step[h])]);
+    step[h] = (step[h] + 1) % static_cast<int>(kDirections.size());
+    constexpr float kTouch = 0.22f;
+    const vr::Vec3 to{grip.position[0] + dir[0] * kTouch, grip.position[1] + dir[1] * kTouch, grip.position[2] + dir[2] * kTouch};
+    const auto hit = rayprobe::raycast(grip.position, to);
+    if (!hit) {
+        return std::nullopt;
+    }
+    const std::uintptr_t item = item_of(hit->entity);
+    if (!item || busy_item(hit->entity) || !liftable(item, hit->entity).grab) {
+        return std::nullopt;
+    }
+    return Highlight{item, hit->entity, hit->distance, 0.0};
+}
+
 void scan(std::size_t h, const HandInput& input) {
     const double now = seconds_now();
-    std::optional<Highlight> found = aim_ray(*input.aim_pose, {0.0f, 0.0f, 1.0f}, g_pull_range);
+    std::optional<Highlight> found = input.grip_pose ? touch_ray(h, *input.grip_pose) : std::nullopt;
+    // An item already touched stays highlighted while the touch rays go round (kHighlightHold), unless the aim finds
+    // another one.
+    if (!found) {
+        found = aim_ray(*input.aim_pose, {0.0f, 0.0f, 1.0f}, g_pull_range);
+    }
     if (!found) {
         const float a = kConeDegrees * 3.14159265f / 180.0f;
         const float phi = 2.0f * 3.14159265f * static_cast<float>(g_cone_step[h]) / static_cast<float>(kConeRays);
@@ -563,11 +711,26 @@ void release(std::size_t h, bool in_pack) {
     const auto velocity = g_trackers[h].velocity(0.1);
     const float speed = velocity ? length(velocity->linear) : 0.0f;
     const auto pose = item_pose(held.item);
-    if (g_throw && speed >= g_throw_min_speed && pose) {
+    const bool throwable = liftable(held.item, held.entity).throwable;
+    if (g_throw && speed >= g_throw_min_speed && pose && !throwable) {
+        log::info("gloves: {} hand let go of item 0x{:X} mid-swing, but it is too heavy to throw (Strength^2 x 0.2 kg): "
+                  "dropped", hand_name(h), held.item);
+    }
+    if (g_throw && speed >= g_throw_min_speed && pose && throwable) {
         g_flights.push_back({held.item, held.entity, pose->position, velocity->linear, pose->orientation, 0.0, -1});
         ++g_throws;
         log::info("grab: {} hand throws item 0x{:X} at {:.1f} m/s (after {} frames held)", hand_name(h), held.item, speed,
                   held.frames);
+        return;
+    }
+    // Put down: it falls from the hand (with the hand's motion, if it may be thrown) onto the first surface below, so
+    // lowering it onto a table or the ground and letting go leaves it there. The game's own physics isn't relied on
+    // to drop a client-placed item.
+    if (pose) {
+        const vr::Vec3 drift = throwable && velocity ? velocity->linear : vr::Vec3{0.0f, 0.0f, 0.0f};
+        g_flights.push_back({held.item, held.entity, pose->position, drift, pose->orientation, 0.0, -1});
+        log::info("gloves: {} hand puts item 0x{:X} down (let go at ({:.2f}, {:.2f}, {:.2f}), {:.1f} m/s, after {} frames held)",
+                  hand_name(h), held.item, pose->position[0], pose->position[1], pose->position[2], length(drift), held.frames);
         return;
     }
     settle(held.item, std::format("released by the {} hand after {} frames", hand_name(h), held.frames).c_str());
@@ -598,6 +761,7 @@ void pull_frame(std::size_t h, const HandInput& input) {
 
 // Moves every item in flight; lands it on the first solid thing in its path, or in a hand that is pulling it.
 void flights_frame(double dt, const std::array<HandInput, 2>& input) {
+    const std::uint64_t player = skeleton::controlled_character();
     for (std::size_t i = 0; i < g_flights.size();) {
         Flight& f = g_flights[i];
         bool done = false;
@@ -656,7 +820,8 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
             if (!hit) {
                 break;
             }
-            if (hit->entity == f.entity) {
+            // Its own shape, or the player's own body (an item let go at the chest would otherwise sit on it).
+            if (hit->entity == f.entity || (hit->entity != rayprobe::kNullEntity && hit->entity == player)) {
                 const vr::Vec3 d = minus(to, start);
                 const float l = length(d);
                 if (l < 1e-4f) {
@@ -705,6 +870,10 @@ void install(const Config& config, const ModuleInfo& module) {
     if (g_ready) {
         install_outline();
     }
+    g_lift_ready = check(kCharacterOf) && check(kHasCanBeIn) && check(kWeight) && check(kCanLift) && check(kLiftingWeight) &&
+                   check(kStats);
+    log::info("gloves: the game's pick-up rule {}", g_lift_ready ? "is used (flag, CanBeIn, not in an inventory, Strength x 5 kg)"
+                                                                 : "doesn't match this build: nothing is taken");
     if (!g_probe && !g_hold) {
         health::set("grabbing", g_ready ? health::State::Off : health::State::Unavailable, g_ready ? "[grab] hold (or the VR menu)" : "a function didn't match");
         log::info("grab: off ([grab] probe / hold, or the VR menu){}", g_ready ? "" : "; UNAVAILABLE: a function didn't match");

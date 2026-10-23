@@ -698,4 +698,8 @@ void report() {
               g_visual, g_skeleton, g_head_bone, g_reads, g_failures, g_stale);
 }
 
+std::uint64_t controlled_character() {
+    return controlled_raw();
+}
+
 } // namespace bg3vr::skeleton

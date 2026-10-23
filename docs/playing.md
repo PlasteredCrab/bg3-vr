@@ -78,15 +78,18 @@ VR menu Scale page: "3D characters in menus" (off brings back the flat picture).
 
 ## Gravity gloves (items)
 
-Point either hand at an item up to 6 m away. A small cone around the ray helps with small things. The item the hand
-finds is highlighted: it gets a cyan outline, a tick in that hand, and the right hand's laser turns cyan.
+Reach for an item with either hand, or point at one up to 6 m away (a small cone around the ray helps with small
+things). The item the hand touches or points at is highlighted: it gets a cyan outline, a tick in that hand, and the
+right hand's laser turns cyan. Only what your character could pick up in the game is highlighted: not chests,
+barrels or furniture, nothing in a container, and nothing heavier than Strength x 5 kg.
 
 - Squeeze the grip. Close by (1.5 m), the item is in your hand at once. Further away, the hand locks on: a firmer pulse,
   and the laser turns amber.
 - Flick the hand back toward you. The item flies on an arc and steers into your hand over the last metre. Keep the grip
   closed, or close it as the item arrives, to catch it.
 - Hold it and turn your hand to look at it from every side.
-- Let go to drop it where it is. Let go mid-swing to throw it.
+- Let go to put it down: it drops from your hand onto whatever is below, so lower it onto a table or the ground and
+  let go. Let go mid-swing to throw it (if it isn't too heavy to throw: Strength x Strength x 0.2 kg).
 - Let go over a shoulder or behind your back to put it in your inventory.
   An item that belongs to someone else is stolen, exactly as picking it up with the mouse would be: the game's own
   theft rules decide who saw it. Moving someone else's item (pulling, throwing, putting it down elsewhere) is the
