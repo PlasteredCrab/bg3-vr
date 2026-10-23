@@ -1,5 +1,6 @@
 #include "bg3vr/paperdoll.hpp"
 
+#include "bg3vr/dolls.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
@@ -136,6 +137,7 @@ void log_doll(std::uintptr_t entry, std::uintptr_t renderer) {
 std::uintptr_t on_update(std::uintptr_t pm, std::uintptr_t a, float dt) {
     const std::uintptr_t result = g_update_hook.call<std::uintptr_t>(pm, a, dt);
     g_updates.fetch_add(1, std::memory_order_relaxed);
+    dolls::on_manager_update(pm); // the 3D versions (game thread, after the game's own update)
     if (g_mode.load(std::memory_order_relaxed) == Mode::Normal || !pm) {
         return result;
     }
@@ -180,7 +182,7 @@ std::uintptr_t on_update(std::uintptr_t pm, std::uintptr_t a, float dt) {
 }
 
 void on_render(std::uintptr_t self, std::uintptr_t context) {
-    if (g_mode.load(std::memory_order_relaxed) == Mode::Hide) {
+    if (g_mode.load(std::memory_order_relaxed) == Mode::Hide || dolls::replaces(self)) {
         g_hidden.fetch_add(1, std::memory_order_relaxed);
         return; // the flat picture stays out of the UI (the 3D doll replaces it)
     }
@@ -193,8 +195,8 @@ void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
     const std::string mode = text::to_lower(config.get("ui", "paperdoll", "diagnose"));
     g_mode = mode == "normal" ? Mode::Normal : mode == "hide" ? Mode::Hide : Mode::Diagnose;
-    if (g_mode == Mode::Normal) {
-        log::info("paperdoll: off ([ui] paperdoll = normal)");
+    if (g_mode == Mode::Normal && !config.get_bool("ui", "stereo_dolls", true)) {
+        log::info("paperdoll: off ([ui] paperdoll = normal, stereo_dolls = false)");
         return;
     }
     if (HMODULE d3d11 = GetModuleHandleW(L"d3d11.dll")) {

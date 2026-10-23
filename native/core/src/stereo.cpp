@@ -1,6 +1,7 @@
 #include "bg3vr/stereo.hpp"
 
 #include "bg3vr/camera.hpp"
+#include "bg3vr/dolls.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
@@ -80,6 +81,44 @@ struct ProxyRing {
     std::size_t next = 0;
 };
 std::array<ProxyRing, 2> g_proxies; // render thread only (begin-recording hook and the camera hook after it)
+// The UI dolls' eye views (dolls.cpp) get proxies too, from small rings of their own: a doll frame is recorded and
+// finished within one pass of the render thread (agent V 1.1), so a ring can go to another view once unused.
+struct DollRing {
+    std::uintptr_t view = 0;
+    std::uint64_t used = 0;
+    ProxyRing ring;
+};
+std::array<DollRing, 8> g_doll_rings;
+std::uint64_t g_doll_tick = 0;
+std::atomic<std::uint64_t> g_doll_proxied{0};
+
+ProxyRing& doll_ring(std::uintptr_t view) {
+    DollRing* oldest = &g_doll_rings[0];
+    for (DollRing& r : g_doll_rings) {
+        if (r.view == view) {
+            r.used = ++g_doll_tick;
+            return r.ring;
+        }
+        if (r.used < oldest->used) {
+            oldest = &r;
+        }
+    }
+    oldest->view = view;
+    oldest->used = ++g_doll_tick;
+    return oldest->ring;
+}
+
+// The doll proxy `controller` is, if it is one.
+const Proxy* doll_proxy(std::uintptr_t controller) {
+    for (const DollRing& r : g_doll_rings) {
+        for (const Proxy& p : r.ring.slots) {
+            if (reinterpret_cast<std::uintptr_t>(&p) == controller) {
+                return &p;
+            }
+        }
+    }
+    return nullptr;
+}
 std::array<std::uintptr_t, kProxyVtableSlots> g_proxy_vtable{};
 bool g_proxy_ready = false;
 safetyhook::MidHook g_begin_hook;
@@ -309,6 +348,16 @@ void on_camera_built(safetyhook::Context& ctx) {
     // isn't the perspective form rewritten here. Unassigned views are only touched when they show the
     // camera this mod drives.
     const auto controller = mem::read<std::uintptr_t>(view + layout::kReadStateController);
+    if (eye < 0 && controller) {
+        if (const Proxy* proxy = doll_proxy(controller)) {
+            // A UI doll's eye view, built from its proxy: the view and position are that eye's already; the window's
+            // off-axis projection goes in.
+            rewrite_block(reinterpret_cast<std::uint8_t*>(view + layout::kPerCamera0), vr::RigidPose{}, proxy->fov, false);
+            rewrite_block(reinterpret_cast<std::uint8_t*>(view + layout::kPerCamera1), vr::RigidPose{}, proxy->fov, true);
+            rewrite_views_of(view);
+            return;
+        }
+    }
     if (eye < 0 && (!controller || controller != camera::controller())) {
         return;
     }
@@ -529,11 +578,57 @@ camera::Mat4 rigid_inverse(const camera::Mat4& v) {
 
 // GameRenderView begin-recording entry (0x17F21E0, render thread, per view; the frame sync 0x4072CB0 has just
 // copied the real controller into ReadState +0x21D8): an eye view gets its eye's proxy controller for this frame.
+// A UI doll's eye view: its proxy sits at that eye, looking as the doll camera looks (dolls.cpp: the window).
+void doll_view_begin(std::uintptr_t view) {
+    std::uintptr_t controller = 0;
+    if (!mem::try_copy(&controller, view + layout::kReadStateController, sizeof(controller)) || !controller) {
+        return;
+    }
+    std::uintptr_t vtable = 0;
+    mem::try_copy(&vtable, controller, sizeof(vtable));
+    if (vtable != g_module.base + kControllerVtableRva) {
+        return;
+    }
+    const auto doll = dolls::eye_camera(view, controller);
+    if (!doll) {
+        return;
+    }
+    camera::Mat4 camera_view{};
+    std::memcpy(camera_view.data(), reinterpret_cast<const void*>(controller + camera::layout::kViewMatrix), sizeof(camera_view));
+    const vr::RigidPose offset = vr::from_openxr(vr::RigidPose{doll->offset, vr::Quat{0.0f, 0.0f, 0.0f, 1.0f}});
+    const camera::Mat4 view_matrix = eye_view(camera_view, offset);
+    const camera::Mat4 inverse = rigid_inverse(view_matrix);
+    const vr::Vec3 position = camera_position(view_matrix);
+    ProxyRing& ring = doll_ring(view);
+    Proxy& proxy = ring.slots[ring.next];
+    ring.next = (ring.next + 1) % kProxyRing;
+    std::memcpy(proxy.object, reinterpret_cast<const void*>(controller), kControllerSize);
+    const std::uintptr_t proxy_vtable = reinterpret_cast<std::uintptr_t>(g_proxy_vtable.data());
+    std::memcpy(proxy.object, &proxy_vtable, sizeof(proxy_vtable));
+    std::memcpy(proxy.object + camera::layout::kViewMatrix, view_matrix.data(), sizeof(view_matrix));
+    std::memcpy(proxy.object + camera::layout::kInvViewMatrix, inverse.data(), sizeof(inverse));
+    proxy.translate[0] = position[0];
+    proxy.translate[1] = position[1];
+    proxy.translate[2] = position[2];
+    proxy.fov = doll->fov;
+    *reinterpret_cast<std::uintptr_t*>(view + layout::kReadStateController) = reinterpret_cast<std::uintptr_t>(&proxy);
+    g_doll_proxied.fetch_add(1, std::memory_order_relaxed);
+}
+
 void on_view_begin(safetyhook::Context& ctx) {
-    if (!g_proxy_ready || g_origin.load(std::memory_order_relaxed) != Origin::Proxy) {
+    if (!g_proxy_ready) {
         return;
     }
     const std::uintptr_t view = ctx.rcx;
+    if (stereo::eye_of(view) < 0) {
+        if (dolls::enabled()) {
+            doll_view_begin(view);
+        }
+        return;
+    }
+    if (g_origin.load(std::memory_order_relaxed) != Origin::Proxy) {
+        return;
+    }
     int eye = -1;
     std::optional<Eyes> eyes;
     float scale = 1.0f;
@@ -773,9 +868,11 @@ void report() {
               "(room main {}, eye {})",
               g_room_calls[0].load(), g_room_false[0].load(), g_room_calls[1].load(), g_room_false[1].load(),
               g_room_copies.load(), g_room_main.load(), g_room_eye.load());
-    log::info("stereo: per-eye origin {}: proxied left {} right {}, wrong controller class {}, no head view {}",
+    log::info("stereo: per-eye origin {}: proxied left {} right {}, wrong controller class {}, no head view {}; UI doll "
+              "eye views proxied {}",
               !g_proxy_ready ? "unavailable" : g_origin.load() == Origin::Proxy ? "on" : "off (head)",
-              g_proxied[0].load(), g_proxied[1].load(), g_proxy_wrong_class.load(), g_proxy_no_head.load());
+              g_proxied[0].load(), g_proxied[1].load(), g_proxy_wrong_class.load(), g_proxy_no_head.load(),
+              g_doll_proxied.load());
 }
 
 } // namespace bg3vr::stereo

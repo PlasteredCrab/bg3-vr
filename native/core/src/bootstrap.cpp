@@ -22,6 +22,7 @@
 #include "bg3vr/module_info.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
+#include "bg3vr/dolls.hpp"
 #include "bg3vr/eyefix.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/holster.hpp"
@@ -225,6 +226,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     }
     if (changed("bindings.") || changed("combos.")) {
         vrplay::configure_bindings(g_config);
+    }
+    if (changed("ui.stereo_dolls")) {
+        dolls::configure(g_config);
     }
     if (changed("views.share_shadows")) {
         shadows::configure(g_config);
@@ -471,6 +475,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     weaponset::report();
     resolution::report();
     paperdoll::report();
+    dolls::report();
     render::report();
 #if BG3VR_HAVE_OPENXR
     headset::report();
@@ -512,6 +517,7 @@ int init(const wchar_t* root_dir) {
     views::set_split_index(static_cast<int>(g_config.get_int("views", "split_index", 0)));
     stereo::install(g_config, module);
     shadows::install(g_config, module);
+    dolls::install(g_config, module);
     render::configure(g_config);
     render::install(module);
     watchdog::start(module);

@@ -13,7 +13,7 @@ namespace {
 constexpr char kShader[] = R"(
 cbuffer Params : register(b0) {
     float4 uv_rect;  // offset.xy, scale.zw
-    float4 options;  // x: linearize, y: keep the source alpha (else 1), z: comfort vignette strength (0..1)
+    float4 options;  // x: linearize, y: keep the source alpha (else 1), z: comfort vignette strength (0..1), w: key out black
     float4 cursor;   // xy: cursor centre in target uv, z: radius in uv (0 = none), w: aspect (width / height)
     float4 beam;     // the aiming beam: start xy, end zw (target uv)
     float4 beam_colour; // linear rgb, opacity
@@ -46,6 +46,12 @@ float4 ps_main(Varyings i) : SV_Target {
         c = srgb_to_linear(c);
     }
     float a = options.y > 0.5 ? s.a : 1.0;
+    if (options.w > 0.5) {
+        // Key out a black background (the UI characters' renders are opaque black around the character): alpha from
+        // the brightest channel of the source, premultiplied.
+        a = saturate((max(max(s.r, s.g), s.b) - 0.012) / 0.05);
+        c *= a;
+    }
     if (options.z > 0.0) {
         // Comfort vignette: darken toward the edges of the image while moving or turning artificially.
         const float2 centred = ((i.uv - uv_rect.xy) / uv_rect.zw - 0.5) * 2.0;
@@ -263,7 +269,7 @@ void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTarget
                                static_cast<float>(rect.y) / static_cast<float>(height_),
                                static_cast<float>(w) / static_cast<float>(width_),
                                static_cast<float>(h) / static_cast<float>(height_)},
-                              {linearize ? 1.0f : 0.0f, overlay.keep_alpha ? 1.0f : 0.0f, overlay.vignette, 0.0f},
+                              {linearize ? 1.0f : 0.0f, overlay.keep_alpha ? 1.0f : 0.0f, overlay.vignette, overlay.key_black ? 1.0f : 0.0f},
                               {overlay.cursor_u, overlay.cursor_v, overlay.cursor_radius,
                                static_cast<float>(target_width) / static_cast<float>(target_height ? target_height : 1)},
                               {overlay.beam_u0, overlay.beam_v0, overlay.beam_u1, overlay.beam_v1},

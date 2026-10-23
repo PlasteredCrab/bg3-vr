@@ -4,6 +4,7 @@
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/combat.hpp"
+#include "bg3vr/dolls.hpp"
 #include "bg3vr/corpse.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
@@ -1077,6 +1078,29 @@ float g_ui_width = 1.1f;           // [ui] width (m)
 float g_ui_drop = 0.15f;           // [ui] below_eyes (m)
 constexpr UINT kUiMaxWidth = 2560;
 blit::Blitter g_ui_blitter;
+UINT g_ui_texture_width = 0, g_ui_texture_height = 0; // the UI texture (Noesis' surface): the dolls' rects are in its pixels
+
+// The 3D UI characters (dolls.cpp): up to two shown at once, each as a pair of one-eye quads over its picture's place
+// on the UI panel (panel slots 2 + 2 * slot + eye). Presenting thread.
+struct DollSlot {
+    std::uintptr_t id = 0;
+    std::array<blit::Blitter, 2> blitter;
+    std::array<UINT, 2> width{}, height{};
+    std::array<DXGI_FORMAT, 2> format{};
+    std::array<bool, 2> panel{};
+};
+std::array<DollSlot, 2> g_doll_slots;
+std::uint64_t g_doll_frames = 0;
+
+void hide_doll_slot(DollSlot& slot, std::size_t k) {
+    for (std::size_t e = 0; e < 2; ++e) {
+        g_session->set_panel(std::nullopt, 2 + 2 * k + e);
+    }
+    if (slot.id) {
+        dolls::set_window(slot.id, std::nullopt, 0.0f);
+        slot.id = 0;
+    }
+}
 ID3D11Texture2D* g_ui_source_seen = nullptr; // identity of the texture the blitter was made for (not held)
 UINT g_ui_panel_width = 0;
 UINT g_ui_panel_height = 0;
@@ -1313,6 +1337,8 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         seen_width = ui_desc.Width;
         seen_height = ui_desc.Height;
         seen_format = ui_desc.Format;
+        g_ui_texture_width = ui_desc.Width;
+        g_ui_texture_height = ui_desc.Height;
         D3D11_TEXTURE2D_DESC desc{};
         ui->GetDesc(&desc);
         std::string error;
@@ -1739,6 +1765,120 @@ blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeF
 }
 
 // Just before the game's Present.
+// The 3D UI characters: each shown doll's two eye images as one-eye quads exactly over its picture on the UI panel
+// (the game's flat picture is hidden there), and where the eyes are relative to that window, for its eye cameras.
+void update_dolls(const xr::Frame& frame) {
+    std::vector<dolls::Shown> list;
+    const bool usable = dolls::enabled() && g_ui_target && g_ui_shown && frame.views.size() == 2 && g_ui_texture_width &&
+                        g_ui_texture_height && !g_menu_is_open.load(std::memory_order_relaxed);
+    if (usable) {
+        list = dolls::shown();
+    }
+    std::array<const dolls::Shown*, 2> assigned{};
+    for (const dolls::Shown& d : list) {
+        std::size_t k = 2;
+        for (std::size_t i = 0; i < 2; ++i) {
+            if (g_doll_slots[i].id == d.id) {
+                k = i;
+            }
+        }
+        for (std::size_t i = 0; i < 2 && k == 2; ++i) {
+            if (!g_doll_slots[i].id && !assigned[i]) {
+                k = i;
+            }
+        }
+        if (k < 2 && !assigned[k]) {
+            assigned[k] = &d;
+        }
+    }
+    const PanelTarget target = usable ? *g_ui_target : PanelTarget{};
+    const vr::Quat q{target.place.pose.orientation.x, target.place.pose.orientation.y, target.place.pose.orientation.z,
+                     target.place.pose.orientation.w};
+    const vr::Vec3 centre{target.place.pose.position.x, target.place.pose.position.y, target.place.pose.position.z};
+    const vr::Vec3 right = vr::rotate(q, {1.0f, 0.0f, 0.0f}), up = vr::rotate(q, {0.0f, 1.0f, 0.0f}),
+                   normal = vr::rotate(q, {0.0f, 0.0f, 1.0f});
+    const vr::Quat unrotate{-q[0], -q[1], -q[2], q[3]};
+    for (std::size_t k = 0; k < 2; ++k) {
+        DollSlot& slot = g_doll_slots[k];
+        const dolls::Shown* d = assigned[k];
+        if (!d) {
+            hide_doll_slot(slot, k);
+            continue;
+        }
+        if (slot.id && slot.id != d->id) {
+            dolls::set_window(slot.id, std::nullopt, 0.0f);
+        }
+        slot.id = d->id;
+        // The window: the picture's rectangle on the panel, a few millimetres in front of it.
+        const float u0 = d->rect[0] / static_cast<float>(g_ui_texture_width), u1 = d->rect[2] / static_cast<float>(g_ui_texture_width);
+        const float v0 = d->rect[1] / static_cast<float>(g_ui_texture_height), v1 = d->rect[3] / static_cast<float>(g_ui_texture_height);
+        const float width_m = (u1 - u0) * target.place.width_m;
+        const float du = (u0 + u1) * 0.5f - 0.5f, dv = 0.5f - (v0 + v1) * 0.5f;
+        const vr::Vec3 c{centre[0] + right[0] * du * target.place.width_m + up[0] * dv * target.height_m + normal[0] * 0.004f,
+                         centre[1] + right[1] * du * target.place.width_m + up[1] * dv * target.height_m + normal[1] * 0.004f,
+                         centre[2] + right[2] * du * target.place.width_m + up[2] * dv * target.height_m + normal[2] * 0.004f};
+        std::array<vr::Vec3, 2> eyes{};
+        for (std::size_t e = 0; e < 2; ++e) {
+            const auto& p = frame.views[e].pose.position;
+            eyes[e] = vr::rotate(unrotate, {p.x - c[0], p.y - c[1], p.z - c[2]});
+        }
+        dolls::set_window(d->id, eyes, width_m);
+        for (std::size_t e = 0; e < 2; ++e) {
+            const std::size_t index = 2 + 2 * k + e;
+            D3D11_TEXTURE2D_DESC desc{};
+            d->texture[e]->GetDesc(&desc);
+            if (desc.Width != slot.width[e] || desc.Height != slot.height[e] || desc.Format != slot.format[e]) {
+                std::string error;
+                g_session->set_panel(std::nullopt, index);
+                if (slot.panel[e]) {
+                    g_session->destroy_panel(index);
+                    slot.panel[e] = false;
+                }
+                if (!slot.blitter[e].create(render::device(), desc.Width, desc.Height, desc.Format, error) ||
+                    !g_session->create_panel(static_cast<int32_t>(desc.Width), static_cast<int32_t>(desc.Height), error, index)) {
+                    log::warn("dolls: can't show a {}x{} doll image (format {}): {}", desc.Width, desc.Height,
+                              static_cast<int>(desc.Format), error);
+                    slot.width[e] = slot.height[e] = 0;
+                    continue;
+                }
+                slot.panel[e] = true;
+                slot.width[e] = desc.Width;
+                slot.height[e] = desc.Height;
+                slot.format[e] = desc.Format;
+                log::info("dolls: showing doll 0x{:X}'s {} eye ({}x{}) on panel slot {}", d->id, e ? "right" : "left",
+                          desc.Width, desc.Height, index);
+            }
+            if (frame.state.shouldRender) {
+                blit::Blitter::Overlay overlay;
+                overlay.key_black = true;
+                const xr::EyeImage image = g_session->acquire_panel(index);
+                slot.blitter[e].draw(d->texture[e], {}, image.view, slot.width[e], slot.height[e],
+                                     blit::is_srgb(g_session->format()) && !blit::is_srgb(desc.Format), overlay);
+                g_session->release_panel(index);
+            }
+            xr::PanelPlacement place;
+            place.anchor = xr::PanelPlacement::Anchor::Local;
+            place.pose.orientation = target.place.pose.orientation;
+            place.pose.position = {c[0], c[1], c[2]};
+            place.width_m = width_m;
+            place.eye = e == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+            g_session->set_panel(place, index);
+        }
+        if (g_doll_frames++ % 900 == 0) {
+            log::info("dolls: doll 0x{:X} shown on the panel at uv ({:.3f}, {:.3f})-({:.3f}, {:.3f}), {:.3f} m wide; eyes "
+                      "({:.3f}, {:.3f}, {:.3f}) / ({:.3f}, {:.3f}, {:.3f}) m from it",
+                      d->id, u0, v0, u1, v1, width_m, eyes[0][0], eyes[0][1], eyes[0][2], eyes[1][0], eyes[1][1], eyes[1][2]);
+        }
+    }
+    for (const dolls::Shown& d : list) {
+        for (ID3D11Texture2D* t : d.texture) {
+            if (t) {
+                t->Release();
+            }
+        }
+    }
+}
+
 void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     if (g_failed) {
         return;
@@ -1794,6 +1934,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     }
     update_menu(frame);
     update_ui_panel(swapchain, frame);
+    update_dolls(frame);
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
     } else {

@@ -14,6 +14,11 @@
 namespace bg3vr::xr {
 
 namespace {
+// Panels in drawing order: the game UI, the 3D UI characters over it, the mod's menu on top.
+constexpr std::size_t kLayerOrder[Session::kPanelCount] = {0, 2, 3, 4, 5, 1};
+} // namespace
+
+namespace {
 
 std::string describe(XrInstance instance, const char* what, XrResult result) {
     return std::string(what) + " failed: " + result_name(instance, result);
@@ -319,7 +324,7 @@ bool Session::panel_layer(std::size_t index, XrCompositionLayerQuad& layer) cons
     layer = {XR_TYPE_COMPOSITION_LAYER_QUAD};
     layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     layer.space = space;
-    layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    layer.eyeVisibility = p.placement->eye;
     layer.subImage.swapchain = p.eye.swapchain;
     layer.subImage.imageRect = {{0, 0}, {p.eye.width, p.eye.height}};
     layer.pose = p.placement->pose;
@@ -341,7 +346,7 @@ bool Session::end_frame_quad(const Frame& frame, float width_m, float distance_m
     const XrCompositionLayerBaseHeader* layers[1 + kPanelCount] = {
         reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
     uint32_t count = 1;
-    for (std::size_t i = 0; i < kPanelCount; ++i) {
+    for (const std::size_t i : kLayerOrder) {
         if (panel_layer(i, panels[i])) {
             layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panels[i]);
         }
@@ -1009,7 +1014,7 @@ bool Session::end_frame(const Frame& frame, const std::vector<XrView>& rendered)
     if (has_projection) {
         layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
     }
-    for (std::size_t i = 0; i < kPanelCount; ++i) {
+    for (const std::size_t i : kLayerOrder) {
         if (panel_layer(i, panels[i])) {
             layers[count++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panels[i]);
         }

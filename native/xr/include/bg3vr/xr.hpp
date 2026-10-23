@@ -87,6 +87,7 @@ struct PanelPlacement {
     enum class Anchor { Local, LeftGrip, RightGrip } anchor = Anchor::Local;
     XrPosef pose{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}};
     float width_m = 0.3f;
+    XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH; // one eye only: a stereo pair of quads (the 3D UI characters)
 };
 
 struct EyeImage {
@@ -170,7 +171,8 @@ public:
     // Quad layers drawn over the eye views with source alpha (premultiplied), e.g. the game's UI on a wrist or
     // world panel (index 0) and the mod's own menu (index 1, drawn on top). Hand anchors need create_input().
     // A panel is shown while set_panel holds a placement and an image has been released at least once.
-    static constexpr std::size_t kPanelCount = 2;
+    // Index 2..5: the 3D UI characters, one quad per eye (slot 2 + 2 * doll + eye), drawn between the UI and the menu.
+    static constexpr std::size_t kPanelCount = 6;
     bool create_panel(int32_t width, int32_t height, std::string& error, std::size_t index = 0);
     EyeImage acquire_panel(std::size_t index = 0);
     void release_panel(std::size_t index = 0);

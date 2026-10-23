@@ -33,6 +33,7 @@ public:
     // (cursor_u, cursor_v) in target uv with radius cursor_radius (in uv of the target's height; 0 = none).
     struct Overlay {
         bool keep_alpha = false;
+        bool key_black = false; // alpha from the source's brightness (a black background becomes transparent)
         float cursor_u = 0.0f;
         float cursor_v = 0.0f;
         float cursor_radius = 0.0f;
