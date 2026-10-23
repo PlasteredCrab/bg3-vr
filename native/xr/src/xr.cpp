@@ -1,6 +1,12 @@
 #include "bg3vr/xr.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <format>
+#include <mutex>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -744,6 +750,7 @@ void Session::destroy_input() {
 }
 
 void Session::destroy() {
+    stop_pacer();
     destroy_input();
     eyes_.push_back(quad_); // destroyed with the rest
     for (Panel& p : panels_) {
@@ -783,6 +790,7 @@ bool Session::poll() {
                 begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 running_ = XR_SUCCEEDED(xrBeginSession(session_, &begin));
             } else if (changed.state == XR_SESSION_STATE_STOPPING) {
+                stop_pacer(); // no xrWaitFrame in flight once the session ends
                 xrEndSession(session_);
                 running_ = false;
             } else if (changed.state == XR_SESSION_STATE_EXITING || changed.state == XR_SESSION_STATE_LOSS_PENDING) {
@@ -806,16 +814,125 @@ void Session::request_exit() {
     }
 }
 
+// xrWaitFrame on its own thread: waits for the next frame slot as soon as the previous frame has begun, and hands
+// the state to begin_frame. The spec lets xrWaitFrame run on a different thread from xrBeginFrame / xrEndFrame, and
+// a second xrWaitFrame blocks until the previous one's xrBeginFrame, so the sequence stays wait, begin, end.
+struct Session::Pacer {
+    XrSession session = XR_NULL_HANDLE;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool want = true;  // wait for the next frame (set after each xrBeginFrame)
+    bool stop = false;
+    bool failed = false;
+    std::optional<XrFrameState> ready; // a waited frame not yet begun
+    std::atomic<bool> finished{false};
+    std::atomic<std::uint64_t> waits{0};
+    std::atomic<double> wait_us{0.0};
+
+    void run() {
+        for (;;) {
+            {
+                std::unique_lock lock(mutex);
+                changed.wait(lock, [&] { return stop || want; });
+                if (stop) {
+                    break;
+                }
+                want = false;
+            }
+            XrFrameState state{XR_TYPE_FRAME_STATE};
+            const auto t0 = std::chrono::steady_clock::now();
+            const XrResult result = xrWaitFrame(session, nullptr, &state);
+            const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+            waits.fetch_add(1, std::memory_order_relaxed);
+            wait_us.store(wait_us.load(std::memory_order_relaxed) + us, std::memory_order_relaxed);
+            {
+                std::scoped_lock lock(mutex);
+                if (XR_SUCCEEDED(result)) {
+                    ready = state;
+                } else {
+                    failed = true;
+                }
+            }
+            changed.notify_all();
+        }
+        finished.store(true);
+    }
+};
+
+void Session::stop_pacer() {
+    if (!pacer_) {
+        return;
+    }
+    {
+        std::scoped_lock lock(pacer_->mutex);
+        pacer_->stop = true;
+    }
+    pacer_->changed.notify_all();
+    // It ends within one display interval (xrWaitFrame returns); never wait long (this may run at shutdown).
+    for (int i = 0; i < 50 && !pacer_->finished.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    pacer_.reset(); // the thread holds its own reference
+}
+
 bool Session::begin_frame(Frame& frame) {
     if (!running_) {
+        stop_pacer();
         return false;
     }
     frame.state = {XR_TYPE_FRAME_STATE};
-    if (XR_FAILED(xrWaitFrame(session_, nullptr, &frame.state)) || XR_FAILED(xrBeginFrame(session_, nullptr))) {
+    const auto t0 = std::chrono::steady_clock::now();
+    if (async_wait_) {
+        if (!pacer_) {
+            pacer_ = std::make_shared<Pacer>();
+            pacer_->session = session_;
+            std::thread([pacer = pacer_] { pacer->run(); }).detach();
+        }
+        std::unique_lock lock(pacer_->mutex);
+        if (!pacer_->changed.wait_for(lock, std::chrono::milliseconds(500), [&] { return pacer_->ready || pacer_->failed; }) ||
+            !pacer_->ready) {
+            const bool failed = pacer_->failed;
+            pacer_->failed = false;
+            pacer_->want = failed; // after an error, try again next time
+            lock.unlock();
+            pacer_->changed.notify_all();
+            return false;
+        }
+        frame.state = *pacer_->ready;
+        pacer_->ready.reset();
+        lock.unlock();
+        const XrResult begun = xrBeginFrame(session_, nullptr);
+        {
+            std::scoped_lock again(pacer_->mutex);
+            pacer_->want = true; // the next slot can be waited for now
+        }
+        pacer_->changed.notify_all();
+        if (XR_FAILED(begun)) {
+            return false;
+        }
+    } else if (XR_FAILED(xrWaitFrame(session_, nullptr, &frame.state)) || XR_FAILED(xrBeginFrame(session_, nullptr))) {
         return false;
     }
+    const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+    ++begun_;
+    begin_wait_us_ += us;
+    begin_wait_max_us_ = std::max(begin_wait_max_us_, us);
     frame.views_valid = locate(frame.state.predictedDisplayTime, frame.views);
     return true;
+}
+
+std::string Session::pacing_report() const {
+    std::string text = std::format("{} frames, begin_frame waited {:.2f} ms on average (longest {:.1f} ms)", begun_,
+                                   begun_ ? begin_wait_us_ / 1000.0 / static_cast<double>(begun_) : 0.0,
+                                   begin_wait_max_us_ / 1000.0);
+    if (pacer_) {
+        const std::uint64_t waits = pacer_->waits.load();
+        text += std::format("; async: the pacing thread's xrWaitFrame took {:.2f} ms on average over {} waits",
+                            waits ? pacer_->wait_us.load() / 1000.0 / static_cast<double>(waits) : 0.0, waits);
+    } else {
+        text += async_wait_ ? "; async (not started)" : "; xrWaitFrame on the presenting thread";
+    }
+    return text;
 }
 
 bool Session::locate(XrTime time, std::vector<XrView>& views) {

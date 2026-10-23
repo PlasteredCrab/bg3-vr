@@ -12,6 +12,7 @@
 #include <openxr/openxr_platform.h>
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -124,7 +125,14 @@ public:
     void request_exit();
 
     // xrWaitFrame, xrBeginFrame, xrLocateViews. False when not running or on error.
+    // With async wait on, xrWaitFrame runs on a pacing thread one frame ahead, so a caller slower than the display
+    // (the game's render thread, presenting at 25-45 fps against a 72-120 Hz headset) finds the frame state ready and
+    // never blocks in begin_frame for the runtime's next frame slot (up to one display interval per frame before).
     bool begin_frame(Frame& frame);
+    void set_async_wait(bool on) { async_wait_ = on; }
+    // Frame pacing so far, for the log: frames, the caller's average / longest wait in begin_frame, and (async) the
+    // pacing thread's xrWaitFrame time.
+    std::string pacing_report() const;
     // The next image of view `index`'s swapchain, valid until release(index).
     EyeImage acquire(std::size_t index);
     void release(std::size_t index);
@@ -213,6 +221,13 @@ private:
     XrSpace aim_spaces_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};
     bool running_ = false;
     bool quit_ = false;
+    // Async frame pacing (see begin_frame).
+    struct Pacer;
+    std::shared_ptr<Pacer> pacer_;
+    bool async_wait_ = false;
+    std::uint64_t begun_ = 0;
+    double begin_wait_us_ = 0.0, begin_wait_max_us_ = 0.0;
+    void stop_pacer();
     bool profile_changed_ = false;
 
     bool hand_tracking_supported_ = false;

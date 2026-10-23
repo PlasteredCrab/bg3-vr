@@ -61,6 +61,7 @@ float g_screen_width_m = 3.0f;
 float g_screen_distance_m = 2.5f;
 std::atomic<int> g_lag{-1}; // -1: find it in the RenderFrame
 bool g_desktop_vsync = false; // false: Present doesn't wait for the monitor while the headset runs
+bool g_async_wait = true; // [xr] async_wait: xrWaitFrame on its own thread (the game's render thread never waits for the headset)
 
 // Everything below runs on the game's presenting thread, except install(), set_lag() and report().
 bool g_failed = false;
@@ -395,6 +396,7 @@ void start(IDXGISwapChain* swapchain) {
         log::warn("xr: no shader copy ({}); trying a plain copy", blit_error);
     }
     g_session = std::make_unique<xr::Session>();
+    g_session->set_async_wait(g_async_wait);
     // With the blitter the images can be 8-bit sRGB whatever the back buffer is.
     const DXGI_FORMAT wanted = blitting ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : desc.BufferDesc.Format;
     const auto eye_width = blitting ? static_cast<int32_t>(g_system.views[0].recommendedImageRectWidth) : width;
@@ -1681,6 +1683,10 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         publish_status(false);
         return;
     }
+    // Frame pacing: how long the game's render thread waited here for the runtime (presenting thread, so no races).
+    if (static std::uint64_t paced = 0; ++paced == 60 || paced % 1800 == 0) {
+        log::info("xr: pacing: {}", g_session->pacing_report());
+    }
     publish_status(true);
     follow_back_buffer(swapchain);
     paperdoll::on_present();
@@ -1738,6 +1744,7 @@ void install(const Config& config) {
         g_screen_distance_m = std::strtof(distance.c_str(), nullptr);
     }
     g_desktop_vsync = config.get_bool("xr", "desktop_vsync", false);
+    g_async_wait = config.get_bool("xr", "async_wait", true);
     g_input_wanted = config.get_bool("xr", "input", true);
     g_input_haptics = config.get_bool("xr", "input_haptics", true);
     g_autostart = config.get_bool("vr", "autostart", true);
