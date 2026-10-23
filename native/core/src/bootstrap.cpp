@@ -154,6 +154,14 @@ void update_conversation() {
 #endif
 }
 
+// Grabbing (bodies, items) runs on the game's main thread when the event pump is hooked (resolution.cpp): moving items
+// from the worker that runs the camera update crashed (14:54).
+bool g_grab_on_main_thread = false;
+void grab_main_thread_task() {
+    corpse::on_frame(); // before hold: a grip that takes a body doesn't also pick up an item
+    hold::on_frame();
+}
+
 void on_game_frame() {
     cull::on_frame();
     views::on_frame();
@@ -163,8 +171,10 @@ void on_game_frame() {
     quality::on_frame();
     locomotion::on_frame();
     vrplay::on_frame();
-    corpse::on_frame(); // before hold: a grip that takes a body doesn't also pick up an item
-    hold::on_frame();
+    if (!g_grab_on_main_thread) {
+        corpse::on_frame(); // before hold: a grip that takes a body doesn't also pick up an item
+        hold::on_frame();
+    }
     melee::on_frame();
     combat::on_frame();
 }
@@ -581,6 +591,8 @@ int init(const wchar_t* root_dir) {
     melee::set_enabled(text::to_lower(g_config.get("combat", "swing", g_config.get_bool("combat", "physical", false) ? "hit" : "gaze")) == "hit");
     weaponset::install(g_config, module);
     resolution::install(g_config, module);
+    g_grab_on_main_thread = resolution::set_main_thread_task(&grab_main_thread_task);
+    log::info("grab: bodies and items are moved {}", g_grab_on_main_thread ? "on the game's main thread (event pump)" : "from the camera update (event pump not hooked)");
     paperdoll::install(g_config, module);
     camera::set_frame_callback(&on_game_frame);
     bridge::start(g_config, [module](const bridge::Request& request) { handle_bridge(module, request); });

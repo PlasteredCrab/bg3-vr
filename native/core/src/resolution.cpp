@@ -185,8 +185,18 @@ void on_resize(std::uintptr_t r, ResizeEvent* event) {
     g_resize_hook.call<void>(r, event);
 }
 
+std::atomic<void (*)()> g_main_task{nullptr};
+std::atomic<bool> g_main_task_logged{false};
+
 // The game's event pump: a pending change goes through the resize entry from here, where the game itself resizes.
 std::uintptr_t on_pump(std::uintptr_t a, std::uintptr_t b, std::uintptr_t c, std::uintptr_t d) {
+    if (const auto task = g_main_task.load(std::memory_order_acquire)) {
+        if (!g_main_task_logged.exchange(true)) {
+            log::info("resolution: main-thread work (item and body moves) runs from the event pump on thread {}",
+                      GetCurrentThreadId());
+        }
+        task();
+    }
     if (g_pending.exchange(false, std::memory_order_relaxed)) {
         const std::uintptr_t r = renderer();
         const HWND window = g_window.load(std::memory_order_relaxed);
@@ -219,6 +229,14 @@ std::uintptr_t on_pump(std::uintptr_t a, std::uintptr_t b, std::uintptr_t c, std
 }
 
 } // namespace
+
+bool set_main_thread_task(void (*task)()) {
+    if (!g_pump_hook) {
+        return false;
+    }
+    g_main_task.store(task, std::memory_order_release);
+    return true;
+}
 
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;

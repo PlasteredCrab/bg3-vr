@@ -28,4 +28,10 @@ void set_window(HWND window);
 void set_suspended(bool suspended);
 void report();
 
+// Runs `task` on the game's main thread from its event pump, once per pump (outside the game's parallel update). The
+// gloves and body grabbing move items there: ecl::Item::SetTranslate takes memory from a per-thread pool that worker
+// threads don't have (the 2026-10-23 14:54 crash: a pull's placement on worker 62028 got a null block and the game
+// wrote through it). False when the pump isn't hooked.
+bool set_main_thread_task(void (*task)());
+
 } // namespace bg3vr::resolution
