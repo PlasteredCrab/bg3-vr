@@ -150,36 +150,34 @@ int call_set_scene(const SceneCall& call) {
 // (0x1E1DF90 / 0x1E1E1D0: every view whose camera matches gets 0x3CC9700 / 0x3CCAAC0 when a request
 // comes, e.g. an atmosphere trigger), so the split view, which joins later, kept the level defaults the
 // scene step gave it (white; PerView far 20000 vs 5000, field diff 2026-10-19). Each setter keeps copies
-// of the resource it's given (from +0x2880 / to +0x2890 / active +0x28A0; lighting +0x28B8 / +0x28C8 /
+// of the resource it's given (target +0x2880 / blend start +0x2890 / active +0x28A0; lighting +0x28B8 / +0x28C8 /
 // +0x28D8), made by 0x1B76AA0 with the resource's layout (id at +8): the main view's active copies are
 // passed as the source, with no blend.
 using SetEnvironmentFn = bool (*)(std::uintptr_t view, std::uintptr_t source, std::int32_t* id, float blend, bool flag);
 constexpr std::uint32_t kSetAtmosphereRva = 0x3CC9700, kSetLightingRva = 0x3CCAAC0;
 
-int call_set_environment(SetEnvironmentFn set_atmosphere, SetEnvironmentFn set_lighting, ReleaseIdFn release_id,
-                         std::uintptr_t pool, std::uintptr_t view, std::uintptr_t atmosphere, std::uintptr_t lighting,
-                         float atmosphere_blend, float lighting_blend) {
-    int step = 1;
+// One environment setter on the eye (agent AO, AO_lighting_system.md 2): the id argument is read, not written: the setter
+// stores *id as the view's request id (+0x2888 atmosphere / +0x28C0 lighting: the trigger's GUID FixedString). The
+// renderer picks the view's global environment probe by it (CullStage 0x3E245E0 / 0x3E24970: probe +0x8C == the id),
+// so passing -1 (as the mod did) left the right eye with no ambient probe: no ambient diffuse, no specular IBL, no fog
+// ambient SH. Main's own request id is passed, and the eye's lock byte is cleared around the call (the game's own
+// pattern, 0x3C49530): a locked setter only records the request.
+using AssignIdFn = void (*)(std::uint32_t* destination, const std::uint32_t* source);
+constexpr std::uint32_t kAssignIdRva = 0x40F7BC0; // FixedString assign (reference counted)
+
+int call_setter(SetEnvironmentFn set, AssignIdFn assign, std::uintptr_t eye, std::uintptr_t main, std::uintptr_t source,
+                std::size_t request, std::size_t previous, std::size_t lock, float blend) {
     __try {
-        std::int32_t id = -1;
-        if (atmosphere) {
-            set_atmosphere(view, atmosphere, &id, atmosphere_blend, true);
-            if (id != -1) {
-                release_id(pool, &id);
-            }
-        }
-        step = 2;
-        id = -1;
-        if (lighting) {
-            set_lighting(view, lighting, &id, lighting_blend, true);
-            if (id != -1) {
-                release_id(pool, &id);
-            }
-        }
+        auto* lock_byte = reinterpret_cast<std::uint8_t*>(eye + lock);
+        const std::uint8_t main_lock = *reinterpret_cast<const std::uint8_t*>(main + lock);
+        *lock_byte = 0;
+        set(eye, source, reinterpret_cast<std::int32_t*>(main + request), blend, true);
+        assign(reinterpret_cast<std::uint32_t*>(eye + previous), reinterpret_cast<const std::uint32_t*>(main + previous));
+        *lock_byte = main_lock;
         return 0;
     } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
                                                                   : EXCEPTION_CONTINUE_SEARCH) {
-        return step;
+        return 1;
     }
 }
 
@@ -261,70 +259,86 @@ void refresh_eye_fog(std::uintptr_t main, std::uintptr_t eye, bool verbose) {
     }
 }
 
-void copy_environment(std::uintptr_t view, bool verbose = true) {
+// The environment (atmosphere and lighting) from main to the eye, one resource at a time, when it differs: main's
+// TARGET (+0x2880 / +0x28B8: where its blend is going, agent AL 1) with main's remaining blend time, forced, main's
+// request id (+0x2888 / +0x28C0) and previous id (+0x2898 / +0x28D0) (agent AO 1). Returns true when something was copied.
+bool copy_environment(std::uintptr_t view, bool verbose = true) {
     const auto set_atmosphere = sig::lookup("view_set_atmosphere");
     const auto set_lighting = sig::lookup("view_set_lighting");
-    const auto release_id = sig::lookup("id_pool_release");
     const std::uintptr_t base = g_module.base;
     if (!set_atmosphere || *set_atmosphere - base != kSetAtmosphereRva || !set_lighting ||
-        *set_lighting - base != kSetLightingRva || !release_id || *release_id - base != kReleaseIdRva) {
+        *set_lighting - base != kSetLightingRva) {
         log::warn("views: the atmosphere / lighting setters aren't where this build has them; not copying");
-        return;
+        return false;
+    }
+    static const bool assign_ok = [] {
+        std::uint8_t b[10]{};
+        constexpr std::uint8_t expected[10] = {0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20};
+        return mem::try_copy(b, g_module.base + kAssignIdRva, sizeof(b)) && std::memcmp(b, expected, sizeof(b)) == 0;
+    }();
+    if (!assign_ok) {
+        log::warn("views: the id assign exe+0x{:X} doesn't match this build; not copying", kAssignIdRva);
+        return false;
     }
     std::optional<std::array<std::uintptr_t, 2>> eyes;
     {
         std::scoped_lock lock(g_mutex);
         eyes = g_eye_views;
     }
-    if (!eyes) {
-        return;
+    if (!eyes || !(*eyes)[0]) {
+        return false;
     }
-    // Agent AL 1: main's TARGET (+0x2880 / +0x28B8: where its blend is going) with the blend time it has left, forced,
-    // so the eye blends along with it. Copying main's active object (as before) at the start of a blend froze the eye
-    // on the almost-old lighting (sun colour, shadows, AO, fog and sky rows, exposure settings) with a 0 s blend.
-    std::uintptr_t atmosphere = 0, lighting = 0, pool_global = 0;
-    std::int32_t atmosphere_id = -1, lighting_id = -1;
-    mem::try_copy(&atmosphere, (*eyes)[0] + 0x2880, sizeof(atmosphere));
-    mem::try_copy(&lighting, (*eyes)[0] + 0x28B8, sizeof(lighting));
-    float atm_elapsed = 0.0f, atm_duration = 0.0f, light_elapsed = 0.0f, light_duration = 0.0f;
-    std::uint8_t atm_blending = 0, light_blending = 0;
-    mem::try_copy(&atm_elapsed, (*eyes)[0] + 0x28A8, sizeof(float));
-    mem::try_copy(&atm_duration, (*eyes)[0] + 0x28AC, sizeof(float));
-    mem::try_copy(&atm_blending, (*eyes)[0] + 0x28B0, 1);
-    mem::try_copy(&light_elapsed, (*eyes)[0] + 0x28E0, sizeof(float));
-    mem::try_copy(&light_duration, (*eyes)[0] + 0x28E4, sizeof(float));
-    mem::try_copy(&light_blending, (*eyes)[0] + 0x28E8, 1);
-    const auto left = [](bool blending, float elapsed, float duration) {
-        return blending && std::isfinite(elapsed) && std::isfinite(duration) ? std::clamp(duration - elapsed, 0.0f, 30.0f) : 0.0f;
+    const std::uintptr_t main = (*eyes)[0];
+    struct Res {
+        const char* name;
+        std::size_t target, request, previous, lock, elapsed, duration, blending;
+        std::uintptr_t setter;
     };
-    const float atmosphere_blend = left(atm_blending != 0, atm_elapsed, atm_duration);
-    const float lighting_blend = left(light_blending != 0, light_elapsed, light_duration);
-    mem::try_copy(&atmosphere_id, atmosphere + 8, sizeof(atmosphere_id));
-    mem::try_copy(&lighting_id, lighting + 8, sizeof(lighting_id));
-    mem::try_copy(&pool_global, base + kIdPoolGlobalRva, sizeof(pool_global));
-    if (verbose) {
-        log::info("views: environment from the main view's targets: atmosphere 0x{:X} (id {}, {:.2f} s of blend left), "
-                  "lighting 0x{:X} (id {}, {:.2f} s left)",
-                  atmosphere, atmosphere_id, atmosphere_blend, lighting, lighting_id, lighting_blend);
+    const Res resources[2] = {{"atmosphere", 0x2880, 0x2888, 0x2898, 0x2AEC, 0x28A8, 0x28AC, 0x28B0, *set_atmosphere},
+                              {"lighting", 0x28B8, 0x28C0, 0x28D0, 0x2AEB, 0x28E0, 0x28E4, 0x28E8, *set_lighting}};
+    bool copied = false;
+    for (const Res& r : resources) {
+        std::uintptr_t main_target = 0, eye_target = 0;
+        std::int32_t main_target_id = -1, eye_target_id = -1;
+        std::uint32_t main_request = 0, eye_request = 0;
+        mem::try_copy(&main_target, main + r.target, sizeof(main_target));
+        mem::try_copy(&eye_target, view + r.target, sizeof(eye_target));
+        if (main_target) {
+            mem::try_copy(&main_target_id, main_target + 8, sizeof(main_target_id));
+        }
+        if (eye_target) {
+            mem::try_copy(&eye_target_id, eye_target + 8, sizeof(eye_target_id));
+        }
+        mem::try_copy(&main_request, main + r.request, sizeof(main_request));
+        mem::try_copy(&eye_request, view + r.request, sizeof(eye_request));
+        if (!main_target || (main_target_id == eye_target_id && main_request == eye_request)) {
+            continue;
+        }
+        float elapsed = 0.0f, duration = 0.0f;
+        std::uint8_t blending = 0;
+        mem::try_copy(&elapsed, main + r.elapsed, sizeof(elapsed));
+        mem::try_copy(&duration, main + r.duration, sizeof(duration));
+        mem::try_copy(&blending, main + r.blending, 1);
+        const float blend = blending && std::isfinite(elapsed) && std::isfinite(duration)
+                                ? std::clamp(duration - elapsed, 0.0f, 30.0f)
+                                : 0.0f;
+        const int faulted = call_setter(reinterpret_cast<SetEnvironmentFn>(r.setter),
+                                        reinterpret_cast<AssignIdFn>(base + kAssignIdRva), view, main, main_target,
+                                        r.request, r.previous, r.lock, blend);
+        copied = copied || !faulted;
+        if (verbose || faulted) {
+            std::uint32_t request_after = 0;
+            mem::try_copy(&request_after, view + r.request, sizeof(request_after));
+            log::info("views:   {} {}: main's target id {} (request {}), the eye had {} (request {}); {:.2f} s of blend; the "
+                      "eye's request id now {}",
+                      r.name, faulted ? "FAULTED" : "copied", main_target_id, main_request, eye_target_id, eye_request, blend,
+                      request_after);
+        }
     }
-    const int faulted = call_set_environment(reinterpret_cast<SetEnvironmentFn>(*set_atmosphere),
-                                             reinterpret_cast<SetEnvironmentFn>(*set_lighting),
-                                             reinterpret_cast<ReleaseIdFn>(*release_id), pool_global + 0xC600, view,
-                                             atmosphere, lighting, atmosphere_blend, lighting_blend);
-    std::uintptr_t split_atmosphere = 0, split_lighting = 0;
-    std::int32_t split_atmosphere_id = -1, split_lighting_id = -1;
-    mem::try_copy(&split_atmosphere, view + 0x28A0, sizeof(split_atmosphere));
-    mem::try_copy(&split_lighting, view + 0x28D8, sizeof(split_lighting));
-    mem::try_copy(&split_atmosphere_id, split_atmosphere + 8, sizeof(split_atmosphere_id));
-    mem::try_copy(&split_lighting_id, split_lighting + 8, sizeof(split_lighting_id));
-    if (verbose || faulted) {
-        log::info("views:   {}; split view's active atmosphere id now {}, lighting id {}",
-                  faulted ? std::format("FAULTED at step {}", faulted) : std::string("copied"), split_atmosphere_id,
-                  split_lighting_id);
+    if (copied) {
+        refresh_eye_fog(main, view, verbose);
     }
-    if (!faulted) {
-        refresh_eye_fog((*eyes)[0], view, verbose);
-    }
+    return copied;
 }
 
 // The main view's active atmosphere / lighting (resource object and its id), to notice when the game applies new
@@ -365,43 +379,44 @@ void sync_environment() {
     static std::uint64_t frames = 0;
     if (++frames % 1800 == 0) {
         log::info("views: fog layers: main {}; eye {}", fog_layers((*eyes)[0]), fog_layers((*eyes)[1]));
+        // The request ids the renderer picks the environment probe (ambient) by (agent AO plan A): equal in both views now.
+        std::uint32_t ids[2][4]{};
+        for (int v = 0; v < 2; ++v) {
+            int k = 0;
+            for (const std::size_t offset : {std::size_t{0x2888}, std::size_t{0x2898}, std::size_t{0x28C0}, std::size_t{0x28D0}}) {
+                mem::try_copy(&ids[v][k++], (*eyes)[v] + offset, sizeof(std::uint32_t));
+            }
+        }
+        log::info("views: request ids (atmosphere / previous / lighting / previous): main {} {} {} {}, eye {} {} {} {}{}",
+                  ids[0][0], ids[0][1], ids[0][2], ids[0][3], ids[1][0], ids[1][1], ids[1][2], ids[1][3],
+                  ids[0][0] == ids[1][0] && ids[0][2] == ids[1][2] ? "" : " - DIFFERENT");
     }
-    // The lock / pause bytes (requests only recorded / blend paused: timelines and dialogues set them on main).
-    for (const std::size_t offset : {std::size_t{0x2AE8}, std::size_t{0x2AE9}, std::size_t{0x2AEB}, std::size_t{0x2AEC}}) {
+    // The pause bytes (blend paused) every frame; the copy itself (copy_environment) acts only on what differs (a
+    // target or a request id), clearing the eye's lock around its setter call; the lock bytes (requests only recorded:
+    // dialogues and timelines lock main) follow main's after the copy (agent AO M2: copying them first swallowed the
+    // copy during every conversation).
+    for (const std::size_t offset : {std::size_t{0x2AE8}, std::size_t{0x2AE9}}) {
         std::uint8_t value = 0;
         if (mem::try_copy(&value, (*eyes)[0] + offset, 1)) {
             *reinterpret_cast<std::uint8_t*>((*eyes)[1] + offset) = value;
         }
     }
-    // Copy only when main's targets differ from the eye's: when the game's own request loop (0x1E1E1D0) started the
-    // same blend on both views, the eye blends by itself (AL 1.2).
-    const auto target_id = [](std::uintptr_t view, std::size_t offset) {
-        std::uintptr_t object = 0;
-        std::int32_t id = -1;
-        if (mem::try_copy(&object, view + offset, sizeof(object)) && object) {
-            mem::try_copy(&id, object + 8, sizeof(id));
-        }
-        return id;
-    };
-    const bool targets_equal = target_id((*eyes)[0], 0x2880) == target_id((*eyes)[1], 0x2880) &&
-                               target_id((*eyes)[0], 0x28B8) == target_id((*eyes)[1], 0x28B8);
-    const Environment now = read_environment((*eyes)[0]);
-    if (targets_equal) {
-        g_environment_copied = now;
-        return;
-    }
     const bool verbose = g_environment_syncs < 20 || g_environment_syncs % 100 == 0;
-    if (g_environment_copied && verbose) {
-        log::info("views: the main view's environment changed (copy {}) (atmosphere 0x{:X} id {} -> 0x{:X} id {}, lighting 0x{:X} "
-                  "id {} -> 0x{:X} id {}); copying it to the eye view",
-                  g_environment_syncs + 1, g_environment_copied->atmosphere, g_environment_copied->atmosphere_id, now.atmosphere, now.atmosphere_id,
-                  g_environment_copied->lighting, g_environment_copied->lighting_id, now.lighting, now.lighting_id);
-    }
-    if (g_environment_copied) {
-        copy_environment((*eyes)[1], verbose);
+    if (copy_environment((*eyes)[1], verbose)) {
         ++g_environment_syncs;
+        if (verbose) {
+            const Environment now = read_environment((*eyes)[0]);
+            log::info("views: the main view's environment changed (copy {}): atmosphere id {}, lighting id {} copied to the eye "
+                      "view", g_environment_syncs, now.atmosphere_id, now.lighting_id);
+        }
     }
-    g_environment_copied = now;
+    for (const std::size_t offset : {std::size_t{0x2AEB}, std::size_t{0x2AEC}}) {
+        std::uint8_t value = 0;
+        if (mem::try_copy(&value, (*eyes)[0] + offset, 1)) {
+            *reinterpret_cast<std::uint8_t*>((*eyes)[1] + offset) = value;
+        }
+    }
+    g_environment_copied = read_environment((*eyes)[0]);
 }
 
 void give_scene(std::uintptr_t view) {
