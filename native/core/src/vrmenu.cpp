@@ -144,7 +144,6 @@ Menu::Menu() {
     choice("Wrist interface size", "ui.wrist_width",
            {{"Small", "0.4"}, {"Medium", "0.8"}, {"Large", "1.2"}, {"Huge", "1.6"}}, 1);
     section("Comfort");
-    choice("Third person is", "vr.third_person", {{"In VR, behind your character", "vr"}, {"A flat screen", "screen"}}, 0);
     choice("Turning", "vr.turn", {{"Snap", "snap"}, {"Smooth", "smooth"}}, 0);
     choice("Snap angle", "vr.snap_degrees",
            {{"15°", "15"}, {"30°", "30"}, {"45°", "45"}, {"60°", "60"}, {"90°", "90"}}, 1);
