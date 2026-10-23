@@ -8,8 +8,18 @@ CMakeUserPresets.json
 # Downloaded third-party releases (verified, then vendored or installed from here)
 /downloads/
 
-# Local reverse-engineering databases and captures (large, and derived from game binaries)
-/re-local/
+# Local reverse-engineering databases and captures (large, and derived from game binaries). Only the agents' written
+# reports (addresses and what they are for) are published; raw decompiler output, extracted game files and Ghidra
+# projects stay local.
+/re-local/*
+!/re-local/ghidra/
+/re-local/ghidra/*
+!/re-local/ghidra/agents/
+/re-local/ghidra/agents/*
+!/re-local/ghidra/agents/*.md
+
+# Private notes (not published)
+/docs/re-notes/real-vr.md
 *.i64
 *.idb
 *.gzf
