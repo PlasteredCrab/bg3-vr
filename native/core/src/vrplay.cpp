@@ -130,6 +130,7 @@ std::atomic<bool> g_dialogue{false};
 std::atomic<bool> g_dialogue_buttons{true}; // [vr] dialogue_buttons
 double g_next_dialogue_step = 0.0;          // presenting thread: when a held stick steps again
 int g_dialogue_direction = 0;
+int g_dialogue_answer = 1; // presenting thread: the answer the sticks are on (1..9)
 std::atomic<std::uint64_t> g_dialogue_keys{0};
 std::atomic<bool> g_recalibrate{false};
 std::atomic<float> g_turn_rate{0.0f};
@@ -305,7 +306,10 @@ void configure(const Config& config) {
     g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
     g_eye_offset = number("eye_offset", 0.0f, -0.5f, 0.5f);
-    camera::set_anchor(text::to_lower(config.get("vr", "camera_anchor", "head")) != "body", g_eye_offset.load());
+    const std::string anchor = text::to_lower(config.get("vr", "camera_anchor", "body"));
+    const std::string smoothing = config.get("vr", "head_smoothing");
+    camera::set_anchor(anchor != "body", g_eye_offset.load(),
+                       anchor == "head_exact" ? 0.0f : smoothing.empty() ? 0.15f : std::strtof(smoothing.c_str(), nullptr));
     g_dialogue_buttons = config.get_bool("vr", "dialogue_buttons", true);
 }
 
@@ -351,6 +355,7 @@ void set_menu_open(bool open) {
 
 void set_dialogue(bool on) {
     if (g_dialogue.exchange(on) != on) {
+        g_dialogue_answer = 1; // read by the presenting thread; a plain int write is fine for this
         log::info("vr: conversation {}{}", on ? "on" : "off",
                   on && g_dialogue_buttons.load() ? " (sticks up / down move through the answers, A picks, B skips the line)"
                                                   : "");
@@ -432,7 +437,12 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     // In a conversation A picks the highlighted answer and B skips the line; their bindings wait until it ends.
     const bool talking = !menu_open && g_dialogue.load(std::memory_order_relaxed) && g_dialogue_buttons.load(std::memory_order_relaxed);
     if (talking) {
-        for (const auto& [c, key] : {std::pair{RightA, "enter"}, std::pair{RightB, "space"}}) {
+        // The keyboard dialogue screen picks an answer with its number key (each answer button's BoundEvent is
+        // UISelectSlotN, the number keys; UISelectSlot1 also continues a line without answers); the arrow keys only
+        // move its highlight (UIUp / UIDown -> SelectorUp/DownCommand) and Enter isn't bound (Dialogue.xaml,
+        // DialogueTemplates.xaml). So A presses the number of the answer the sticks are on.
+        const std::string answer_key = std::format("num_{}", std::clamp(g_dialogue_answer, 1, 9));
+        for (const auto& [c, key] : {std::pair{RightA, answer_key.c_str()}, std::pair{RightB, "space"}}) {
             if (g_injected[c]) {
                 inject(g_bindings[c].device, g_bindings[c].id, false);
                 g_injected[c] = false;
@@ -441,6 +451,9 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
                 const bool sent = tap_key(key);
                 g_dialogue_keys.fetch_add(1, std::memory_order_relaxed);
                 log::info("vr: conversation: {} -> {}{}", kControlNames[c], key, sent ? "" : " (not sent)");
+                if (c == RightA) {
+                    g_dialogue_answer = 1; // the next set of answers starts at the top
+                }
                 feedback.haptic[1] = std::max(feedback.haptic[1], 0.2f);
             }
             if (now[c]) {
@@ -456,9 +469,10 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         } else if (direction != g_dialogue_direction || time_s >= g_next_dialogue_step) {
             const bool first = direction != g_dialogue_direction;
             const char* key = direction > 0 ? "up" : "down";
+            g_dialogue_answer = std::clamp(g_dialogue_answer + (direction > 0 ? -1 : 1), 1, 9);
             const bool sent = tap_key(key);
             g_dialogue_keys.fetch_add(1, std::memory_order_relaxed);
-            log::info("vr: conversation: stick {} -> {}{}", key, key, sent ? "" : " (not sent)");
+            log::info("vr: conversation: stick {} -> {} (answer {} for A){}", key, key, g_dialogue_answer, sent ? "" : " (not sent)");
             g_next_dialogue_step = time_s + (first ? 0.45 : 0.18);
             g_dialogue_direction = direction;
             feedback.haptic[1] = std::max(feedback.haptic[1], 0.1f);

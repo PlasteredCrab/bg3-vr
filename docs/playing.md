@@ -116,7 +116,7 @@ button, B to close; or point at it and pull the trigger:
   upscaling used in VR (DLSS Balanced or Performance, or the game's own setting) and depth of field, the
   wrist UI size, and the aiming beam (off, solid, dashed, flowing dots or pulse; its colour and opacity).
 - Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement, where the camera
-  sits (at the character's eyes, or steady without head sway), and the conversation controls.
+  sits (steady by default: only your head moves the view; or at the character's eyes), and the conversation controls.
 - Body: dominant hand (which hand points; the wrist UI goes on the other), arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
 - Scale: IPD (the headset's own, or a fixed 56-72 mm), 3D characters in menus, 3D depth (each eye its own view, or
   flat), world scale (100% is true scale), eye height.
@@ -150,12 +150,14 @@ open your buttons and sticks don't reach the game. Changes take effect at once a
 | `[ik] arms` | true | arms and the held weapon follow your hands |
 | `[grab] probe` / `hold` | false (off) | pick items up with the grips; with `hold`, throw by letting go mid-swing and pull far items by flicking the hand back while aiming and holding the grip |
 | `[combat] physical` | false (off) | swing the right hand through a character to make your normal weapon attack (the game rolls) |
-| `[vr] camera_anchor` | head | `head`: the camera at your character's eyes as animated; `body`: steady, no head sway |
+| `[vr] camera_anchor` | body | `body`: the view moves only with your head (and the character walking); `head` / `head_exact`: at the character's eyes, smoothed / as animated |
+| `[xr] head_prediction_ms` | 0 | extrapolate the head pose (0: the pose as it is now) |
+| `[vr] teleport_turn` | false | turn your view to the body's facing after a cutscene moves it |
 | `[render] vr_upscaler` | dlss_balanced | upscaling while in VR (`dlss_performance`, or `game` for the graphics menu's); put back when VR stops |
 | `[render] vr_resolution` | 80 | per-eye render size, percent of the headset's |
 | `[views] eye_origin` | proxy | `proxy`: each eye drawn from its own position (stereo depth); `head`: both from the head (flat) |
 | `[views] share_shadows` | true | the right eye reuses the left eye's sun shadows (checked over the first 60 frames) |
-| `[xr] async_wait` | true | wait for the headset's frame on its own thread, not in the game's Present |
+| `[xr] async_wait` | false | wait for the headset's frame on its own thread, not in the game's Present |
 | `[perf] worker_threads` | 0 | the game's job worker threads (0 = the game's 6; try 10-12 on an 8-core CPU) |
 | `[ui] stereo_dolls` | true | characters in UI screens in 3D |
 

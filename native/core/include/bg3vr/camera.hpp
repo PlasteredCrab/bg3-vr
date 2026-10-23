@@ -84,8 +84,9 @@ struct Follow {
 void set_follow(std::optional<Follow> follow);
 // Changes the height above the followed transform (e.g. calibrated from the head bone); no-op when not following.
 void set_follow_height(float height);
-// [vr] camera_anchor (head | body) and [vr] eye_offset (metres added to the eye height in head mode); any thread.
-void set_anchor(bool head, float eye_offset);
+// [vr] camera_anchor (head: the eyes, their offset from the body smoothed over `smoothing_s` seconds; head_exact:
+// smoothing 0; body) and [vr] eye_offset (metres added to the eye height in head mode); any thread.
+void set_anchor(bool head, float eye_offset, float smoothing_s);
 // [xr] world_scale (game units per real metre of head and hand movement); live from the VR menu.
 void set_world_scale(float scale);
 float world_scale();

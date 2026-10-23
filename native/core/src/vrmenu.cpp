@@ -152,7 +152,8 @@ Menu::Menu() {
     choice("Comfort vignette", "vr.comfort_vignette",
            {{"Off", "0", true}, {"Light", "0.25"}, {"Medium", "0.5"}, {"Strong", "0.8"}}, 2);
     on_off("Stick movement", "vr.stick_locomotion", true);
-    choice("Camera", "vr.camera_anchor", {{"At the character's eyes", "head"}, {"Steady (no head sway)", "body"}}, 0);
+    choice("Camera", "vr.camera_anchor",
+           {{"Steady (only your head moves it)", "body"}, {"At the eyes, smoothed", "head"}, {"At the eyes, exact", "head_exact"}}, 0);
     on_off("Answers in front of you", "ui.dialogue_in_front", true);
     on_off("Sticks and A / B in conversations", "vr.dialogue_buttons", true);
     section("Body");

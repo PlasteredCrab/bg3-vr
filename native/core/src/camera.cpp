@@ -87,8 +87,16 @@ std::atomic<std::uint64_t> g_follow_teleports{0};
 // headset run, 2026-10-20, showed 70 such jumps rejected by the old 10 m sanity limit, leaving the camera behind).
 constexpr float kTeleportDistance = 2.0f;
 constexpr float kWorldLimit = 100000.0f; // beyond this a read is garbage, not a position
-bool g_teleport_turn = true;             // [vr] teleport_turn: face where the body faces after a teleport
-std::atomic<bool> g_anchor_head{true};   // [vr] camera_anchor = head
+bool g_teleport_turn = false;            // [vr] teleport_turn: face where the body faces after a teleport (off: only the head turns the view)
+std::atomic<bool> g_anchor_head{false};  // [vr] camera_anchor = head / head_exact (default body: the view moves only with the head)
+std::atomic<float> g_head_smoothing{0.15f}; // seconds: how slowly the animation's head bob and sway reach the camera
+vr::Vec3 g_eyes_smoothed{};               // under g_mutex: the eyes' offset from the body (model space), smoothed
+bool g_eyes_smoothed_valid = false;
+std::chrono::steady_clock::time_point g_eyes_smoothed_at{};
+float g_step_max = 0.0f;                  // the largest camera move between two updates (no teleport), metres
+std::uint64_t g_step_updates = 0;
+std::array<float, 3> g_step_last{};
+bool g_step_have_last = false;
 std::atomic<float> g_eye_offset{0.0f};   // [vr] eye_offset (head mode)
 std::atomic<std::uint64_t> g_follow_from_visual{0};
 std::atomic<std::uint64_t> g_follow_from_eyes{0};
@@ -126,8 +134,26 @@ void update_follow() {
             if (!model || std::abs((*model)[1] - head->model[1]) > 0.3f) {
                 model = vr::Vec3{head->model[0], head->model[1] + 0.10f, head->model[2]};
             }
+            // The body's position is followed exactly (teleports, cutscene placement); the eyes' offset from it is
+            // smoothed, so the walk cycle's bob and the idle sway don't shake the view.
+            const auto now = std::chrono::steady_clock::now();
+            const float smoothing = g_head_smoothing.load(std::memory_order_relaxed);
+            if (!g_eyes_smoothed_valid || smoothing <= 0.0f ||
+                std::abs((*model)[0] - g_eyes_smoothed[0]) + std::abs((*model)[1] - g_eyes_smoothed[1]) +
+                        std::abs((*model)[2] - g_eyes_smoothed[2]) > 1.0f) {
+                g_eyes_smoothed = *model; // first read, exact mode, or a big change (sitting down, a new skeleton)
+            } else {
+                const float dt = std::clamp(std::chrono::duration<float>(now - g_eyes_smoothed_at).count(), 0.0f, 0.1f);
+                const float k = 1.0f - std::exp(-dt / smoothing);
+                for (int i = 0; i < 3; ++i) {
+                    g_eyes_smoothed[i] += ((*model)[i] - g_eyes_smoothed[i]) * k;
+                }
+            }
+            g_eyes_smoothed_valid = true;
+            g_eyes_smoothed_at = now;
             const float s = head->visual_scale;
-            const vr::Vec3 offset = vr::rotate(head->visual_rotation, {(*model)[0] * s, (*model)[1] * s, (*model)[2] * s});
+            const vr::Vec3 offset = vr::rotate(head->visual_rotation,
+                                               {g_eyes_smoothed[0] * s, g_eyes_smoothed[1] * s, g_eyes_smoothed[2] * s});
             eyes = vr::Vec3{translate[0] + offset[0], translate[1] + offset[1], translate[2] + offset[2]};
         }
     }
@@ -164,6 +190,19 @@ void update_follow() {
     }
     g_follow_last = {translate[0], translate[1], translate[2]};
     g_follow_has_last = true;
+    // The largest step the camera took between two updates (teleports excluded), logged now and then.
+    if (g_step_have_last) {
+        const float dx = g_pose->x - g_step_last[0], dy = g_pose->y - g_step_last[1], dz = g_pose->z - g_step_last[2];
+        const float step = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (step < kTeleportDistance) {
+            g_step_max = std::max(g_step_max, step);
+        }
+    }
+    if (++g_step_updates % 1500 == 0) {
+        log::info("camera: largest step between two updates over the last 1500: {:.3f} m (anchor {}, smoothing {:.2f} s)",
+                  g_step_max, eyes ? "eyes" : "body", g_head_smoothing.load());
+        g_step_max = 0.0f;
+    }
     if (eyes) {
         g_pose->x = (*eyes)[0];
         g_pose->y = (*eyes)[1] + g_eye_offset.load(std::memory_order_relaxed);
@@ -177,6 +216,8 @@ void update_follow() {
     if (from_visual) {
         g_follow_from_visual.fetch_add(1, std::memory_order_relaxed);
     }
+    g_step_last = {g_pose->x, g_pose->y, g_pose->z};
+    g_step_have_last = true;
     if (g_sweep) {
         g_sweep_base.x = g_pose->x;
         g_sweep_base.y = g_pose->y;
@@ -421,7 +462,7 @@ void install(const Config& config, const ModuleInfo& module) {
     if (!scale.empty()) {
         g_world_scale = std::clamp(std::strtof(scale.c_str(), nullptr), 0.25f, 4.0f);
     }
-    g_teleport_turn = config.get_bool("vr", "teleport_turn", true);
+    g_teleport_turn = config.get_bool("vr", "teleport_turn", false);
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
     install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
     install_mid_hook("camera_set_projection_call", &on_set_projection, g_set_projection_hook);
@@ -507,9 +548,10 @@ float world_scale() {
     return g_world_scale.load(std::memory_order_relaxed);
 }
 
-void set_anchor(bool head, float eye_offset) {
+void set_anchor(bool head, float eye_offset, float smoothing_s) {
     const bool was = g_anchor_head.exchange(head);
     g_eye_offset.store(eye_offset);
+    g_head_smoothing.store(std::clamp(smoothing_s, 0.0f, 1.0f));
     if (was != head) {
         log::info("camera: anchored at {}", head ? "the character's eyes" : "the character's body (steady)");
     }

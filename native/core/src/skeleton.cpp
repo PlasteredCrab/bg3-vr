@@ -87,9 +87,11 @@ std::uint64_t controlled_raw() {
     }
 }
 
-std::uintptr_t by_handle_raw(std::uintptr_t rva, std::uint64_t handle) {
+std::uintptr_t by_handle_raw(std::uintptr_t rva, std::uint64_t handle, std::uintptr_t world = 0) {
     __try {
-        const auto world = *reinterpret_cast<std::uintptr_t*>(g_module.base + kEntityWorld);
+        if (!world) {
+            world = *reinterpret_cast<std::uintptr_t*>(g_module.base + kEntityWorld);
+        }
         return world && handle ? reinterpret_cast<ByHandleFn>(g_module.base + rva)(world, handle) : 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
@@ -108,15 +110,23 @@ std::uintptr_t visual_of(std::uint64_t entity) {
 // TimelineSetActorVisibleForPlayer entry (game thread): a scene hides one body and shows another for a player.
 std::uintptr_t on_set_actor_visible(std::uintptr_t system, std::uintptr_t ctx, std::uintptr_t handle_ptr,
                                     std::uintptr_t timeline, std::uintptr_t show_arg, std::uintptr_t player_arg) {
+    // Nothing to follow before a character is controlled (the loading screen's scenes: the 2026-10-23 run faulted
+    // inside the dummy lookup there, with the global world not ready); the scene's own world otherwise (agent U).
+    const std::uint64_t controlled_now = controlled_raw();
+    if (!controlled_now) {
+        return g_swap_hook.call<std::uintptr_t>(system, ctx, handle_ptr, timeline, show_arg, player_arg);
+    }
     std::uint64_t handle = 0;
     mem::try_copy(&handle, handle_ptr, sizeof(handle));
     const bool show = (show_arg & 0xFF) != 0;
-    const std::uintptr_t dummy = by_handle_raw(kPreviewDummyRva, handle);
+    std::uintptr_t world = 0;
+    mem::try_copy(&world, ctx, sizeof(world));
+    const std::uintptr_t dummy = by_handle_raw(kPreviewDummyRva, handle, world);
     std::uint64_t stands_for = 0;
     if (dummy) {
         mem::try_copy(&stands_for, dummy + kDummyStandsFor, sizeof(stands_for));
     }
-    const std::uint64_t controlled = controlled_raw();
+    const std::uint64_t controlled = controlled_now;
     const std::uint64_t followed = g_dummy.load(std::memory_order_relaxed);
     const char* change = nullptr;
     if (dummy && show && controlled && stands_for == controlled) {

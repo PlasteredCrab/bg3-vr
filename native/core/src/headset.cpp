@@ -62,7 +62,8 @@ float g_screen_width_m = 3.0f;
 float g_screen_distance_m = 2.5f;
 std::atomic<int> g_lag{-1}; // -1: find it in the RenderFrame
 bool g_desktop_vsync = false; // false: Present doesn't wait for the monitor while the headset runs
-bool g_async_wait = true; // [xr] async_wait: xrWaitFrame on its own thread (the game's render thread never waits for the headset)
+double g_head_prediction_s = 0.0; // [xr] head_prediction_ms
+bool g_async_wait = false; // [xr] async_wait: xrWaitFrame on its own thread (off: on 2026-10-23 it gained nothing, SteamVR's wait returned at once, and its frame timing went stale)
 
 // Everything below runs on the game's presenting thread, except install(), set_lag() and report().
 bool g_failed = false;
@@ -677,9 +678,41 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
     }
     last_present = present_now;
     std::vector<XrView> views;
+    // The head pose as it is now, not extrapolated ([xr] head_prediction_ms, default 0): the camera moves only as the
+    // head did; the compositor reprojects each image from the pose it was rendered with to the head at display time.
+    // (SteamVR stretches the frame's display period when it throttles a slow game: 55.6 ms on 2026-10-23, which made
+    // the old prediction 84 ms.)
     const XrTime xr_now = g_session->now();
-    const XrTime when = xr_now ? xr_now + static_cast<XrTime>(frame_s * 1e9) + frame.state.predictedDisplayPeriod
-                               : frame.state.predictedDisplayTime + frame.state.predictedDisplayPeriod;
+    const double ahead_s = g_head_prediction_s;
+    const XrTime when = xr_now ? xr_now + static_cast<XrTime>(ahead_s * 1e9) : frame.state.predictedDisplayTime;
+    {
+        // Every 5 s: the time between Presents (min / average / max, how many over 50 ms) and the display period
+        // SteamVR asks for (it stretches it when it throttles the game), to measure judder in one run.
+        static std::chrono::steady_clock::time_point window_start = present_now;
+        static double min_s = 1e9, max_s = 0.0, sum_s = 0.0, period_max = 0.0;
+        static std::uint64_t frames = 0, slow = 0;
+        static auto previous = present_now;
+        const double interval = std::chrono::duration<double>(present_now - previous).count();
+        previous = present_now;
+        if (interval > 0.0 && interval < 1.0) {
+            min_s = std::min(min_s, interval);
+            max_s = std::max(max_s, interval);
+            sum_s += interval;
+            ++frames;
+            slow += interval > 0.05 ? 1 : 0;
+        }
+        period_max = std::max(period_max, static_cast<double>(frame.state.predictedDisplayPeriod) * 1e-9);
+        if (std::chrono::duration<double>(present_now - window_start).count() >= 5.0 && frames) {
+            log::info("xr: frames: {} in 5 s, between Presents min {:.1f} / avg {:.1f} / max {:.1f} ms, {} over 50 ms; "
+                      "SteamVR display period up to {:.1f} ms",
+                      frames, min_s * 1000.0, sum_s / static_cast<double>(frames) * 1000.0, max_s * 1000.0, slow,
+                      period_max * 1000.0);
+            window_start = present_now;
+            min_s = 1e9;
+            max_s = sum_s = period_max = 0.0;
+            frames = slow = 0;
+        }
+    }
     if (static std::uint64_t predictions = 0; ++predictions == 120 || predictions % 3600 == 0) {
         log::info("xr: head pose predicted {:.1f} ms ahead (game frame {:.1f} ms, display period {:.1f} ms, {})",
                   xr_now ? static_cast<double>(when - xr_now) * 1e-6 : -1.0, frame_s * 1000.0,
@@ -1968,7 +2001,8 @@ void install(const Config& config) {
         g_screen_distance_m = std::strtof(distance.c_str(), nullptr);
     }
     g_desktop_vsync = config.get_bool("xr", "desktop_vsync", false);
-    g_async_wait = config.get_bool("xr", "async_wait", true);
+    g_async_wait = config.get_bool("xr", "async_wait", false);
+    g_head_prediction_s = std::clamp(static_cast<double>(config.get_int("xr", "head_prediction_ms", 0)), 0.0, 60.0) / 1000.0;
     g_input_wanted = config.get_bool("xr", "input", true);
     g_input_haptics = config.get_bool("xr", "input_haptics", true);
     g_autostart = config.get_bool("vr", "autostart", true);
