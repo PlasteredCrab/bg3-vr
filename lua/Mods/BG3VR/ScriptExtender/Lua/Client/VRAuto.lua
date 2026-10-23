@@ -90,6 +90,13 @@ local function HandleOne(what)
         end
         return
     end
+    local stow, stowHand = string.match(what, "^stow (0x%x+) ?(%S*)")
+    if stow then
+        if auto.started and BG3VR.OnStowItem then
+            BG3VR.OnStowItem(stow, stowHand)
+        end
+        return
+    end
     if what == "view_third" or what == "view_first" then
         auto.third = what == "view_third"
         if auto.started then

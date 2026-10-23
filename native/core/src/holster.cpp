@@ -169,6 +169,10 @@ void install(const Config& config) {
               -g_settings.hip[1], g_settings.back_radius);
 }
 
+Zone zone_of(const vr::RigidPose& head, const vr::Vec3& hand) {
+    return classify(g_settings, head, hand);
+}
+
 bool enabled() {
     return g_enabled.load(std::memory_order_relaxed);
 }

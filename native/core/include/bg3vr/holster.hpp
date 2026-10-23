@@ -78,6 +78,8 @@ private:
 };
 
 void install(const Config& config);
+// The zone a hand is in with the current settings (tracked space), whether or not holsters are on.
+Zone zone_of(const vr::RigidPose& head, const vr::Vec3& hand);
 bool enabled();
 void set_enabled(bool on); // the VR menu; [holster] enabled at start-up
 // Forget grips and zones (holsters skipped: menu open, third person, VR off), so resuming fires nothing stale.

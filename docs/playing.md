@@ -19,7 +19,8 @@ Status: what has been seen working in a headset and what is only built so far is
    - first-person view at your character's eye height;
    - stereo three seconds later;
    - your own head hidden;
-   - the game UI on the back of your left wrist (left grip + left stick click, or the VR menu's View page, moves it in front of you and back);
+   - the game UI hidden: X shows it in front of you (and hides it again); it comes up by itself in combat and in
+     conversations (VR menu, Game interface: always in front of you, or on your wrist, instead);
    - hand pointing, thumbstick walking and the controller bindings.
 
    After a loading screen it starts again, and switching characters moves it to the new one.
@@ -29,7 +30,7 @@ Status: what has been seen working in a headset and what is only built so far is
 | Control | Does |
 |---|---|
 | Right trigger | Click: move, talk, loot or attack wherever the right hand points; press UI buttons on the panel |
-| Right grip | Right-click (context menu); picks things up instead when grabbing is on (off) |
+| Right grip | Right-click (context menu); while the gravity gloves highlight an item, grabs it instead |
 | A | Inventory |
 | B | Cancel / back |
 | Right stick left/right | Snap turn 30 degrees (or smooth, `[vr] turn = smooth`) |
@@ -37,10 +38,10 @@ Status: what has been seen working in a headset and what is only built so far is
 | Hold right stick click | Recentre: you face forward again, and the UI panel comes in front of you |
 | Left stick | Walk where you look (half push strolls, full push runs) |
 | Left stick click | Open / close the VR menu |
-| Left grip + left stick click | Move the UI panel to your left wrist and back |
+| Left grip + left stick click | Map |
 | Touch the UI panel with the right controller's tip | Click there (push in to press, pull back to release); handy on the wrist panel |
 | Left trigger (hold) | Highlight items |
-| X | Map |
+| X | Show / hide the game UI (in front of you) |
 | Y | Switch between first person and third person (the game's own camera on a big screen in front of you; the laser works as the mouse there) |
 | Menu (☰) | The VR menu too, where the runtime passes the button on (a Quest 2 through SteamVR keeps it for its own menu) |
 
@@ -72,6 +73,23 @@ and A / B in conversations".
 The character in the inventory, character sheet, party and trade screens is shown in 3D: each eye looks through the
 picture's place on the UI panel as through a window, so the character stands behind the panel with real depth.
 VR menu Scale page: "3D characters in menus" (off brings back the flat picture).
+
+## Gravity gloves (items)
+
+Point either hand at an item up to 6 m away. A small cone around the ray helps with small things. The item the hand
+finds is highlighted: a tick in that hand, and the right hand's laser turns cyan.
+
+- Squeeze the grip. Close by (1.5 m), the item is in your hand at once. Further away, the hand locks on: a firmer pulse,
+  and the laser turns amber.
+- Flick the hand back toward you. The item flies on an arc and steers into your hand over the last metre. Keep the grip
+  closed, or close it as the item arrives, to catch it.
+- Hold it and turn your hand to look at it from every side.
+- Let go to drop it where it is. Let go mid-swing to throw it.
+- Let go over a shoulder or behind your back to put it in your inventory.
+
+A grip only grabs when something is highlighted, held or flying to that hand; otherwise it does what it is bound to
+(the right grip right-clicks). On / off: VR menu Body page, Gravity gloves. Settings: `[grab]` (`reach`,
+`pull_range`, `catch_radius`, `throw_min_speed`).
 
 ## Dead bodies
 
@@ -143,12 +161,12 @@ open your buttons and sticks don't reach the game. Changes take effect at once a
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
 | `[vr] eye_offset` | 0 | eye height above the character's eyes, metres |
-| `[ui] placement`, `width`, `distance`, `wrist_width` | wrist, 1.1, 1.0, 0.8 | the UI panel (`world` puts it in front of you; left grip + left stick click switches) |
+| `[ui] placement`, `width`, `distance`, `wrist_width` | hidden, 1.1, 1.0, 0.8 | the UI panel: `hidden` until X shows it (and in combat and conversations), `world` always in front of you, `wrist` on the back of your wrist |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |
 | `[ik] arms` | true | arms and the held weapon follow your hands |
-| `[grab] probe` / `hold` | false (off) | pick items up with the grips; with `hold`, throw by letting go mid-swing and pull far items by flicking the hand back while aiming and holding the grip |
+| `[grab] probe` / `hold` | false / true | the gravity gloves (see above); `probe` only logs what a grip would grab |
 | `[combat] physical` | false (off) | swing the right hand through a character to make your normal weapon attack (the game rolls) |
 | `[vr] camera_anchor` | body | `body`: the view moves only with your head (and the character walking); `head` / `head_exact`: at the character's eyes, smoothed / as animated |
 | `[xr] head_prediction_ms` | 0 | extrapolate the head pose (0: the pose as it is now) |

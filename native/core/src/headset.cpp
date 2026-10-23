@@ -938,7 +938,7 @@ void update_input(const xr::Frame& frame) {
         holster::Hand body_hands[2];
         for (std::size_t h = 0; h < 2; ++h) {
             body_hands[h] = {now[h].tracked, now[h].grip.position,
-                             (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f};
+                             (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f && !hold::holding(h)};
         }
         holsters = holster::on_frame(centre_view(frame.views).pose, body_hands);
         for (std::size_t h = 0; h < 2; ++h) {
@@ -973,9 +973,18 @@ void update_input(const xr::Frame& frame) {
         }
         corpse::set_hand(h, grab, now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt,
                          aim_world, world_velocity);
+        // Over a shoulder or behind the back (the holster zones): letting go of a held item there stows it.
+        bool in_pack = false;
+        if (now[h].tracked && frame.views.size() == 2) {
+            const holster::Zone zone = holster::zone_of(centre_view(frame.views).pose, now[h].grip.position);
+            in_pack = zone == holster::Zone::ShoulderRight || zone == holster::Zone::ShoulderLeft || zone == holster::Zone::Back;
+        }
         hold::set_hand(h, grab && !corpse::holding(h),
                        now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world,
-                       static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
+                       static_cast<double>(frame.state.predictedDisplayTime) * 1e-9, in_pack);
+        if (const auto buzz = hold::take_haptic(h)) {
+            g_session->haptic(h, buzz->amplitude, buzz->seconds);
+        }
     }
     // The right hand's swing for physical melee.
     melee::set_hand(now[pointer_hand()].aim_valid && !g_menu_is_open.load(std::memory_order_relaxed)
@@ -1844,6 +1853,19 @@ blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeF
     overlay.beam_style = style;
     overlay.beam_time = g_beam_time;
     overlay.beam_end = hit ? 0.012f : 0.0f;
+    // Gloves (hold.cpp): an item the hand can pull lights the laser up (cyan), a locked-on one turns it amber, with a
+    // bigger dot where it ends.
+    if (!menu_open) {
+        const hold::Aim aim = hold::aim_state(pointer_hand());
+        if (aim == hold::Aim::Highlight || aim == hold::Aim::Locked) {
+            const bool locked = aim == hold::Aim::Locked;
+            overlay.beam_rgba[0] = locked ? 1.0f : 0.25f;
+            overlay.beam_rgba[1] = locked ? 0.55f : 0.9f;
+            overlay.beam_rgba[2] = locked ? 0.1f : 1.0f;
+            overlay.beam_rgba[3] = std::max(overlay.beam_rgba[3], 0.85f);
+            overlay.beam_end = locked ? 0.024f : 0.018f;
+        }
+    }
     ++g_beam_frames;
     return overlay;
 }

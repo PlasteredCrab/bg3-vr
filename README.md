@@ -29,6 +29,7 @@ Legend: ✅ seen working in a headset run · 🧪 built, not yet tried in the he
 | Camera locked to your character's eyes, also through cutscene teleports and scene stand-ins | 🧪 |
 | Render resolution from the headset (80% by default), DLSS Balanced while in VR | ✅ resolution, 🧪 DLSS profile |
 | Your own head hidden from your view | ✅ |
+| Your shadow keeps its head | 🧪 |
 | Third-person toggle: the game's camera on a big screen in front of you, the laser as the mouse | ✅ |
 | Comfort vignette, snap or smooth turning, recentre | ✅ turning, 🧪 the rest |
 | Characters in UI screens (inventory, character sheet, trade) in 3D | 🧪 |
@@ -41,11 +42,11 @@ Legend: ✅ seen working in a headset run · 🧪 built, not yet tried in the he
 | Controllers: bindings for every button, combos, haptics | ✅ |
 | Arms follow your hands (IK), weapon in your hand, natural elbows, shoulders, finger curl | ✅ arms, 🧪 elbows / shoulders / fingers |
 | Aiming laser (styles, colour, opacity), stops on the UI and the menu | ✅ laser, 🧪 stopping on panels |
-| Game UI on the back of your wrist or in front of you; point and pull the trigger, or touch it | ✅ |
+| Game UI hidden until X shows it in front of you; up by itself in combat and conversations (or always in front, or on the wrist) | 🧪 hidden by default |
 | Holsters: draw and stow weapons over the shoulders and at the hips; torch at the chest; bag behind the back | ✅ draw, 🧪 stow and the rest |
 | Hand tracking (point, pinch, close the hand to click or grab) | 🧪 |
 | Grab and throw dead bodies (the game's ragdolls) | 🧪 (within ~1 m of where they fell for now) |
-| Pick up and throw items, gravity-glove pull | 🧪 (off by default) |
+| Gravity gloves: point at an item to highlight it, grip and flick to pull it into your hand, hold, throw, stow over the shoulder | 🧪 (on by default) |
 | Physics-driven (active ragdoll) bodies | 🗓️ |
 
 ### Playing
@@ -87,20 +88,22 @@ The analysis behind them is in [re-local/ghidra/agents/](re-local/ghidra/agents/
 | Control | Does |
 |---|---|
 | Right trigger | Click: move, talk, loot, attack where the right hand points; press UI buttons |
-| Right grip | Right-click (context menu) |
+| Right grip | Right-click (context menu); with an item highlighted it grabs instead (gravity gloves) |
 | A / B | Inventory / cancel (back) |
-| X / Y | Map / first ↔ third person |
+| X / Y | Show / hide the game UI / first ↔ third person |
 | Left stick | Walk where you look |
 | Right stick left / right | Snap turn (or smooth) |
 | Right stick up / down | Scroll |
 | Hold right stick click | Recentre |
 | **Left stick click** | **Open / close the VR menu** |
-| Left grip + left stick click | Game UI to your wrist and back |
+| Left grip + left stick click | Map |
 | Left trigger (hold) | Highlight items |
 | Left grip + A / B / X / Y | Character sheet / journal / spellbook / party |
 | Left grip + right trigger / right stick click | End turn / sneak |
 | Reach over a shoulder or to a hip, squeeze, pull | Draw a weapon (let go back at the holster to stow) |
 | Swing at the enemy you look at | Melee attack (the game rolls) |
+| Point at an item, squeeze a grip | Take it (close by) or lock on (far, the laser turns amber); flick the hand back to pull it |
+| Let go of a held item | Drop it; mid-swing throws it; over a shoulder or behind your back puts it in the inventory |
 | **In the VR menu** | sticks up/down choose, left/right change, A change / press, B close; or point and pull the trigger |
 | **In a conversation** | sticks up/down choose an answer, A picks, B skips the line; or point and pull the trigger |
 

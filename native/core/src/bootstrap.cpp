@@ -250,7 +250,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         holster::set_enabled(g_config.get_bool("holster", "enabled", true));
     }
     if (changed("grab.")) {
-        hold::set_hold(g_config.get_bool("grab", "hold", false));
+        hold::set_hold(g_config.get_bool("grab", "hold", true));
         corpse::set_enabled(g_config.get_bool("grab", "bodies", true));
     }
     if (changed("combat.")) {

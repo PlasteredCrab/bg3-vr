@@ -413,7 +413,17 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         l.active && l.primary, l.active && l.secondary, (l.active && l.menu) || (r.active && r.menu), l.active && l.stick_click,
         r.active && analog(r.trigger, g_down[RightTrigger]), r.active && analog(r.squeeze, g_down[RightGrip]),
         r.active && r.primary, r.active && r.secondary, r.active && r.stick_click};
-    const bool grips_grab = hold::enabled(); // the grips pick things up instead
+    // A grip pressed while the gloves want it (something highlighted, held or arriving) is theirs until released;
+    // otherwise it keeps its binding. Without hold (probe only) the grips are the grab probe's.
+    static std::array<bool, 2> s_grip_to_gloves{};
+    for (int h = 0; h < 2; ++h) {
+        const int c = h == 0 ? LeftGrip : RightGrip;
+        if (now[c] && !g_down[c]) {
+            s_grip_to_gloves[h] = hold::enabled() && (!hold::hold_on() || hold::wants_grip(static_cast<std::size_t>(h)));
+        } else if (!now[c]) {
+            s_grip_to_gloves[h] = false;
+        }
+    }
     const bool menu_open = g_menu_open.load(std::memory_order_relaxed);
     if (menu_open && std::any_of(g_injected.begin(), g_injected.end(), [](bool b) { return b; })) {
         release_all(false);
@@ -543,7 +553,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         }
         const bool holster_grip = grip && (c == LeftGrip ? l.grip_taken : r.grip_taken);
         if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !b.menu &&
-            !((grips_grab || holster_grip) && grip && !g_injected[c])) {
+            !((s_grip_to_gloves[c == LeftGrip ? 0 : 1] || holster_grip) && grip && !g_injected[c])) {
             if (inject(b.device, b.id, now[c])) {
                 g_injected[c] = now[c];
                 if (now[c]) {

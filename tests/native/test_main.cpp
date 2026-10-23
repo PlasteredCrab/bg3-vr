@@ -1047,14 +1047,14 @@ void test_vrmenu() {
     Menu menu;
     CHECK(menu.value_of("Turning") == "Snap");
     CHECK(menu.value_of("Snap angle") == "30°");
-    CHECK(menu.value_of("Grab objects") == "Off");
+    CHECK(menu.value_of("Gravity gloves (grab and pull items)") == "On");
     CHECK(menu.value_of("Arms follow controllers") == "On");
     Config config;
-    config.load_string("[vr]\nturn = smooth\nsnap_degrees = 45\neye_offset = 0.1\n[grab]\nhold = yes\n");
+    config.load_string("[vr]\nturn = smooth\nsnap_degrees = 45\neye_offset = 0.1\n[grab]\nhold = no\n");
     menu.load(config);
     CHECK(menu.value_of("Turning") == "Smooth");
     CHECK(menu.value_of("Snap angle") == "45°");
-    CHECK(menu.value_of("Grab objects") == "On");
+    CHECK(menu.value_of("Gravity gloves (grab and pull items)") == "Off");
     CHECK(menu.value_of("Eye height") == "+10 cm");
 
     const auto centre = [&](const std::string& label) {

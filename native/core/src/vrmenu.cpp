@@ -165,7 +165,7 @@ Menu::Menu() {
             {"Straight", "0"}, {"+15°", "15"}, {"+30°", "30"}, {"+45°", "45"}, {"+60°", "60"}},
            4);
     on_off("Point to select", "vr.hand_pointing", true);
-    on_off("Grab objects", "grab.hold", false);
+    on_off("Gravity gloves (grab and pull items)", "grab.hold", true);
     on_off("Grab bodies", "grab.bodies", true);
     on_off("Holsters", "holster.enabled", true);
     choice("Swing attacks", "combat.swing",
@@ -531,9 +531,10 @@ std::vector<Menu::Lesson> Menu::lessons() const {
     }
     if (setting("grab.hold") == "true") {
         out.push_back({"Grabbing",
-                       std::format("Reach for an item and {} to pick it up; let go to put it down, or let go mid-swing "
-                                   "to throw it. Aim at something far away, {}, and flick your hand back to pull it to "
-                                   "you.", squeeze, squeeze),
+                       std::format("Point at an item: it lights up (a tick in your hand, the laser turns blue). {} "
+                                   "to take it, or, further away, to lock on (amber) and flick your hand back to pull "
+                                   "it into your hand. Let go to drop it, mid-swing to throw it, over your shoulder to "
+                                   "put it in your bag.", capitalised(squeeze)),
                        "grab"});
     }
     if (setting("combat.swing") == "gaze") {

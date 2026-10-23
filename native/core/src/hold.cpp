@@ -1,5 +1,6 @@
 #include "bg3vr/hold.hpp"
 
+#include "bg3vr/bridge.hpp"
 #include "bg3vr/corpse.hpp"
 #include "bg3vr/grab_math.hpp"
 #include "bg3vr/health.hpp"
@@ -83,6 +84,7 @@ struct HandInput {
     std::optional<vr::RigidPose> grip_pose;
     std::optional<vr::RigidPose> aim_pose;
     double time = 0.0; // sample time, seconds
+    bool in_pack = false; // over a shoulder or behind the back
 };
 std::mutex g_mutex;
 std::array<HandInput, 2> g_input{};
@@ -127,6 +129,44 @@ std::uint64_t g_throws = 0;
 std::uint64_t g_pulls = 0;
 std::uint64_t g_catches = 0;
 std::atomic<bool> g_forget{false}; // set by forget() on any thread, handled on the game thread
+
+// Gloves: the item each hand's aim highlights (game thread), published for the laser and the grip binding.
+struct Highlight {
+    std::uintptr_t item = 0;
+    std::uint64_t entity = 0;
+    float distance = 0.0f;
+    double seen = 0.0; // steady-clock seconds of the last ray that found it
+};
+std::array<std::optional<Highlight>, 2> g_highlight{};
+std::array<std::atomic<int>, 2> g_aim_state{};
+std::array<std::atomic<bool>, 2> g_holding{};
+std::array<std::atomic<bool>, 2> g_incoming{}; // an item is flying to this hand
+std::array<int, 2> g_cone_step{};
+std::uint64_t g_scan_frame = 0;
+std::uint64_t g_highlights = 0;
+std::uint64_t g_locks = 0;
+std::uint64_t g_stows = 0;
+constexpr double kHighlightHold = 0.25;   // seconds a highlight survives without a ray finding it (no flicker)
+constexpr float kConeDegrees = 4.0f;      // aim assist: the rays around the centre one
+constexpr int kConeRays = 6;
+constexpr float kAimSkip = 0.25f;         // metres ahead of the hand before the ray starts (the player's own body)
+constexpr float kHomingRange = 1.2f;      // a pulled item steers into the hand inside this distance
+struct HapticSlot {
+    std::atomic<bool> pending{false};
+    std::atomic<float> amplitude{0.0f};
+    std::atomic<float> seconds{0.0f};
+};
+std::array<HapticSlot, 2> g_haptic;
+
+double seconds_now() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void buzz(std::size_t h, float amplitude, float seconds) {
+    g_haptic[h].amplitude.store(amplitude, std::memory_order_relaxed);
+    g_haptic[h].seconds.store(seconds, std::memory_order_relaxed);
+    g_haptic[h].pending.store(true, std::memory_order_release);
+}
 std::uint64_t g_misses = 0;
 std::chrono::steady_clock::time_point g_last_frame{};
 
@@ -193,6 +233,78 @@ struct Resolved {
     float distance = 0.0f;
 };
 
+// The client item an entity handle from a ray hit belongs to (0 when it isn't one).
+std::uintptr_t item_of(std::uint64_t entity) {
+    if (entity == rayprobe::kNullEntity) {
+        return 0;
+    }
+    std::uintptr_t helper = 0;
+    mem::try_copy(&helper, g_module.base + kEntityHelper, sizeof(helper));
+    const std::uintptr_t item = helper ? fn<EntityToItemFn>(kEntityToItem)(helper, entity) : 0;
+    return item && still_item(item, entity) ? item : 0;
+}
+
+bool busy_item(std::uint64_t entity) {
+    for (const auto& held : g_held) {
+        if (held && held->entity == entity) {
+            return true;
+        }
+    }
+    for (const Flight& f : g_flights) {
+        if (f.entity == entity) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// One aim ray of the gloves: the item it hits first within the pull range, if any.
+std::optional<Highlight> aim_ray(const vr::RigidPose& aim, const vr::Vec3& local_dir, float range) {
+    const vr::Vec3 dir = vr::rotate(aim.orientation, local_dir);
+    const vr::Vec3 from{aim.position[0] + dir[0] * kAimSkip, aim.position[1] + dir[1] * kAimSkip,
+                        aim.position[2] + dir[2] * kAimSkip};
+    const vr::Vec3 to{aim.position[0] + dir[0] * range, aim.position[1] + dir[1] * range, aim.position[2] + dir[2] * range};
+    const auto hit = rayprobe::raycast(from, to);
+    if (!hit) {
+        return std::nullopt;
+    }
+    const std::uintptr_t item = item_of(hit->entity);
+    if (!item || busy_item(hit->entity)) {
+        return std::nullopt;
+    }
+    return Highlight{item, hit->entity, hit->distance + kAimSkip, 0.0};
+}
+
+// Gloves, one hand per frame: the centre ray and one of the cone rays around it (all six every 6 scans of a hand).
+void scan(std::size_t h, const HandInput& input) {
+    const double now = seconds_now();
+    std::optional<Highlight> found = aim_ray(*input.aim_pose, {0.0f, 0.0f, 1.0f}, g_pull_range);
+    if (!found) {
+        const float a = kConeDegrees * 3.14159265f / 180.0f;
+        const float phi = 2.0f * 3.14159265f * static_cast<float>(g_cone_step[h]) / static_cast<float>(kConeRays);
+        g_cone_step[h] = (g_cone_step[h] + 1) % kConeRays;
+        found = aim_ray(*input.aim_pose, {std::sin(a) * std::cos(phi), std::sin(a) * std::sin(phi), std::cos(a)}, g_pull_range);
+    }
+    std::optional<Highlight>& current = g_highlight[h];
+    if (found) {
+        found->seen = now;
+        const bool is_new = !current || current->entity != found->entity;
+        current = found;
+        if (is_new) {
+            ++g_highlights;
+            buzz(h, 0.12f, 0.015f);
+            const auto pose = item_pose(found->item);
+            log::info("gloves: {} hand highlights item 0x{:X} (entity 0x{:016X}) {:.2f} m away{}", hand_name(h), found->item,
+                      found->entity, found->distance,
+                      pose ? std::format(" at ({:.2f}, {:.2f}, {:.2f})", pose->position[0], pose->position[1], pose->position[2])
+                           : std::string());
+        }
+    } else if (current && (now - current->seen > kHighlightHold || !still_item(current->item, current->entity))) {
+        log::info("gloves: {} hand no longer highlights item 0x{:X}", hand_name(h), current->item);
+        current.reset();
+    }
+}
+
 // The client item the hand's aim ray hits within `range`, logged.
 std::optional<Resolved> aim_at_item(std::size_t h, const HandInput& input, float range) {
     const vr::Vec3 dir = vr::rotate(input.aim_pose->orientation, {0.0f, 0.0f, 1.0f});
@@ -249,7 +361,45 @@ void press(std::size_t h, const HandInput& input) {
     if (!input.aim_pose || !input.grip_pose) {
         return;
     }
-    const float range = g_hold && g_pull ? std::max(g_reach, g_pull_range) : g_reach;
+    // Closing the hand on an item flying to it: caught.
+    for (std::size_t i = 0; g_hold && i < g_flights.size(); ++i) {
+        Flight& f = g_flights[i];
+        if (f.to_hand == static_cast<int>(h) && length(minus(f.position, input.grip_pose->position)) < g_catch_radius * 1.6f &&
+            still_item(f.item, f.entity)) {
+            take(h, f.item, f.entity, {f.position, f.rotation}, *input.grip_pose, true);
+            ++g_catches;
+            buzz(h, 0.8f, 0.08f);
+            log::info("gloves: {} hand caught item 0x{:X} by closing on it", hand_name(h), f.item);
+            g_flights.erase(g_flights.begin() + static_cast<std::ptrdiff_t>(i));
+            return;
+        }
+    }
+    // The highlighted item.
+    if (g_hold && g_highlight[h] && still_item(g_highlight[h]->item, g_highlight[h]->entity)) {
+        const Highlight target = *g_highlight[h];
+        g_highlight[h].reset();
+        const auto pose = item_pose(target.item);
+        if (!pose) {
+            log::warn("gloves: {} hand: the highlighted item 0x{:X} has no transform", hand_name(h), target.item);
+            return;
+        }
+        const float distance = length(minus(pose->position, input.grip_pose->position));
+        if (distance <= g_reach) {
+            take(h, target.item, target.entity, *pose, *input.grip_pose, false);
+            buzz(h, 0.5f, 0.04f);
+        } else if (g_pull) {
+            g_pull_target[h] = Target{target.item, target.entity};
+            ++g_locks;
+            buzz(h, 0.35f, 0.04f);
+            log::info("gloves: {} hand locks on item 0x{:X} {:.1f} m away; flick the hand back to pull it", hand_name(h),
+                      target.item, distance);
+        }
+        return;
+    }
+    if (g_hold) {
+        return; // nothing highlighted: the grip keeps its binding (vrplay asks wants_grip())
+    }
+    const float range = g_reach;
     const auto target = aim_at_item(h, input, range);
     if (!g_hold || !target) {
         return;
@@ -280,11 +430,22 @@ void hold_frame(std::size_t h, const HandInput& input) {
     ++held.frames;
 }
 
-void release(std::size_t h) {
+void release(std::size_t h, bool in_pack) {
     Held held = *g_held[h];
     g_held[h].reset();
     if (!still_item(held.item, held.entity)) {
         log::warn("grab: the released item 0x{:X} is gone", held.item);
+        return;
+    }
+    if (in_pack) {
+        // Over a shoulder or behind the back: into the inventory. The item settles where it is first (physics back on,
+        // pose to the server), then Lua asks the server to move it (Client/Holster.lua, Server/Holster.lua).
+        settle(held.item, std::format("let go over the shoulder by the {} hand: stowing", hand_name(h)).c_str());
+        bridge::push_request(std::format("stow 0x{:016X} {}", held.entity, hand_name(h)));
+        ++g_stows;
+        buzz(h, 0.5f, 0.05f);
+        log::info("gloves: {} hand stows item 0x{:X} (entity 0x{:016X}) in the inventory", hand_name(h), held.item,
+                  held.entity);
         return;
     }
     const auto velocity = g_trackers[h].velocity(0.1);
@@ -312,6 +473,7 @@ void pull_frame(std::size_t h, const HandInput& input) {
         return;
     }
     fn<ItemFn>(kSuspend)(target.item);
+    buzz(h, 0.6f, 0.06f);
     const vr::Vec3 hand = input.grip_pose->position;
     const grab::Launch launch = grab::launch_velocity(pose->position, {hand[0], hand[1] + 0.1f, hand[2]}, kGravity, 0.3f);
     g_flights.push_back({target.item, target.entity, pose->position, launch.velocity, pose->orientation, 0.0,
@@ -332,6 +494,22 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
             continue;
         }
         f.age += dt;
+        // A pulled item steers into its hand over the last stretch (the hand moved since the launch), keeping its speed
+        // (at least 3 m/s) so it arrives instead of hanging in front of the hand.
+        if (f.to_hand >= 0) {
+            const HandInput& hand = input[static_cast<std::size_t>(f.to_hand)];
+            if (hand.grip_pose) {
+                const vr::Vec3 to_hand = minus(hand.grip_pose->position, f.position);
+                const float d = length(to_hand);
+                if (d < kHomingRange && d > 1e-3f) {
+                    const float speed = std::max(3.0f, length(f.velocity));
+                    const float blend = std::clamp(1.0f - d / kHomingRange, 0.25f, 0.9f);
+                    for (std::size_t k = 0; k < 3; ++k) {
+                        f.velocity[k] = f.velocity[k] * (1.0f - blend) + to_hand[k] / d * speed * blend;
+                    }
+                }
+            }
+        }
         const vr::Vec3 from = f.position;
         vr::Vec3 to{from[0] + f.velocity[0] * static_cast<float>(dt), from[1] + f.velocity[1] * static_cast<float>(dt),
                     from[2] + f.velocity[2] * static_cast<float>(dt)};
@@ -344,6 +522,9 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
                 length(minus(to, hand.grip_pose->position)) < g_catch_radius) {
                 take(static_cast<std::size_t>(f.to_hand), f.item, f.entity, {to, f.rotation}, *hand.grip_pose, true);
                 ++g_catches;
+                buzz(static_cast<std::size_t>(f.to_hand), 0.8f, 0.08f);
+                log::info("gloves: {} hand caught item 0x{:X} after {:.2f} s in flight", hand_name(static_cast<std::size_t>(f.to_hand)),
+                          f.item, f.age);
                 g_flights.erase(g_flights.begin() + static_cast<std::ptrdiff_t>(i));
                 continue;
             }
@@ -392,7 +573,7 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
     g_probe = config.get_bool("grab", "probe", false);
-    g_hold = config.get_bool("grab", "hold", false);
+    g_hold = config.get_bool("grab", "hold", true);
     const auto number = [&](const char* key, float fallback, float lo, float hi) {
         const std::string v = config.get("grab", key);
         return v.empty() ? fallback : std::clamp(std::strtof(v.c_str(), nullptr), lo, hi);
@@ -423,6 +604,10 @@ bool enabled() {
     return g_ready && (g_probe || g_hold);
 }
 
+bool hold_on() {
+    return g_ready && g_hold.load(std::memory_order_relaxed);
+}
+
 void set_hold(bool on) {
     if (g_hold.exchange(on) != on) {
         if (!on) {
@@ -433,12 +618,32 @@ void set_hold(bool on) {
 }
 
 void set_hand(std::size_t hand, bool grip, std::optional<vr::RigidPose> grip_pose, std::optional<vr::RigidPose> aim_pose,
-              double time_s) {
+              double time_s, bool in_pack) {
     if (hand > 1) {
         return;
     }
     std::scoped_lock lock(g_mutex);
-    g_input[hand] = {grip, grip_pose, aim_pose, time_s};
+    g_input[hand] = {grip, grip_pose, aim_pose, time_s, in_pack};
+}
+
+Aim aim_state(std::size_t hand) {
+    return hand > 1 ? Aim::None : static_cast<Aim>(g_aim_state[hand].load(std::memory_order_relaxed));
+}
+
+bool wants_grip(std::size_t hand) {
+    return hand <= 1 && g_ready && g_hold.load(std::memory_order_relaxed) &&
+           (aim_state(hand) != Aim::None || g_incoming[hand].load(std::memory_order_relaxed));
+}
+
+bool holding(std::size_t hand) {
+    return hand <= 1 && g_holding[hand].load(std::memory_order_relaxed);
+}
+
+std::optional<Haptic> take_haptic(std::size_t hand) {
+    if (hand > 1 || !g_haptic[hand].pending.exchange(false, std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    return Haptic{g_haptic[hand].amplitude.load(std::memory_order_relaxed), g_haptic[hand].seconds.load(std::memory_order_relaxed)};
 }
 
 void on_frame() {
@@ -451,6 +656,9 @@ void on_frame() {
         }
         for (auto& target : g_pull_target) {
             target.reset();
+        }
+        for (auto& highlight : g_highlight) {
+            highlight.reset();
         }
         g_flights.clear();
         g_was_down = {};
@@ -472,6 +680,14 @@ void on_frame() {
         }
         // corpse::on_frame ran first this frame: a grip that took a body is that body's, not an item press.
         const bool down = input[h].grip && !corpse::holding(h);
+        // Gloves: a free, open hand looks for items (one hand per frame; a hand that closed this frame uses what it
+        // had highlighted).
+        const bool free_hand = !g_held[h] && !g_pull_target[h] && !down && !corpse::holding(h);
+        if (g_hold && g_pull && free_hand && input[h].aim_pose && g_scan_frame % 2 == h) {
+            scan(h, input[h]);
+        } else if (!free_hand && !down) {
+            g_highlight[h].reset();
+        }
         if (down && !g_was_down[h] && !g_held[h]) {
             press(h, input[h]);
         } else if (down && g_held[h]) {
@@ -480,24 +696,45 @@ void on_frame() {
             pull_frame(h, input[h]);
         } else if (!down) {
             if (g_held[h]) {
-                release(h);
+                release(h, input[h].in_pack);
+            }
+            if (g_pull_target[h]) {
+                log::info("gloves: {} hand let go of the lock on item 0x{:X} without pulling", hand_name(h), g_pull_target[h]->item);
             }
             g_pull_target[h].reset();
         }
         g_was_down[h] = down;
     }
+    ++g_scan_frame;
     if (dt > 0.0 && !g_flights.empty()) {
         flights_frame(dt, input);
+    }
+    // What the hands are doing, for the laser, the grip binding and the holsters (other threads).
+    for (std::size_t h = 0; h < 2; ++h) {
+        const Aim state = g_held[h] ? Aim::Holding : g_pull_target[h] ? Aim::Locked : g_highlight[h] ? Aim::Highlight : Aim::None;
+        g_aim_state[h].store(static_cast<int>(state), std::memory_order_relaxed);
+        g_holding[h].store(g_held[h].has_value(), std::memory_order_relaxed);
+        bool incoming = false;
+        for (const Flight& f : g_flights) {
+            incoming = incoming || f.to_hand == static_cast<int>(h);
+        }
+        g_incoming[h].store(incoming, std::memory_order_relaxed);
     }
 }
 
 void forget() {
     g_forget.store(true, std::memory_order_relaxed);
+    for (std::size_t h = 0; h < 2; ++h) {
+        g_aim_state[h].store(static_cast<int>(Aim::None), std::memory_order_relaxed);
+        g_holding[h].store(false, std::memory_order_relaxed);
+        g_incoming[h].store(false, std::memory_order_relaxed);
+    }
 }
 
 void report() {
-    log::info("grab: {}, {} grabs, {} throws, {} pulls ({} caught), {} misses",
-              enabled() ? (g_hold ? "hold" : "probe") : "off", g_grabs, g_throws, g_pulls, g_catches, g_misses);
+    log::info("grab: {}, {} grabs, {} throws, {} pulls ({} caught), {} misses; gloves: {} highlights, {} locks, {} stowed",
+              enabled() ? (g_hold ? "hold" : "probe") : "off", g_grabs, g_throws, g_pulls, g_catches, g_misses, g_highlights,
+              g_locks, g_stows);
 }
 
 } // namespace bg3vr::hold

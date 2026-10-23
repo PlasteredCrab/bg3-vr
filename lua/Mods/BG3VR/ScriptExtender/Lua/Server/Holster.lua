@@ -80,6 +80,16 @@ local function OnHolster(message, user)
         BG3VR.Log("holster: %s isn't a player character; ignored", character)
         return {}
     end
+    if kind == "item" then
+        local item = message.Item
+        if type(item) ~= "string" then
+            return {}
+        end
+        local ok, err = pcall(Osi.ToInventory, item, character, 1, 1, 0)
+        BG3VR.Log("gloves: %s stows %s: ToInventory %s%s", character, item, ok and "called" or "FAILED",
+            ok and "" or (": " .. tostring(err)))
+        return {}
+    end
     if holds == "light" then
         if kind ~= "grab" then
             return {}
