@@ -70,15 +70,22 @@ constexpr std::size_t kUpscalerBytes = 0x77; // .. +0x81
 constexpr std::size_t kUpscalerSize = 0x81 - 0x77 + 1;
 constexpr std::size_t kDof = 0x50;
 constexpr std::size_t kLensFlare = 0x59;
+// +0x48: the distant shadow cache (far sun shadows past the last cascade; 0x3E1A490 copies it to stage02+0x241B every
+// frame; agents AE / AK). Off in VR by default: the right eye's far haze and far shadows differed from the left eye's
+// through it (AK: the one input that fits "near equal, haze and far light gone from one distance out"), and it is a
+// whole extra shadow render per eye. [render] vr_distant_shadows.
+constexpr std::size_t kDistantShadows = 0x48;
 struct GameSettings {
     std::array<std::uint8_t, kUpscalerSize> upscaler{};
     std::int32_t dof = 0;
     std::uint8_t lens_flare = 0;
+    std::uint8_t distant_shadows = 0;
 };
 std::optional<GameSettings> g_saved;          // the user's values while the profile is applied (pump thread)
 std::atomic<int> g_dlss_mode{3};              // [render] vr_upscaler: 3 Balanced, 4 Performance, 0 = the game's setting
 std::atomic<bool> g_dof{false};               // [render] vr_depth_of_field
 std::atomic<bool> g_lens_flare{false};        // [render] vr_lens_flare
+std::atomic<bool> g_distant_shadows{false};   // [render] vr_distant_shadows
 
 void apply_profile(bool vr) {
     const auto settings = mem::read<std::uintptr_t>(g_module.base + kRenderSettings);
@@ -92,6 +99,7 @@ void apply_profile(bool vr) {
             std::memcpy(saved.upscaler.data(), s + kUpscalerBytes, kUpscalerSize);
             std::memcpy(&saved.dof, s + kDof, sizeof(saved.dof));
             saved.lens_flare = s[kLensFlare];
+            saved.distant_shadows = s[kDistantShadows];
             g_saved = saved;
         }
         const int mode = g_dlss_mode.load(std::memory_order_relaxed);
@@ -114,15 +122,18 @@ void apply_profile(bool vr) {
         const std::int32_t dof = g_dof.load(std::memory_order_relaxed) ? g_saved->dof : 0;
         std::memcpy(s + kDof, &dof, sizeof(dof));
         s[kLensFlare] = g_lens_flare.load(std::memory_order_relaxed) ? g_saved->lens_flare : 0;
-        log::info("resolution: VR graphics: {}, depth of field {}, lens flare {} (the game's own: upscaler {} mode {}, "
-                  "AntiAliasing {}, DOF {}, lens flare {}; put back when VR stops)",
+        s[kDistantShadows] = g_distant_shadows.load(std::memory_order_relaxed) ? g_saved->distant_shadows : 0;
+        log::info("resolution: VR graphics: {}, depth of field {}, lens flare {}, distant shadows {} (the game's own: upscaler "
+                  "{} mode {}, AntiAliasing {}, DOF {}, lens flare {}, distant shadows {}; put back when VR stops)",
                   mode == 4 ? "DLSS Performance" : mode == 3 ? "DLSS Balanced" : "the game's upscaling",
-                  dof ? "on" : "off", s[kLensFlare] ? "on" : "off", g_saved->upscaler[0], g_saved->upscaler[0x7A - 0x77],
-                  g_saved->upscaler[0x80 - 0x77], g_saved->dof, g_saved->lens_flare);
+                  dof ? "on" : "off", s[kLensFlare] ? "on" : "off", s[kDistantShadows] ? "on" : "off", g_saved->upscaler[0],
+                  g_saved->upscaler[0x7A - 0x77], g_saved->upscaler[0x80 - 0x77], g_saved->dof, g_saved->lens_flare,
+                  g_saved->distant_shadows);
     } else if (g_saved) {
         std::memcpy(s + kUpscalerBytes, g_saved->upscaler.data(), kUpscalerSize);
         std::memcpy(s + kDof, &g_saved->dof, sizeof(g_saved->dof));
         s[kLensFlare] = g_saved->lens_flare;
+        s[kDistantShadows] = g_saved->distant_shadows;
         g_saved.reset();
         log::info("resolution: the game's own graphics settings are back");
     }
@@ -267,7 +278,9 @@ void configure(const Config& config) {
     const int mode = upscaler == "dlss_performance" ? 4 : upscaler == "game" ? 0 : 3;
     const bool dof = config.get_bool("render", "vr_depth_of_field", false);
     const bool flare = config.get_bool("render", "vr_lens_flare", false);
-    if (g_dlss_mode.exchange(mode) != mode || g_dof.exchange(dof) != dof || g_lens_flare.exchange(flare) != flare) {
+    const bool distant = config.get_bool("render", "vr_distant_shadows", false);
+    if (g_dlss_mode.exchange(mode) != mode || g_dof.exchange(dof) != dof || g_lens_flare.exchange(flare) != flare ||
+        g_distant_shadows.exchange(distant) != distant) {
         g_pending = g_ready;
     }
     const std::string v = config.get("render", "vr_resolution", "80");
