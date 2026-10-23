@@ -18,6 +18,10 @@
 #include <cstring>
 #include <format>
 #include <mutex>
+
+#include <windows.h>
+
+#include <safetyhook.hpp>
 #include <span>
 #include <string>
 #include <vector>
@@ -139,6 +143,96 @@ struct Highlight {
 };
 std::array<std::optional<Highlight>, 2> g_highlight{};
 std::array<std::atomic<int>, 2> g_aim_state{};
+std::array<std::atomic<std::uint64_t>, 2> g_aim_entity{}; // the highlighted / locked item's handle, 0 for none
+
+// The game's own outline on the item the gloves aim at (agent AC 1-2): a request into ecl::OutlineSystem's list
+// (sys+0x90, pushed with 0x126F650) from inside the system's update 0x1A6DE40, so the unlocked list is only touched by
+// its consumer. Request: +0x00 entity, +0x08 r, +0x0C g, +0x10 b (linear), +0x14 u16 key, +0x18 u32 op (0 add or
+// recolour, 2 remove this key). Each hand has its own key, never 0 (0 removes every outline of the entity) and not a
+// player id, so the mouse hover's outline is left alone.
+constexpr std::uintptr_t kOutlineUpdateRva = 0x1A6DE40, kOutlinePushRva = 0x126F650;
+constexpr std::uint16_t kOutlineKey = 0x7FF0;
+bool g_outline = true; // [grab] outline
+safetyhook::InlineHook g_outline_hook;
+std::atomic<std::uint64_t> g_outline_pushes{0};
+struct OutlineRequest {
+    std::uint64_t entity = 0;
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+    std::uint16_t key = 0;
+    std::uint16_t pad = 0;
+    std::uint32_t op = 0;
+    std::uint32_t pad2 = 0;
+};
+static_assert(sizeof(OutlineRequest) == 0x20);
+using OutlinePushFn = void* (*)(std::uintptr_t list, const OutlineRequest* request);
+
+const char* hand_name(std::size_t h);
+
+void on_outline_update(std::uintptr_t sys, std::uintptr_t ctx) {
+    static std::array<std::uint64_t, 2> outlined{};
+    static DWORD logged_thread = 0;
+    if (g_outline) {
+        const auto push = reinterpret_cast<OutlinePushFn>(g_module.base + kOutlinePushRva);
+        for (std::size_t h = 0; h < 2; ++h) {
+            const std::uint64_t entity = g_aim_entity[h].load(std::memory_order_relaxed);
+            const auto state = static_cast<Aim>(g_aim_state[h].load(std::memory_order_relaxed));
+            const std::uint16_t key = static_cast<std::uint16_t>(kOutlineKey + h);
+            if (outlined[h] && outlined[h] != entity) {
+                OutlineRequest remove;
+                remove.entity = outlined[h];
+                remove.key = key;
+                remove.op = 2;
+                push(sys + 0x90, &remove);
+                outlined[h] = 0;
+            }
+            if (entity) {
+                // Cyan while highlighted, amber once the grip has locked on (the laser's colours).
+                OutlineRequest add;
+                add.entity = entity;
+                const bool locked = state == Aim::Locked;
+                add.r = locked ? 1.0f : 0.1f;
+                add.g = locked ? 0.45f : 0.75f;
+                add.b = locked ? 0.05f : 1.0f;
+                add.key = key;
+                add.op = 0;
+                push(sys + 0x90, &add);
+                if (outlined[h] != entity) {
+                    log::info("gloves: {} hand outlines entity 0x{:016X} (outline system 0x{:X}, thread {})", hand_name(h),
+                              entity, sys, GetCurrentThreadId());
+                }
+                outlined[h] = entity;
+                g_outline_pushes.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    if (logged_thread != GetCurrentThreadId()) {
+        logged_thread = GetCurrentThreadId();
+        log::info("gloves: the outline system updates on thread {}", logged_thread);
+    }
+    g_outline_hook.call<void>(sys, ctx);
+}
+
+void install_outline() {
+    std::array<std::uint8_t, 14> update{}, push{};
+    constexpr std::array<std::uint8_t, 14> update_expected{0x40, 0x53, 0x57, 0x48, 0x83, 0xEC, 0x38,
+                                                           0x48, 0x8B, 0x99, 0x90, 0x00, 0x00, 0x00};
+    constexpr std::array<std::uint8_t, 14> push_expected{0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48,
+                                                         0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x48};
+    if (!mem::try_copy(update.data(), g_module.base + kOutlineUpdateRva, update.size()) || update != update_expected ||
+        !mem::try_copy(push.data(), g_module.base + kOutlinePushRva, push.size()) || push != push_expected) {
+        log::warn("gloves: the outline system's update / request push don't match this build; no outline on aimed items");
+        return;
+    }
+    auto hook = safetyhook::InlineHook::create(reinterpret_cast<void*>(g_module.base + kOutlineUpdateRva),
+                                               reinterpret_cast<void*>(&on_outline_update));
+    if (!hook) {
+        log::warn("gloves: hooking the outline system failed; no outline on aimed items");
+        return;
+    }
+    g_outline_hook = std::move(*hook);
+    log::info("gloves: outline on aimed items through ecl::OutlineSystem (update exe+0x{:X} hooked, keys 0x{:X} / 0x{:X})",
+              kOutlineUpdateRva, kOutlineKey, kOutlineKey + 1);
+}
 std::array<std::atomic<bool>, 2> g_holding{};
 std::array<std::atomic<bool>, 2> g_incoming{}; // an item is flying to this hand
 std::array<int, 2> g_cone_step{};
@@ -216,6 +310,13 @@ void place(std::uintptr_t item, const vr::Vec3& position, const vr::Quat& rotati
 }
 
 // Physics back on and the final pose to the server (the end of every hold, throw and pull).
+// Every gloves move of an item that doesn't end in the inventory goes to the server as "moved": there an item owned by
+// someone outside the party gets the game's own crime for moving it (MoveForbiddenItem, the story's MovedBy rule;
+// agent AC 5.4), as dragging or throwing it with the mouse would.
+void report_move(std::uint64_t entity, const char* how) {
+    bridge::push_request(std::format("moved 0x{:016X} {}", entity, how));
+}
+
 void settle(std::uintptr_t item, const char* why) {
     fn<ItemFn>(kResume)(item);
     fn<SetFlagsFn>(kSetFlags)(item, kReportTransform);
@@ -470,6 +571,7 @@ void release(std::size_t h, bool in_pack) {
         return;
     }
     settle(held.item, std::format("released by the {} hand after {} frames", hand_name(h), held.frames).c_str());
+    report_move(held.entity, "released");
 }
 
 // A flick back toward the player while aiming at a far item: it flies on an arc into the hand.
@@ -572,6 +674,7 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
         place(f.item, f.position, f.rotation);
         if (done || f.age > kMaxFlight) {
             settle(f.item, done ? "landed" : "stopped (flight too long)");
+            report_move(f.entity, f.to_hand >= 0 ? "pulled" : "thrown");
             g_flights.erase(g_flights.begin() + static_cast<std::ptrdiff_t>(i));
             continue;
         }
@@ -595,9 +698,13 @@ void install(const Config& config, const ModuleInfo& module) {
     g_pull = config.get_bool("grab", "pull", true);
     g_pull_range = number("pull_range", 6.0f, 1.0f, 30.0f);
     g_catch_radius = number("catch_radius", 0.35f, 0.1f, 1.5f);
+    g_outline = config.get_bool("grab", "outline", true);
     // The functions are checked even while grabbing is off, so the VR menu can turn it on later.
     g_ready = check(kEntityToItem) && check(kSetTranslate) && check(kSetRotate) && check(kSuspend) && check(kResume) &&
               check(kSetFlags);
+    if (g_ready) {
+        install_outline();
+    }
     if (!g_probe && !g_hold) {
         health::set("grabbing", g_ready ? health::State::Off : health::State::Unavailable, g_ready ? "[grab] hold (or the VR menu)" : "a function didn't match");
         log::info("grab: off ([grab] probe / hold, or the VR menu){}", g_ready ? "" : "; UNAVAILABLE: a function didn't match");
@@ -724,6 +831,10 @@ void on_frame() {
     for (std::size_t h = 0; h < 2; ++h) {
         const Aim state = g_held[h] ? Aim::Holding : g_pull_target[h] ? Aim::Locked : g_highlight[h] ? Aim::Highlight : Aim::None;
         g_aim_state[h].store(static_cast<int>(state), std::memory_order_relaxed);
+        g_aim_entity[h].store(state == Aim::Locked      ? g_pull_target[h]->entity
+                              : state == Aim::Highlight ? g_highlight[h]->entity
+                                                        : 0,
+                              std::memory_order_relaxed);
         g_holding[h].store(g_held[h].has_value(), std::memory_order_relaxed);
         bool incoming = false;
         for (const Flight& f : g_flights) {
@@ -737,6 +848,7 @@ void forget() {
     g_forget.store(true, std::memory_order_relaxed);
     for (std::size_t h = 0; h < 2; ++h) {
         g_aim_state[h].store(static_cast<int>(Aim::None), std::memory_order_relaxed);
+        g_aim_entity[h].store(0, std::memory_order_relaxed);
         g_holding[h].store(false, std::memory_order_relaxed);
         g_incoming[h].store(false, std::memory_order_relaxed);
     }
@@ -746,6 +858,7 @@ void report() {
     log::info("grab: {}, {} grabs, {} throws, {} pulls ({} caught), {} misses; gloves: {} highlights, {} locks, {} stowed",
               enabled() ? (g_hold ? "hold" : "probe") : "off", g_grabs, g_throws, g_pulls, g_catches, g_misses, g_highlights,
               g_locks, g_stows);
+    log::info("gloves: {} outline requests pushed", g_outline_pushes.load(std::memory_order_relaxed));
 }
 
 } // namespace bg3vr::hold

@@ -33,12 +33,31 @@ end
 
 -- The gloves (native/core/src/hold.cpp) let go of an item over a shoulder or behind the back: into the inventory.
 -- The core sends the item's client entity handle (ecl::Item +0x10, the same handle the physics ray hit).
-function BG3VR.OnStowItem(hex, hand)
-    local character = _C()
-    local characterUuid = character and Uuid(character)
+local function ItemFromHex(hex)
     local ok, item = pcall(function()
         return Ext.Entity.Get(Ext.Utils.IntegerToHandle(math.tointeger(tonumber(hex))))
     end)
+    return ok, item
+end
+
+-- The gloves moved an item in the world (pulled, thrown, put down): the server decides whether that is the game's
+-- "moving someone else's item" crime.
+function BG3VR.OnMovedItem(hex, how)
+    local character = _C()
+    local characterUuid = character and Uuid(character)
+    local ok, item = ItemFromHex(hex)
+    local itemUuid = ok and item and Uuid(item) or nil
+    if not characterUuid or not itemUuid then
+        BG3VR.Warn("gloves: moved %s (%s): no %s", tostring(hex), tostring(how), characterUuid and "item UUID" or "controlled character")
+        return
+    end
+    SendToServer({ Character = characterUuid, Kind = "moved", Zone = "world", Hand = how, Item = itemUuid })
+end
+
+function BG3VR.OnStowItem(hex, hand)
+    local character = _C()
+    local characterUuid = character and Uuid(character)
+    local ok, item = ItemFromHex(hex)
     local itemUuid = ok and item and Uuid(item) or nil
     BG3VR.Log("gloves: stow %s (%s hand): client entity %s, item %s, character %s", tostring(hex), tostring(hand),
         ok and tostring(item) or ("lookup failed: " .. tostring(item)), tostring(itemUuid), tostring(characterUuid))

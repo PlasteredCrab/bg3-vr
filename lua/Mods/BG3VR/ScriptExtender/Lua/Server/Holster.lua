@@ -70,6 +70,125 @@ local function Sheathe(character, why)
     drawn[character] = nil
 end
 
+
+-- ---------------------------------------------------------------------------------------------------------- gloves
+-- Stowing and moving items with the gravity gloves (native/core/src/hold.cpp) under the game's own crime rules
+-- (agent AC 5, re-local/ghidra/agents/AC_item_outline.md; story Shared _CRIME_CrimeTriggers).
+--   Stow: ToInventory(item, character, -1, 0, 0): the whole stack, the owner kept. It goes through the same inventory
+--     system as a normal pick-up, which tags the item for the crime hook, whose Osiris event CharacterStoleItem makes
+--     the story queue the "Steal" crime. If that event doesn't come within a second for an item with an NPC owner,
+--     the story's own rule is replayed here.
+--   Moved: the game makes moving an NPC-owned item the crime "MoveForbiddenItem" (its MovedBy rule); the gloves move
+--     items on the client, so that rule is applied here, with the story's own query.
+
+local stows = {} -- item -> { character, owner, template, amount, value, x, y, z, left, stole }
+
+local function Owner(item)
+    local ok, owner = pcall(Osi.GetOwner, item)
+    if ok and owner and owner ~= "" and owner ~= "NULL_00000000-0000-0000-0000-000000000000" then
+        return owner
+    end
+    return nil
+end
+
+local function NpcOwner(owner)
+    if not owner then
+        return false
+    end
+    local ok, result = pcall(Osi.QRY_CrimeIsNPCOwner, owner)
+    return ok and result and true or false, ok and tostring(result) or ("failed: " .. tostring(result))
+end
+
+local function StowItem(character, item)
+    if type(item) ~= "string" then
+        return {}
+    end
+    local owner = Owner(item)
+    local npc, why = NpcOwner(owner)
+    local _, loot = pcall(function() return Ext.Entity.Get(item).OwnedAsLoot ~= nil end)
+    local _, template = pcall(Osi.GetTemplate, item)
+    local _, amount = pcall(Osi.GetStackAmount, item)
+    local _, value = pcall(Osi.ItemGetGoldValue, item)
+    local okPos, x, y, z = pcall(Osi.GetPosition, character)
+    BG3VR.Log("gloves: %s stows %s (owner %s, NPC owner %s [%s], OwnedAsLoot %s, template %s, amount %s, value %s)",
+        character, item, tostring(owner), tostring(npc), tostring(why), tostring(loot), tostring(template),
+        tostring(amount), tostring(value))
+    if npc then
+        stows[item] = { character = character, owner = owner, template = template, amount = amount or 1,
+            value = value or 0, x = okPos and x or 0, y = okPos and y or 0, z = okPos and z or 0, left = 1.0, stole = false }
+    end
+    local ok, err = pcall(Osi.ToInventory, item, character, -1, 0, 0)
+    BG3VR.Log("gloves: ToInventory(%s, %s, -1, 0, 0) %s", item, character, ok and "called" or ("FAILED: " .. tostring(err)))
+    return {}
+end
+
+local function MovedItem(character, item, how)
+    if type(item) ~= "string" then
+        return {}
+    end
+    local owner = Owner(item)
+    if not owner then
+        return {}
+    end
+    -- The story's own conditions (party member, an item, not something to sit on, not generic, an NPC owner).
+    local ok, err = pcall(Osi.QRY_GetMoveForbiddenItemInfo, character, item, owner)
+    local rows = {}
+    if ok then
+        local okRows, got = pcall(function() return Osi.DB_QRYRTN_GetMoveForbiddenItemInfo:Get(owner, nil) end)
+        rows = okRows and got or {}
+    end
+    local crime = rows[1] and rows[1][2] or nil
+    BG3VR.Log("gloves: %s moved %s (%s); owner %s; move crime %s%s", character, item, tostring(how), owner,
+        tostring(crime), ok and "" or (" (query failed: " .. tostring(err) .. ")"))
+    if crime then
+        local okCrime, errCrime = pcall(Osi.PROC_CharacterRegisterCrime, character, crime, item, owner, 0)
+        BG3VR.Log("gloves: crime %s registered for %s: %s", crime, character, okCrime and "yes" or ("FAILED: " .. tostring(errCrime)))
+    end
+    return {}
+end
+
+pcall(function()
+    Ext.Osiris.RegisterListener("CharacterStoleItem", 10, "after",
+        function(character, item, template, x, y, z, victim, container, amount, value)
+            local s = stows[item]
+            BG3VR.Log("gloves: CharacterStoleItem %s took %s from %s (container %s, amount %s, value %s)%s", tostring(character),
+                tostring(item), tostring(victim), tostring(container), tostring(amount), tostring(value),
+                s and " -- a gloves stow: the game's theft path ran" or "")
+            if s then
+                s.stole = true
+            end
+        end)
+end)
+
+-- A gloves stow of an NPC-owned item that the theft event didn't follow: the story's rule for CharacterStoleItem,
+-- replayed (party member, not from a container: crime "Steal" queued at the thief's position).
+local function StowTick(dt)
+    for item, s in pairs(stows) do
+        s.left = s.left - dt
+        if s.stole then
+            stows[item] = nil
+        elseif s.left <= 0 then
+            stows[item] = nil
+            local ok, err = pcall(function()
+                Osi.DB_CRIME_StealQueuedID(s.character, s.owner, s.x, s.y + 0.5, s.z, "Steal")
+                Osi.DB_CRIME_StealQueued(s.character, item, s.template, s.owner, s.amount, s.value)
+                Osi.PROC_CRIME_PreventMoveForbiddenItem(item)
+                Osi.TimerCancel("CRIME_ProcessThefts")
+                Osi.TimerLaunch("CRIME_ProcessThefts", 0)
+            end)
+            BG3VR.Log("gloves: no CharacterStoleItem for the stow of %s within a second; the story's Steal rule replayed: %s",
+                item, ok and "queued" or ("FAILED: " .. tostring(err)))
+        end
+    end
+end
+
+Ext.Events.Tick:Subscribe(function(e)
+    local ok, err = pcall(StowTick, (e and e.Time and e.Time.DeltaTime) or 0.016)
+    if not ok then
+        BG3VR.Warn("gloves: %s", tostring(err))
+    end
+end)
+
 -- Returns the reply for the client: { Handle, WeaponSet } when the core must switch the set first.
 local function OnHolster(message, user)
     local character, kind, zone, holds = message.Character, message.Kind, message.Zone, message.Holds
@@ -81,46 +200,10 @@ local function OnHolster(message, user)
         return {}
     end
     if kind == "item" then
-        local item = message.Item
-        if type(item) ~= "string" then
-            return {}
-        end
-        -- Stowing must go through the theft system like a normal pick-up. Until the mod uses the game's own pick-up
-        -- path (agent AC is decompiling it), an item that belongs to anyone outside the party isn't stowed at all;
-        -- it stays where it was let go. Both ownership fields are logged (which one the crime system reads is not
-        -- confirmed yet), and either one pointing outside the party refuses.
-        local function OwnerOf(field, key)
-            local ok, owner = pcall(function()
-                local entity = Ext.Entity.Get(item)
-                return entity[field] and entity[field][key] or nil
-            end)
-            return ok and owner or nil
-        end
-        local function Describe(owner)
-            if owner == nil then
-                return "none", false
-            end
-            local ok, info = pcall(function()
-                local uuid = owner.Uuid and owner.Uuid.EntityUuid or "?"
-                return { uuid = uuid, party = owner.PartyMember ~= nil or uuid == character }
-            end)
-            if not ok then
-                return "unreadable", true
-            end
-            return string.format("%s (%s)", tostring(info.uuid), info.party and "party" or "NOT party"), not info.party
-        end
-        local ownee, owneeForeign = Describe(OwnerOf("OwneeCurrent", "Ownee"))
-        local owned, ownedForeign = Describe(OwnerOf("InventoryIsOwned", "Owner"))
-        BG3VR.Log("gloves: %s wants to stow %s: OwneeCurrent.Ownee %s, InventoryIsOwned.Owner %s", character, item, ownee, owned)
-        if owneeForeign or ownedForeign then
-            BG3VR.Log("gloves: %s belongs to someone outside the party: not stowed (taking it must go through the "
-                .. "theft system, not in yet)", item)
-            return {}
-        end
-        local ok, err = pcall(Osi.ToInventory, item, character, 1, 1, 0)
-        BG3VR.Log("gloves: %s stows %s: ToInventory %s%s", character, item, ok and "called" or "FAILED",
-            ok and "" or (": " .. tostring(err)))
-        return {}
+        return StowItem(character, message.Item)
+    end
+    if kind == "moved" then
+        return MovedItem(character, message.Item, message.Hand)
     end
     if holds == "light" then
         if kind ~= "grab" then

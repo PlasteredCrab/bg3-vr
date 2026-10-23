@@ -77,7 +77,7 @@ VR menu Scale page: "3D characters in menus" (off brings back the flat picture).
 ## Gravity gloves (items)
 
 Point either hand at an item up to 6 m away. A small cone around the ray helps with small things. The item the hand
-finds is highlighted: a tick in that hand, and the right hand's laser turns cyan.
+finds is highlighted: it gets a cyan outline, a tick in that hand, and the right hand's laser turns cyan.
 
 - Squeeze the grip. Close by (1.5 m), the item is in your hand at once. Further away, the hand locks on: a firmer pulse,
   and the laser turns amber.
@@ -86,8 +86,9 @@ finds is highlighted: a tick in that hand, and the right hand's laser turns cyan
 - Hold it and turn your hand to look at it from every side.
 - Let go to drop it where it is. Let go mid-swing to throw it.
 - Let go over a shoulder or behind your back to put it in your inventory.
-  Items that belong to someone outside the party aren't stowed yet: taking them will go through the game's theft
-  system (being seen, the item marked stolen) once that path is in.
+  An item that belongs to someone else is stolen, exactly as picking it up with the mouse would be: the game's own
+  theft rules decide who saw it. Moving someone else's item (pulling, throwing, putting it down elsewhere) is the
+  game's "moving a forbidden item" crime, as dragging it with the mouse is.
 
 A grip only grabs when something is highlighted, held or flying to that hand; otherwise it does what it is bound to
 (the right grip right-clicks). On / off: VR menu Body page, Gravity gloves. Settings: `[grab]` (`reach`,

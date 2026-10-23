@@ -97,6 +97,13 @@ local function HandleOne(what)
         end
         return
     end
+    local moved, how = string.match(what, "^moved (0x%x+) ?(%S*)")
+    if moved then
+        if auto.started and BG3VR.OnMovedItem then
+            BG3VR.OnMovedItem(moved, how)
+        end
+        return
+    end
     if what == "view_third" or what == "view_first" then
         auto.third = what == "view_third"
         if auto.started then
