@@ -53,6 +53,8 @@ std::vector<Shown> shown();
 // Presenting thread: where the eyes are relative to doll `id`'s window on the panel (window axes: x right, y up,
 // z toward the viewer; metres) and how wide the window is (metres). nullopt: not shown.
 void set_window(std::uintptr_t id, std::optional<std::array<vr::Vec3, 2>> eyes_m, float width_m);
+// Presenting thread: turn doll `id` by `yaw_radians` and multiply its zoom by `zoom_factor` (kept within 1..3).
+void adjust(std::uintptr_t id, float yaw_radians, float zoom_factor);
 
 void report();
 

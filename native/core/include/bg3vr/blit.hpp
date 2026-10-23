@@ -50,6 +50,8 @@ public:
         // Up to four rectangles of the source (uv x0, y0, x1, y1) drawn opaque black: the flat UI character pictures
         // under the 3D ones (headset.cpp). x1 <= x0: unused.
         float fill[4][4] = {};
+        // fill[0] / fill[1]: the picture whose silhouette is filled (null: nothing filled for that rectangle).
+        ID3D11ShaderResourceView* fill_mask[2] = {nullptr, nullptr};
     };
 
     // Draws `rect` of `source` (same size and format as create()) over the whole `target` view of a
@@ -57,6 +59,9 @@ public:
     // non-sRGB format and the target view is sRGB, so decode them first.
     void draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTargetView* target, UINT target_width,
               UINT target_height, bool linearize, const Overlay& overlay = {});
+
+    // The copy of the last source drawn (valid until the next draw or create).
+    ID3D11ShaderResourceView* source_view() const { return copy_view_; }
 
 private:
     ID3D11Device* device_ = nullptr;

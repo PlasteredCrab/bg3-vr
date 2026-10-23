@@ -134,6 +134,10 @@ int g_dialogue_answer = 1; // presenting thread: the answer the sticks are on (1
 std::atomic<std::uint64_t> g_dialogue_keys{0};
 std::atomic<bool> g_recalibrate{false};
 std::atomic<float> g_turn_rate{0.0f};
+// The right stick while the laser is on the game UI (headset.cpp): 1 = no turning (scrolling stays), 2 = on a 3D
+// character: no turning, no scrolling, the stick goes to the character (stick()).
+std::atomic<int> g_stick_capture{0};
+std::atomic<float> g_captured_x{0.0f}, g_captured_y{0.0f};
 float g_recenter_hold_s = 0.8f;
 
 // Eye height.
@@ -598,8 +602,11 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
 
     // Right stick: x turns, y scrolls.
     g_turn_rate.store(0.0f, std::memory_order_relaxed);
-    if (r.active && !menu_open) {
-        const float x = r.stick_x;
+    const int capture = g_stick_capture.load(std::memory_order_relaxed);
+    g_captured_x.store(r.active && capture == 2 ? r.stick_x : 0.0f, std::memory_order_relaxed);
+    g_captured_y.store(r.active && capture == 2 ? r.stick_y : 0.0f, std::memory_order_relaxed);
+    if (r.active && !menu_open && capture != 2) {
+        const float x = capture == 1 ? 0.0f : r.stick_x; // on the UI: no turning
         if (g_snap) {
             if (g_snap_armed && std::abs(x) > 0.7f) {
                 camera::add_yaw(x > 0.0f ? g_snap_degrees.load() : -g_snap_degrees.load());
@@ -685,6 +692,14 @@ void set_third_person(bool on) {
 
 bool third_person() {
     return g_third.load(std::memory_order_relaxed);
+}
+
+void set_stick_capture(int mode) {
+    g_stick_capture.store(mode, std::memory_order_relaxed);
+}
+
+std::array<float, 2> captured_stick() {
+    return {g_captured_x.load(std::memory_order_relaxed), g_captured_y.load(std::memory_order_relaxed)};
 }
 
 float turn_rate() {

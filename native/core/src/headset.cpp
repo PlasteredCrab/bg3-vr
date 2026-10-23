@@ -1618,6 +1618,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     gpu_trace::watch_ui(want);
     if (!want) {
         release_touch();
+        vrplay::set_stick_capture(0);
         g_ui_target.reset();
         if (g_ui_shown) {
             g_session->set_panel(std::nullopt);
@@ -1717,6 +1718,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     gameui::set_pointer(vrplay::active() && !vrplay::third_person(), visible && g_ui_cursor_on_panel);
     if (!visible) {
         release_touch();
+        vrplay::set_stick_capture(0);
         g_ui_target.reset();
         if (g_ui_shown) {
             g_session->set_panel(std::nullopt);
@@ -1816,6 +1818,32 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     for (std::size_t k = 0; k < g_doll_fill.size(); ++k) {
         for (std::size_t j = 0; j < 4; ++j) {
             overlay.fill[k][j] = g_doll_fill[k][j];
+        }
+        // The flat picture (the left eye's doll image, copied last frame) masks the fill to its character.
+        overlay.fill_mask[k] = g_doll_slots[k].panel[0] ? g_doll_slots[k].blitter[0].source_view() : nullptr;
+    }
+    // The right stick while the laser is on the UI: no turning; on a 3D character it turns and zooms it.
+    std::uintptr_t doll_under_laser = 0;
+    if (g_ui_cursor_on_panel && !g_ui_laser_through) {
+        for (std::size_t k = 0; k < g_doll_fill.size(); ++k) {
+            const auto& f = g_doll_fill[k];
+            if (f[2] > f[0] && overlay.cursor_u >= f[0] && overlay.cursor_u <= f[2] && overlay.cursor_v >= f[1] &&
+                overlay.cursor_v <= f[3]) {
+                doll_under_laser = g_doll_slots[k].id;
+            }
+        }
+    }
+    vrplay::set_stick_capture(doll_under_laser ? 2 : g_ui_cursor_on_panel && !g_ui_laser_through ? 1 : 0);
+    if (doll_under_laser) {
+        const auto stick = vrplay::captured_stick();
+        static auto last = std::chrono::steady_clock::now();
+        const auto now_time = std::chrono::steady_clock::now();
+        const float dt = std::min(0.1f, std::chrono::duration<float>(now_time - last).count());
+        last = now_time;
+        const float turn = std::abs(stick[0]) > 0.15f ? stick[0] * 2.5f * dt : 0.0f;    // up to 2.5 rad/s
+        const float zoom = std::abs(stick[1]) > 0.15f ? std::exp(stick[1] * 1.2f * dt) : 1.0f; // up: closer
+        if (turn != 0.0f || zoom != 1.0f) {
+            dolls::adjust(doll_under_laser, turn, zoom);
         }
     }
     if (frame.state.shouldRender) {

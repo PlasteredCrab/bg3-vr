@@ -122,6 +122,7 @@ struct Doll {
     float distance = 0.0f;       // doll camera to its target (doll units)
     std::optional<std::array<vr::Vec3, 2>> eyes_m; // relative to the window, metres
     float window_m = 0.0f;
+    float zoom = 1.0f; // the right stick while the laser is on it: the window shows less of the doll's scene
     std::uint64_t camera_logs = 0;
 };
 
@@ -656,8 +657,8 @@ std::optional<EyeCamera> eye_camera(std::uintptr_t view, std::uintptr_t controll
             projection[5] == 0.0f) {
             return std::nullopt;
         }
-        const float half_w = d->distance / std::abs(projection[0]);
-        const float half_h = d->distance / std::abs(projection[5]);
+        const float half_w = d->distance / std::abs(projection[0]) / d->zoom;
+        const float half_h = d->distance / std::abs(projection[5]) / d->zoom;
         const float scale = 2.0f * half_w / d->window_m; // doll units per metre
         const vr::Vec3 e{(*d->eyes_m)[eye][0] * scale, (*d->eyes_m)[eye][1] * scale,
                          std::max((*d->eyes_m)[eye][2] * scale, 0.05f * d->distance)};
@@ -715,6 +716,26 @@ void set_window(std::uintptr_t id, std::optional<std::array<vr::Vec3, 2>> eyes_m
         if (d->renderer == id && d->state.load() == State::Bound) {
             d->eyes_m = eyes_m;
             d->window_m = width_m;
+        }
+    }
+}
+
+void adjust(std::uintptr_t id, float yaw_radians, float zoom_factor) {
+    {
+        std::scoped_lock lock(g_mutex);
+        for (const auto& d : g_dolls) {
+            if (d->renderer == id && d->state.load() == State::Bound) {
+                d->zoom = std::clamp(d->zoom * zoom_factor, 1.0f, 3.0f);
+            }
+        }
+    }
+    // The doll's own yaw (PaperdollRenderer +0x404, agent P 2.3): 0x1B784D0 builds the clone's rotation from it every
+    // frame, so both eyes turn.
+    if (yaw_radians != 0.0f) {
+        float yaw = 0.0f;
+        if (mem::try_copy(&yaw, id + 0x404, sizeof(yaw)) && std::isfinite(yaw)) {
+            yaw = std::remainder(yaw + yaw_radians, 6.2831853f);
+            *reinterpret_cast<float*>(id + 0x404) = yaw;
         }
     }
 }

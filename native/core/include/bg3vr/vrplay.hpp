@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
 
@@ -92,5 +94,10 @@ float turn_rate();
 float comfort_vignette();
 
 void report();
+
+// The right stick while the laser is on the game UI (headset.cpp): 0 normal, 1 no turning (scrolling stays), 2 on a
+// 3D character (no turning, no scrolling; captured_stick() has the stick for turning and zooming it).
+void set_stick_capture(int mode);
+std::array<float, 2> captured_stick();
 
 } // namespace bg3vr::vrplay

@@ -21,6 +21,8 @@ cbuffer Params : register(b0) {
     float4 fill[4];     // source-uv rectangles (x0, y0, x1, y1) drawn opaque black (x1 <= x0: unused)
 };
 Texture2D source : register(t0);
+Texture2D fill_mask0 : register(t1); // the flat character pictures for fill[0] / fill[1]: only their silhouette is filled
+Texture2D fill_mask1 : register(t2);
 SamplerState linear_clamp : register(s0);
 
 struct Varyings {
@@ -53,10 +55,15 @@ float4 ps_main(Varyings i) : SV_Target {
         a = saturate((max(max(s.r, s.g), s.b) - 0.012) / 0.05);
         c *= a;
     }
-    [unroll] for (int k = 0; k < 4; ++k) {
+    [unroll] for (int k = 0; k < 2; ++k) {
         if (fill[k].z > fill[k].x && all(i.uv >= fill[k].xy) && all(i.uv <= fill[k].zw)) {
-            c = 0.0;
-            a = 1.0;
+            // Where the picture draws its character (bright on its black background), black: the 3D character shows
+            // there instead; the rest of the rectangle (equipment slots, frames) stays.
+            const float2 local = (i.uv - fill[k].xy) / (fill[k].zw - fill[k].xy);
+            const float3 m3 = k == 0 ? fill_mask0.Sample(linear_clamp, local).rgb : fill_mask1.Sample(linear_clamp, local).rgb;
+            const float m = saturate((max(max(m3.r, m3.g), m3.b) - 0.012) / 0.05);
+            c = lerp(c, 0.0, m);
+            a = max(a, m);
         }
     }
     if (options.z > 0.0) {
@@ -299,6 +306,7 @@ void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTarget
     context_->PSSetShader(pixel_shader_, nullptr, 0);
     context_->PSSetConstantBuffers(0, 1, &constants_);
     context_->PSSetShaderResources(0, 1, &copy_view_);
+    context_->PSSetShaderResources(1, 2, overlay.fill_mask);
     context_->PSSetSamplers(0, 1, &sampler_);
     context_->RSSetState(rasterizer_);
     context_->RSSetViewports(1, &viewport);
@@ -310,6 +318,8 @@ void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTarget
     // Unbind before handing the state object back, so nothing keeps the eye image bound.
     ID3D11RenderTargetView* no_target = nullptr;
     ID3D11ShaderResourceView* no_view = nullptr;
+    ID3D11ShaderResourceView* no_masks[2] = {nullptr, nullptr};
+    context_->PSSetShaderResources(1, 2, no_masks);
     context_->OMSetRenderTargets(1, &no_target, nullptr);
     context_->PSSetShaderResources(0, 1, &no_view);
 
