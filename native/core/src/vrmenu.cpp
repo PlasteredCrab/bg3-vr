@@ -141,7 +141,7 @@ Menu::Menu() {
     choice("Beam opacity", "pointer.opacity",
            {{"25%", "0.25"}, {"40%", "0.4"}, {"55%", "0.55"}, {"70%", "0.7"}, {"85%", "0.85"}, {"100%", "1"}}, 2);
     choice("Wrist interface size", "ui.wrist_width",
-           {{"Small", "0.4"}, {"Medium", "0.8"}, {"Large", "1.2"}, {"Huge", "1.6"}}, 2);
+           {{"Small", "0.4"}, {"Medium", "0.8"}, {"Large", "1.2"}, {"Huge", "1.6"}}, 1);
     section("Comfort");
     choice("Turning", "vr.turn", {{"Snap", "snap"}, {"Smooth", "smooth"}}, 0);
     choice("Snap angle", "vr.snap_degrees",

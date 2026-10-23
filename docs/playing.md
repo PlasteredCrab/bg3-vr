@@ -143,7 +143,7 @@ open your buttons and sticks don't reach the game. Changes take effect at once a
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
 | `[vr] eye_offset` | 0 | eye height above the character's eyes, metres |
-| `[ui] placement`, `width`, `distance`, `wrist_width` | wrist, 1.1, 1.0, 1.2 | the UI panel (`world` puts it in front of you; left grip + left stick click switches) |
+| `[ui] placement`, `width`, `distance`, `wrist_width` | wrist, 1.1, 1.0, 0.8 | the UI panel (`world` puts it in front of you; left grip + left stick click switches) |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |

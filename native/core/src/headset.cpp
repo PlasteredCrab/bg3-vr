@@ -1103,7 +1103,7 @@ void publish_status(bool ready) {
 bool g_ui_enabled = true;          // [ui] panel
 bool g_ui_remove_from_eyes = true; // [ui] remove_from_eyes
 bool g_ui_laser = true;            // [ui] laser
-std::atomic<float> g_ui_wrist_width{1.2f}; // [ui] wrist_width (m); 3x the first 0.4 m, which was too small to read
+std::atomic<float> g_ui_wrist_width{0.8f}; // [ui] wrist_width (m); 2x the first 0.4 m (too small to read); 1.2 m was so close to the face it doubled
 std::atomic<float> g_ui_wrist_out{0.045f};  // [ui] wrist_out: off the back of the hand (m)
 std::atomic<float> g_ui_wrist_along{0.2f};  // [ui] wrist_along: the panel centre up the forearm from the grip (m)
 float g_ui_distance = 1.0f;        // [ui] distance (m)
@@ -2016,7 +2016,7 @@ void install(const Config& config) {
     g_ui_distance = ui_number("distance", 1.0f, 0.3f, 5.0f);
     g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
-    g_ui_wrist_width = ui_number("wrist_width", 1.2f, 0.1f, 2.0f);
+    g_ui_wrist_width = ui_number("wrist_width", 0.8f, 0.1f, 2.0f);
     g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "wrist")) == "wrist", std::memory_order_relaxed);
     g_ui_dialogue_front.store(config.get_bool("ui", "dialogue_in_front", true), std::memory_order_relaxed);
     g_menu_enabled = config.get_bool("menu", "enabled", true);
@@ -2094,7 +2094,7 @@ void configure_ui(const Config& config) {
     g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
     g_ui_wrist_along = ui_value("wrist_along", 0.2f, -0.3f, 0.6f);
     const std::string v = config.get("ui", "wrist_width");
-    const float width = v.empty() ? 1.2f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 2.0f);
+    const float width = v.empty() ? 0.8f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 2.0f);
     if (g_ui_wrist_width.exchange(width) != width) {
         log::info("ui: wrist panel {:.2f} m wide", width);
     }
