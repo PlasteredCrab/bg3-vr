@@ -485,6 +485,15 @@ std::atomic<float> g_beam_width{0.006f};       // uv of the image height at the 
 std::atomic<float> g_beam_range{12.0f};        // metres when nothing is hit
 float g_beam_time = 0.0f;
 std::uint64_t g_beam_frames = 0;
+std::uint64_t g_beam_on_panel = 0;
+// Where the panels the laser can point at are, in LOCAL space, as last placed (presenting thread): the beam stops on
+// the nearest of them, the world or the range.
+struct PanelTarget {
+    xr::PanelPlacement place;
+    float height_m = 0.0f;
+};
+std::optional<PanelTarget> g_ui_target;   // the game UI panel (wrist or in front), while shown
+std::optional<PanelTarget> g_menu_target; // the VR menu, while open
 
 // A LOCAL-space point in an eye image's uv, for the pose and field of view the image was rendered with.
 std::optional<std::array<float, 2>> eye_uv(const vr::Vec3& point, const vr::RigidPose& eye, const camera::EyeFov& fov) {
@@ -1158,8 +1167,16 @@ xr::PanelPlacement in_local(const xr::PanelPlacement& place, const vr::RigidPose
     return local;
 }
 
+// Where the aim ray meets the panel's front face: panel uv (0..1, v down) and the distance along the ray (metres).
+std::optional<std::array<float, 3>> panel_hit(const vr::RigidPose& aim, const xr::PanelPlacement& place, float height_m);
+
 // Where the aim ray meets the panel's front face, in panel uv (0..1, v down), or nullopt.
 std::optional<std::array<float, 2>> panel_uv(const vr::RigidPose& aim, const xr::PanelPlacement& place, float height_m) {
+    const auto hit = panel_hit(aim, place, height_m);
+    return hit ? std::optional<std::array<float, 2>>{std::array<float, 2>{(*hit)[0], (*hit)[1]}} : std::nullopt;
+}
+
+std::optional<std::array<float, 3>> panel_hit(const vr::RigidPose& aim, const xr::PanelPlacement& place, float height_m) {
     const vr::Quat q{place.pose.orientation.x, place.pose.orientation.y, place.pose.orientation.z, place.pose.orientation.w};
     const vr::Vec3 c{place.pose.position.x, place.pose.position.y, place.pose.position.z};
     const vr::Vec3 n = vr::rotate(q, {0.0f, 0.0f, 1.0f});
@@ -1183,7 +1200,7 @@ std::optional<std::array<float, 2>> panel_uv(const vr::RigidPose& aim, const xr:
     if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
         return std::nullopt;
     }
-    return std::array<float, 2>{u, v};
+    return std::array<float, 3>{u, v, t};
 }
 
 // Moves the real mouse cursor to (u, v) of the game window's client area (only while the game has the focus).
@@ -1247,6 +1264,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     gpu_trace::watch_ui(want);
     if (!want) {
         release_touch();
+        g_ui_target.reset();
         if (g_ui_shown) {
             g_session->set_panel(std::nullopt);
             ui_set_in_eyes(true);
@@ -1356,6 +1374,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         place.width_m * static_cast<float>(g_ui_panel_height) / static_cast<float>(std::max<UINT>(g_ui_panel_width, 1));
     if (!g_ui_laser || g_menu_is_open.load(std::memory_order_relaxed)) {
         release_touch();
+        g_ui_target.reset();
     }
     if (g_ui_laser && !g_menu_is_open.load(std::memory_order_relaxed)) {
         const HandState& right = both[pointer_hand()];
@@ -1365,6 +1384,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         } else if (both[wrist_hand()].tracked) {
             target = in_local(place, both[wrist_hand()].grip);
         }
+        g_ui_target = target ? std::optional<PanelTarget>{PanelTarget{*target, height_m}} : std::nullopt;
         // Touch: the right controller's tip within 3 cm of the face (or up to 3 cm through it) points there; pushing in
         // past 5 mm holds the left mouse button until the tip comes back out past 12 mm or leaves the panel.
         std::optional<std::array<float, 2>> touch;
@@ -1472,6 +1492,9 @@ bool create_menu() {
 }
 
 void set_menu_open(bool open) {
+    if (!open) {
+        g_menu_target.reset();
+    }
     g_menu_open = open;
     g_menu_is_open.store(open, std::memory_order_relaxed);
     vrplay::set_menu_open(open);
@@ -1529,6 +1552,7 @@ void update_menu(const xr::Frame& frame) {
         return;
     }
     const float height_m = g_menu_width * static_cast<float>(vrmenu::kHeight) / static_cast<float>(vrmenu::kWidth);
+    g_menu_target = PanelTarget{*g_menu_place, height_m};
     const HandState right = hands()[pointer_hand()];
     // Touch: the controller's tip within 3 cm in front of the face (or 2 cm through it); pressing in past 5 mm clicks.
     std::optional<std::array<float, 2>> pointer;
@@ -1668,7 +1692,8 @@ blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeF
     blit::Blitter::Overlay overlay;
     overlay.vignette = g_frame_vignette;
     const int style = g_beam_style.load(std::memory_order_relaxed);
-    if (style <= 0 || !vrplay::active() || vrplay::third_person() || g_menu_is_open.load(std::memory_order_relaxed)) {
+    const bool menu_open = g_menu_is_open.load(std::memory_order_relaxed);
+    if (style <= 0 || !vrplay::active() || vrplay::third_person()) {
         return overlay;
     }
     const HandState hand = hands()[pointer_hand()];
@@ -1677,7 +1702,19 @@ blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeF
     }
     const vr::Vec3 dir = vr::rotate(hand.aim.orientation, {0.0f, 0.0f, -1.0f});
     const float scale = std::max(camera::world_scale(), 0.01f);
-    const float length = rayprobe::beam_distance().value_or(g_beam_range.load(std::memory_order_relaxed)) / scale;
+    // The world hit (or the range), unless a panel is nearer along the ray: the panels are drawn over the eye images by
+    // the compositor, so a beam that went on past one would vanish behind it. With the menu open only the menu counts.
+    const auto world_hit = menu_open ? std::nullopt : rayprobe::beam_distance();
+    float length = world_hit ? *world_hit / scale : (menu_open ? 2.0f : g_beam_range.load(std::memory_order_relaxed) / scale);
+    bool hit = world_hit.has_value();
+    for (const auto& target : {menu_open ? g_menu_target : g_ui_target}) {
+        if (const auto at = target ? panel_hit(hand.aim, target->place, target->height_m) : std::nullopt;
+            at && (*at)[2] < length) {
+            length = (*at)[2];
+            hit = true;
+            ++g_beam_on_panel;
+        }
+    }
     const vr::Vec3 start = hand.hand_tracked ? hand.tip : hand.aim.position;
     const vr::Vec3 end{start[0] + dir[0] * length, start[1] + dir[1] * length, start[2] + dir[2] * length};
     const auto a = eye_uv(start, eye, fov);
@@ -1696,7 +1733,7 @@ blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeF
     overlay.beam_width = g_beam_width.load(std::memory_order_relaxed);
     overlay.beam_style = style;
     overlay.beam_time = g_beam_time;
-    overlay.beam_end = rayprobe::beam_distance() ? 0.012f : 0.0f;
+    overlay.beam_end = hit ? 0.012f : 0.0f;
     ++g_beam_frames;
     return overlay;
 }
@@ -1930,7 +1967,7 @@ void report() {
               g_ui_shown ? "shown" : "hidden", g_ui_wrist.load(std::memory_order_relaxed) ? "wrist" : "world", g_ui_frames,
               g_ui_laser_hits, g_ui_touches, g_menu_is_open.load(std::memory_order_relaxed) ? "open" : "closed",
               g_menu_frames, g_menu_clicks, g_menu_failed ? ", FAILED to start" : "");
-    log::info("pointer: aiming beam drawn in {} eye copies; last hit {}", g_beam_frames,
+    log::info("pointer: aiming beam drawn in {} eye copies ({} stopped on a panel); last hit {}", g_beam_frames, g_beam_on_panel,
               rayprobe::beam_distance() ? std::format("{:.2f} m", *rayprobe::beam_distance()) : std::string("none"));
     log::info("xr input: hand tracking {}; tracked-hand clicks left {} right {}, grabs left {} right {}",
               g_hand_tracking.load() ? "on" : "off", g_hand_clicks[0], g_hand_clicks[1],

@@ -20,7 +20,7 @@ them; they are marked "(off)".
    - first-person view at your character's eye height;
    - stereo three seconds later;
    - your own head hidden;
-   - the game UI on the back of your left wrist (the left stick click moves it in front of you and back);
+   - the game UI on the back of your left wrist (left grip + left stick click, or the VR menu's View page, moves it in front of you and back);
    - hand pointing, thumbstick walking and the controller bindings.
 
    After a loading screen it starts again, and switching characters moves it to the new one.
@@ -37,7 +37,8 @@ them; they are marked "(off)".
 | Right stick up/down | Scroll (like the mouse wheel) |
 | Hold right stick click | Recentre: you face forward again, and the UI panel comes in front of you |
 | Left stick | Walk where you look (half push strolls, full push runs) |
-| Left stick click | Move the UI panel to your left wrist and back |
+| Left stick click | Open / close the VR menu |
+| Left grip + left stick click | Move the UI panel to your left wrist and back |
 | Touch the UI panel with the right controller's tip | Click there (push in to press, pull back to release); handy on the wrist panel |
 | Left trigger (hold) | Highlight items |
 | X | Map |
@@ -92,9 +93,11 @@ holds is set in `[holster]` (melee, ranged, inventory, light, none).
 
 ## The VR menu
 
-Press the menu button on the left controller (the small button with three lines, below the left stick on Quest
-Touch). The first time VR starts it opens by itself on the Guide. A panel opens in front of you with tabs along the
-top:
+Click the left stick to open and close it (the menu button on the left controller also works where the runtime
+passes it on; a Quest 2 through SteamVR opens its own menu with it instead). The first time VR starts it opens by
+itself on the Guide. A panel opens in front of you with tabs along the top. Push either stick up or down to move
+through the tabs, settings and buttons, left / right to change the highlighted one, A to change it or press a
+button, B to close; or point at it and pull the trigger:
 
 - View: first or third person, the render resolution (a share of the headset's own resolution per eye; 80% by
   default, "Game's own" uses the game's setting), where the game UI sits (in front of you or on your wrist), the
@@ -125,7 +128,7 @@ which overrides `bg3vr.ini` (delete it to go back to the ini's values).
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
 | `[vr] eye_offset` | 0 | eye height above the character's eyes, metres |
-| `[ui] placement`, `width`, `distance` | wrist, 1.1, 1.0 | the UI panel (`world` puts it in front of you; the left stick click switches) |
+| `[ui] placement`, `width`, `distance` | wrist, 1.1, 1.0 | the UI panel (`world` puts it in front of you; left grip + left stick click switches) |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |

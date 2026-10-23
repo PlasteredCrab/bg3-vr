@@ -53,7 +53,7 @@ struct Control {
 constexpr Control kControls[] = {
     {"left_trigger", false, Input::Trigger, "key:lalt"}, {"left_grip", false, Input::Grip, "none"},
     {"left_x", false, Input::Primary, "key:m"},          {"left_y", false, Input::Secondary, "view"},
-    {"left_menu", false, Input::Menu, "vrmenu"},         {"left_stick_click", false, Input::Stick, "panel"},
+    {"left_menu", false, Input::Menu, "vrmenu"},         {"left_stick_click", false, Input::Stick, "vrmenu"},
     {"right_trigger", true, Input::Trigger, "mouse_left"}, {"right_grip", true, Input::Grip, "mouse_right"},
     {"right_a", true, Input::Primary, "key:i"},          {"right_b", true, Input::Secondary, "key:escape"},
     {"right_stick_click", true, Input::Stick, "recenter"},

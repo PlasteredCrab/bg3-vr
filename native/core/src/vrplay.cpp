@@ -90,7 +90,7 @@ constexpr ComboDefault kComboDefaults[] = {
     {LeftGrip, LeftY, "key:tab"},         // party view
     {LeftGrip, RightTrigger, "key:space"}, // end turn
     {LeftGrip, RightStickClick, "key:c"}, // sneak
-    {LeftGrip, LeftStickClick, "vrmenu"}, // the VR menu (controllers without a menu button: Index)
+    {LeftGrip, LeftStickClick, "panel"},  // the game UI panel to the wrist and back
 };
 std::vector<Combo> g_combos;
 std::array<bool, kControlCount> g_swallow{};    // pressed as a combo's button: ignore until released
@@ -110,8 +110,8 @@ constexpr const char* kDefaults[kControlCount] = {
     "",             // left grip: reserved for grabbing
     "key:m",        // X: map
     "view",         // Y: first / third person
-    "vrmenu",       // menu: the VR menu (B is the game's Escape)
-    "panel",        // left stick click: UI panel to the wrist and back
+    "vrmenu",       // menu: the VR menu, where the runtime passes it on (a Quest 2 through SteamVR opens its own menu)
+    "vrmenu",       // left stick click: the VR menu (works on every controller)
     "mouse_left",   // right trigger: click (move, interact, attack, UI)
     "mouse_right",  // right grip: context menu
     "key:i",        // A: inventory
