@@ -503,6 +503,7 @@ struct PanelTarget {
 };
 std::optional<PanelTarget> g_ui_target;   // the game UI panel (wrist or in front), while shown
 bool g_ui_laser_through = false;
+float g_drag_hold_s = 0.35f; // [ui] drag_hold_s: a trigger press on the UI is a click until held this long and moved
 // The flat character pictures the 3D UI dolls replace (source uv x0, y0, x1, y1; x1 <= x0 for none): blanked on the
 // panel so only the 3D character shows there (the 3D one sits behind the panel surface, so the two never lined up).
 std::array<std::array<float, 4>, 2> g_doll_fill{};          // the laser is over a transparent part of the UI: it goes on into the world
@@ -1804,7 +1805,35 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         if (g_ui_laser_through) {
             ++g_alpha.through;
         }
-        const auto uv = touch ? touch : g_ui_laser_through ? std::nullopt : aimed;
+        auto uv = touch ? touch : g_ui_laser_through ? std::nullopt : aimed;
+        // A trigger press on the UI pins the cursor where it was pressed: squeezing the trigger moves the hand a little,
+        // and the game took the few pixels the cursor moved with the button held as a drag (portraits picked up instead
+        // of selected). A quick press is a clean click; holding past [ui] drag_hold_s and then moving the laser drags.
+        {
+            static bool was_down = false, pinned = false;
+            static std::array<float, 2> pinned_uv{};
+            static std::chrono::steady_clock::time_point down_at{};
+            const bool down = right.active && (was_down ? right.trigger > 0.4f : right.trigger > 0.6f); // as vrplay
+            const auto now_time = std::chrono::steady_clock::now();
+            if (down && !was_down && uv && !touch) {
+                pinned = true;
+                pinned_uv = *uv;
+                down_at = now_time;
+            }
+            if (!down || !uv || touch) {
+                pinned = false;
+            }
+            if (pinned && uv) {
+                const float du = (*uv)[0] - pinned_uv[0], dv = (*uv)[1] - pinned_uv[1];
+                const bool moved = std::sqrt(du * du + dv * dv) > 0.012f;
+                if (std::chrono::duration<float>(now_time - down_at).count() >= g_drag_hold_s && moved) {
+                    pinned = false; // a deliberate hold and move: the cursor follows again (dragging)
+                } else {
+                    uv = pinned_uv;
+                }
+            }
+            was_down = down;
+        }
         if (uv) {
             overlay.cursor_u = (*uv)[0];
             overlay.cursor_v = (*uv)[1];
@@ -2494,6 +2523,7 @@ void configure_ui(const Config& config) {
     apply_placement(text::to_lower(config.get("ui", "placement", "hidden")));
     g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
     g_laser_through_transparent = config.get_bool("ui", "laser_through_transparent", true);
+    g_drag_hold_s = ui_value("drag_hold_s", 0.35f, 0.0f, 2.0f);
     g_snapshots = config.get_bool("ui", "snapshots", true);
     g_ui_wrist_along = ui_value("wrist_along", 0.2f, -0.3f, 0.6f);
     const std::string v = config.get("ui", "wrist_width");
