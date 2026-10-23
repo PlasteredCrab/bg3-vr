@@ -23,5 +23,7 @@ void watch_ui(bool on);
 void set_back_buffer(std::uintptr_t resource);
 // The latest UI texture seen (AddRef'd for the caller, who releases it), or nullptr.
 ID3D11Texture2D* ui_texture();
+// Keep the UI out of the eye images: a blank image stands in for it at the composite draw (the UI is still copied).
+void set_ui_hidden(bool hidden);
 
 } // namespace bg3vr::gpu_trace

@@ -1202,6 +1202,11 @@ std::uint8_t* ui_composite_flag() {
 
 // Whether the composite draws the UI into the eye images (restores the game's own value when shown again).
 void ui_set_in_eyes(bool show) {
+    gpu_trace::set_ui_hidden(!show);
+    // The old way (GlobalSwitches+0x0D) only to give back a value an older build may have cleared.
+    if (!show) {
+        return;
+    }
     std::uint8_t* flag = ui_composite_flag();
     if (!flag) {
         return;

@@ -3,6 +3,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/render.hpp"
 
+#include <array>
 #include <d3d11.h>
 #include <safetyhook.hpp>
 #include <windows.h>
@@ -328,8 +329,19 @@ std::mutex g_ui_mutex;
 std::uintptr_t g_ui_back_buffer = 0;     // under g_ui_mutex
 std::uintptr_t g_ui_target = 0;          // current RT0 resource (raw, not held)
 std::uintptr_t g_ui_slot1 = 0;           // current PS slot 1 view (raw, not held)
-ID3D11Texture2D* g_ui_texture = nullptr; // held
+ID3D11Texture2D* g_ui_texture = nullptr; // the mod's own copy of the UI, made at every composite draw (held)
+std::uintptr_t g_ui_source = 0;          // the game texture it was last copied from (not held; logged on change)
 std::uint64_t g_ui_changes = 0;
+std::uint64_t g_ui_captures = 0;
+// Agent AG (AG_ui_corruption.md): the game's render graph re-assigns physical textures to resource keys every frame
+// (0x4098470), so the texture behind the UI key moves, and the one the mod held on to was later a Noesis offscreen page:
+// the panel showed scraps of portraits, tab labels and a grey circle. The UI is now copied into the mod's own texture
+// at the composite draw itself, every frame, and nothing holds the game's texture. Keeping the UI out of the eyes binds
+// a blank image in slot 1 for that one draw instead of clearing GlobalSwitches+0x0D (with which the composite bound a
+// placeholder and the capture couldn't follow the UI any more).
+std::atomic<bool> g_ui_hidden{false};
+ID3D11ShaderResourceView* g_ui_blank = nullptr; // 16x16 transparent
+std::uint64_t g_ui_substitutions = 0;
 
 void ui_note_targets(UINT count, ID3D11RenderTargetView* const* views) {
     std::uintptr_t target = 0;
@@ -353,42 +365,102 @@ void ui_note_views(UINT start, UINT count, ID3D11ShaderResourceView* const* view
     g_ui_slot1 = views ? reinterpret_cast<std::uintptr_t>(views[1 - start]) : 0;
 }
 
-void ui_on_draw() {
+// At a draw: when it is the composite (RT0 the back buffer, PS slot 1 a big texture), copy slot 1 into the mod's
+// texture. Returns the slot-1 view (AddRef'd) when the blank was bound in its place for this draw (restore it after).
+ID3D11ShaderResourceView* ui_on_draw(ID3D11DeviceContext* self) {
     std::scoped_lock lock(g_ui_mutex);
     if (!g_ui_back_buffer || g_ui_target != g_ui_back_buffer || !g_ui_slot1) {
-        return;
+        return nullptr;
+    }
+    ID3D11ShaderResourceView* view = nullptr;
+    self->PSGetShaderResources(1, 1, &view);
+    if (!view) {
+        return nullptr;
     }
     ID3D11Resource* resource = nullptr;
-    reinterpret_cast<ID3D11ShaderResourceView*>(g_ui_slot1)->GetResource(&resource);
-    if (!resource) {
-        return;
-    }
+    view->GetResource(&resource);
     ID3D11Texture2D* texture = nullptr;
-    resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture));
-    resource->Release();
-    if (!texture) {
-        return;
-    }
-    if (texture == g_ui_texture) {
-        texture->Release();
-        return;
+    if (resource) {
+        resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture));
+        resource->Release();
     }
     D3D11_TEXTURE2D_DESC desc{};
-    texture->GetDesc(&desc);
-    if (desc.Width < 640 || desc.Height < 360) {
-        // With the UI kept out of the eye images the composite binds a small placeholder in slot 1 (16x16 seen in
-        // game, 2026-10-20): not the UI.
-        texture->Release();
-        return;
+    if (texture) {
+        texture->GetDesc(&desc);
+    }
+    if (!texture || desc.Width < 640 || desc.Height < 360 || desc.SampleDesc.Count != 1) {
+        // Not the UI (e.g. the game's own 16x16 placeholder).
+        if (texture) {
+            texture->Release();
+        }
+        view->Release();
+        return nullptr;
+    }
+    ID3D11Device* device = nullptr;
+    self->GetDevice(&device);
+    D3D11_TEXTURE2D_DESC have{};
+    if (g_ui_texture) {
+        g_ui_texture->GetDesc(&have);
+    }
+    if (!g_ui_texture || have.Width != desc.Width || have.Height != desc.Height || have.Format != desc.Format ||
+        have.MipLevels != desc.MipLevels || have.ArraySize != desc.ArraySize) {
+        if (g_ui_texture) {
+            g_ui_texture->Release();
+            g_ui_texture = nullptr;
+        }
+        D3D11_TEXTURE2D_DESC copy = desc;
+        copy.Usage = D3D11_USAGE_DEFAULT;
+        copy.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        copy.CPUAccessFlags = 0;
+        copy.MiscFlags = 0;
+        if (device && SUCCEEDED(device->CreateTexture2D(&copy, nullptr, &g_ui_texture))) {
+            log::info("gpu: UI copy {}x{} format {} mips {} made", desc.Width, desc.Height, static_cast<int>(desc.Format),
+                      desc.MipLevels);
+        }
     }
     if (g_ui_texture) {
-        g_ui_texture->Release();
+        self->CopyResource(g_ui_texture, texture);
+        ++g_ui_captures;
     }
-    g_ui_texture = texture; // keeps the reference
-    ++g_ui_changes;
-    log::info("gpu: UI texture (composite PS slot 1) 0x{:X}: {}x{} format {} mips {} bind 0x{:X} ({} change(s))",
-              reinterpret_cast<std::uintptr_t>(texture), desc.Width, desc.Height, static_cast<int>(desc.Format),
-              desc.MipLevels, desc.BindFlags, g_ui_changes);
+    if (reinterpret_cast<std::uintptr_t>(texture) != g_ui_source) {
+        g_ui_source = reinterpret_cast<std::uintptr_t>(texture);
+        if (++g_ui_changes <= 20 || g_ui_changes % 200 == 0) {
+            log::info("gpu: the composite's UI texture is now 0x{:X}: {}x{} format {} bind 0x{:X} ({} change(s); the "
+                      "game re-assigns textures, the mod copies whichever it is each frame)",
+                      g_ui_source, desc.Width, desc.Height, static_cast<int>(desc.Format), desc.BindFlags, g_ui_changes);
+        }
+    }
+    texture->Release();
+    ID3D11ShaderResourceView* restore = nullptr;
+    if (g_ui_hidden.load(std::memory_order_relaxed)) {
+        if (!g_ui_blank && device) {
+            D3D11_TEXTURE2D_DESC b{};
+            b.Width = b.Height = 16;
+            b.MipLevels = b.ArraySize = 1;
+            b.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            b.SampleDesc.Count = 1;
+            b.Usage = D3D11_USAGE_IMMUTABLE;
+            b.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            std::array<std::uint32_t, 16 * 16> zero{};
+            const D3D11_SUBRESOURCE_DATA data{zero.data(), 16 * 4, 0};
+            ID3D11Texture2D* blank = nullptr;
+            if (SUCCEEDED(device->CreateTexture2D(&b, &data, &blank))) {
+                device->CreateShaderResourceView(blank, nullptr, &g_ui_blank);
+                blank->Release();
+            }
+        }
+        if (g_ui_blank) {
+            restore = view; // keeps the reference until it is bound again
+            ++g_ui_substitutions;
+        }
+    }
+    if (device) {
+        device->Release();
+    }
+    if (!restore) {
+        view->Release();
+    }
+    return restore;
 }
 
 void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
@@ -427,31 +499,47 @@ void STDMETHODCALLTYPE rs_set_viewports(ID3D11DeviceContext* self, UINT count, c
     }
     g_hooks[2].call<void>(self, count, viewports);
 }
-void count_draw(ID3D11DeviceContext* self) {
+// Returns the slot-1 view to put back after the draw (the UI's, while a blank stands in for it), or null.
+ID3D11ShaderResourceView* count_draw(ID3D11DeviceContext* self) {
+    ID3D11ShaderResourceView* restore = nullptr;
     if (g_watch_ui.load(std::memory_order_relaxed)) {
-        ui_on_draw();
+        restore = ui_on_draw(self);
+        if (restore) {
+            g_hooks[11].call<void>(self, 1u, 1u, &g_ui_blank);
+        }
     }
     std::scoped_lock lock(g_mutex);
     if (active()) {
         ++run(self, slots_text(g_ps_srv)).draws;
     }
+    return restore;
+}
+void after_draw(ID3D11DeviceContext* self, ID3D11ShaderResourceView* restore) {
+    if (restore) {
+        g_hooks[11].call<void>(self, 1u, 1u, &restore);
+        restore->Release();
+    }
 }
 void STDMETHODCALLTYPE draw(ID3D11DeviceContext* self, UINT vertices, UINT start) {
-    count_draw(self);
+    ID3D11ShaderResourceView* restore = count_draw(self);
     g_hooks[3].call<void>(self, vertices, start);
+    after_draw(self, restore);
 }
 void STDMETHODCALLTYPE draw_indexed(ID3D11DeviceContext* self, UINT indices, UINT start, INT base) {
-    count_draw(self);
+    ID3D11ShaderResourceView* restore = count_draw(self);
     g_hooks[4].call<void>(self, indices, start, base);
+    after_draw(self, restore);
 }
 void STDMETHODCALLTYPE draw_instanced(ID3D11DeviceContext* self, UINT vertices, UINT instances, UINT start, UINT start_instance) {
-    count_draw(self);
+    ID3D11ShaderResourceView* restore = count_draw(self);
     g_hooks[5].call<void>(self, vertices, instances, start, start_instance);
+    after_draw(self, restore);
 }
 void STDMETHODCALLTYPE draw_indexed_instanced(ID3D11DeviceContext* self, UINT indices, UINT instances, UINT start, INT base,
                                               UINT start_instance) {
-    count_draw(self);
+    ID3D11ShaderResourceView* restore = count_draw(self);
     g_hooks[6].call<void>(self, indices, instances, start, base, start_instance);
+    after_draw(self, restore);
 }
 void STDMETHODCALLTYPE dispatch(ID3D11DeviceContext* self, UINT x, UINT y, UINT z) {
     {
@@ -617,6 +705,14 @@ void watch_ui(bool on) {
 void set_back_buffer(std::uintptr_t resource) {
     std::scoped_lock lock(g_ui_mutex);
     g_ui_back_buffer = resource;
+}
+
+void set_ui_hidden(bool hidden) {
+    if (g_ui_hidden.exchange(hidden) != hidden) {
+        std::scoped_lock lock(g_ui_mutex);
+        log::info("gpu: the UI is {} the eye images ({} copies, {} blank substitutions so far)", hidden ? "kept out of" : "back in",
+                  g_ui_captures, g_ui_substitutions);
+    }
 }
 
 ID3D11Texture2D* ui_texture() {
