@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <array>
+#include <initializer_list>
 #include <cctype>
 #include <format>
 #include <atomic>
@@ -41,6 +42,110 @@ std::uint64_t g_failures = 0;
 std::uint64_t g_stale = 0;
 constexpr std::uint64_t kLogEvery = 300;
 std::atomic<std::uint64_t> g_generation{0};
+
+// Which body to follow, resolved natively every frame (agent U, re-local/ghidra/agents/U_cutscene_actors.md): the
+// player-controlled character from the player manager, or the timeline dummy standing in for it while a scene shows
+// the dummy and hides the real body (the real one is hidden, not moved, so the camera stayed behind). Its current
+// visual is looked up every frame instead of trusting the pointer Lua sent at VR start. 4.1.1.7631656, all Confirmed
+// in U's decompiles; prologues checked before use.
+constexpr std::uintptr_t kPlayerManager = 0x60487A0;  // PlayerManager*
+constexpr std::uintptr_t kNullHandle = 0x5EEB6E0;     // the null EntityHandle value
+constexpr std::uintptr_t kEntityWorld = 0x6007F68;    // client EntityWorld*
+constexpr std::uintptr_t kPrimaryPlayerRva = 0x3BAADF0;    // u16 (PlayerManager*)
+constexpr std::uintptr_t kPlayerCharacterRva = 0x17F4FF0;  // EntityHandle* (PlayerManager*, EntityHandle* out, i16 player)
+constexpr std::uintptr_t kVisualComponentRva = 0x1830210;  // VisualComponent* (EntityWorld*, EntityHandle); +0 = ls::Visual*
+constexpr std::uintptr_t kPreviewDummyRva = 0x13FA710;     // TLPreviewDummy* (EntityWorld*, EntityHandle) or 0
+constexpr std::uintptr_t kSetActorVisibleRva = 0x1D5A350;  // (TimelineSystem*, ctx*, EntityHandle*, Timeline*, bool show, i16 player)
+constexpr std::size_t kDummyStandsFor = 0x88;  // TLPreviewDummy: the entity it stands in for
+constexpr std::size_t kVisualEntity = 0x108;   // ls::Visual: owning EntityHandle
+bool g_native_ready = false;
+std::atomic<bool> g_following{false};          // VR play wants the body followed (Lua's skeleton= line)
+std::atomic<std::uint64_t> g_dummy{0};          // the dummy being followed instead of the character (0: none)
+std::atomic<std::uint64_t> g_swap_calls{0};
+std::uint64_t g_followed_entity = 0;            // game thread: the entity whose visual is attached
+std::uint64_t g_native_switches = 0;
+safetyhook::InlineHook g_swap_hook;
+
+using PrimaryPlayerFn = std::uint16_t (*)(std::uintptr_t);
+using PlayerCharacterFn = std::uint64_t* (*)(std::uintptr_t, std::uint64_t*, std::int16_t);
+using ByHandleFn = std::uintptr_t (*)(std::uintptr_t, std::uint64_t);
+
+// The game calls, guarded: during loads the player manager or the world can be half built.
+std::uint64_t controlled_raw() {
+    __try {
+        const auto manager = *reinterpret_cast<std::uintptr_t*>(g_module.base + kPlayerManager);
+        if (!manager) {
+            return 0;
+        }
+        const std::uint16_t player = reinterpret_cast<PrimaryPlayerFn>(g_module.base + kPrimaryPlayerRva)(manager);
+        std::uint64_t handle = 0;
+        reinterpret_cast<PlayerCharacterFn>(g_module.base + kPlayerCharacterRva)(manager, &handle,
+                                                                                  static_cast<std::int16_t>(player));
+        return handle == *reinterpret_cast<std::uint64_t*>(g_module.base + kNullHandle) ? 0 : handle;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+std::uintptr_t by_handle_raw(std::uintptr_t rva, std::uint64_t handle) {
+    __try {
+        const auto world = *reinterpret_cast<std::uintptr_t*>(g_module.base + kEntityWorld);
+        return world && handle ? reinterpret_cast<ByHandleFn>(g_module.base + rva)(world, handle) : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+std::uintptr_t visual_of(std::uint64_t entity) {
+    const std::uintptr_t component = by_handle_raw(kVisualComponentRva, entity);
+    std::uintptr_t visual = 0;
+    if (component) {
+        mem::try_copy(&visual, component, sizeof(visual));
+    }
+    return visual;
+}
+
+// TimelineSetActorVisibleForPlayer entry (game thread): a scene hides one body and shows another for a player.
+std::uintptr_t on_set_actor_visible(std::uintptr_t system, std::uintptr_t ctx, std::uintptr_t handle_ptr,
+                                    std::uintptr_t timeline, std::uintptr_t show_arg, std::uintptr_t player_arg) {
+    std::uint64_t handle = 0;
+    mem::try_copy(&handle, handle_ptr, sizeof(handle));
+    const bool show = (show_arg & 0xFF) != 0;
+    const std::uintptr_t dummy = by_handle_raw(kPreviewDummyRva, handle);
+    std::uint64_t stands_for = 0;
+    if (dummy) {
+        mem::try_copy(&stands_for, dummy + kDummyStandsFor, sizeof(stands_for));
+    }
+    const std::uint64_t controlled = controlled_raw();
+    const std::uint64_t followed = g_dummy.load(std::memory_order_relaxed);
+    const char* change = nullptr;
+    if (dummy && show && controlled && stands_for == controlled) {
+        g_dummy = handle;
+        change = "the scene shows a stand-in for the controlled character: the camera follows the stand-in";
+    } else if (followed && ((dummy && !show && handle == followed) || (!dummy && show && handle == controlled))) {
+        g_dummy = 0;
+        change = "the stand-in is gone: the camera follows the controlled character again";
+    }
+    const std::uint64_t n = g_swap_calls.fetch_add(1, std::memory_order_relaxed);
+    if (change || n < 40) {
+        log::info("skeleton: scene {} entity 0x{:X} for player {} (stand-in {}{}; controlled 0x{:X}; timeline 0x{:X}){}{}",
+                  show ? "shows" : "hides", handle, static_cast<std::int16_t>(player_arg & 0xFFFF),
+                  dummy ? "yes, for 0x" : "no", dummy ? std::format("{:X}", stands_for) : std::string(), controlled,
+                  timeline, change ? ": " : "", change ? change : "");
+    }
+    return g_swap_hook.call<std::uintptr_t>(system, ctx, handle_ptr, timeline, show_arg, player_arg);
+}
+
+bool prologue(std::uintptr_t rva, std::initializer_list<std::uint8_t> expected) {
+    std::size_t i = 0;
+    for (const std::uint8_t b : expected) {
+        std::uint8_t actual = 0;
+        if (!mem::try_copy(&actual, g_module.base + rva + i++, 1) || actual != b) {
+            return false;
+        }
+    }
+    return true;
+}
 
 // Slot 30 watch (the hook runs on animation threads; everything it touches is atomic).
 safetyhook::MidHook g_slot30_hook;
@@ -359,6 +464,20 @@ void attach_now(std::uintptr_t visual) {
 
 void init(const ModuleInfo& module) {
     g_module = module;
+    // Native follow (agent U): the game functions it calls, checked byte for byte.
+    g_native_ready = prologue(kPrimaryPlayerRva, {0x83, 0x79, 0x74, 0x00}) &&
+                     prologue(kPlayerCharacterRva, {0x8B, 0x81, 0x34, 0x01, 0x00, 0x00, 0x4C, 0x8B, 0xD2}) &&
+                     prologue(kVisualComponentRva, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x56, 0x48, 0x81, 0xEC, 0x90, 0x00, 0x00, 0x00}) &&
+                     prologue(kPreviewDummyRva, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x56, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00});
+    if (g_native_ready && prologue(kSetActorVisibleRva, {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54})) {
+        if (auto hook = safetyhook::InlineHook::create(reinterpret_cast<void*>(g_module.base + kSetActorVisibleRva),
+                                                       reinterpret_cast<void*>(&on_set_actor_visible))) {
+            g_swap_hook = std::move(*hook);
+        }
+    }
+    log::info("skeleton: native follow {} (the controlled character's visual every frame{})",
+              g_native_ready ? "ready" : "unavailable (a function didn't match this build; Lua's visual only)",
+              g_swap_hook ? ", scene stand-ins tracked at exe+0x1D5A350" : "");
     const auto site = sig::lookup("skeleton_update_mesh_bindings");
     if (!site) {
         health::set("body hook (slot 30)", health::State::Unavailable, "signature skeleton_update_mesh_bindings");
@@ -385,6 +504,7 @@ void init(const ModuleInfo& module) {
 void attach_visual(std::uintptr_t visual) {
     std::scoped_lock lock(g_mutex);
     g_request = visual;
+    g_following = visual != 0;
 }
 
 void on_frame() {
@@ -397,6 +517,32 @@ void on_frame() {
     }
     if (request) {
         attach_now(*request);
+        g_followed_entity = 0;
+    }
+    // The body actually shown for the controlled character, every frame (Lua's pointer is the fallback).
+    if (g_native_ready && g_following.load(std::memory_order_relaxed)) {
+        const std::uint64_t dummy = g_dummy.load(std::memory_order_relaxed);
+        const std::uint64_t entity = dummy ? dummy : controlled_raw();
+        const std::uintptr_t visual = entity ? visual_of(entity) : 0;
+        std::uintptr_t vtable = 0;
+        std::uint64_t owner = 0;
+        if (visual) {
+            mem::try_copy(&vtable, visual, sizeof(vtable));
+            mem::try_copy(&owner, visual + kVisualEntity, sizeof(owner));
+        }
+        if (visual && vtable == rva(layout::kVisualVtable) && (visual != g_visual || entity != g_followed_entity)) {
+            ++g_native_switches;
+            log::info("skeleton: following the visual 0x{:X} of {} 0x{:X} (was 0x{:X}; the visual's own entity 0x{:X}{})",
+                      visual, dummy ? "the scene's stand-in" : "the controlled character", entity, g_visual, owner,
+                      owner == entity ? "" : ", NOT the followed one");
+            if (dummy) {
+                log::info("skeleton: the stand-in's head isn't hidden by the mod (only the character's is)");
+            }
+            g_followed_entity = entity;
+            if (visual != g_visual) {
+                attach_now(visual);
+            }
+        }
     }
     if (!g_visual) {
         return;
