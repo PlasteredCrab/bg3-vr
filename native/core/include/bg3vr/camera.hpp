@@ -90,6 +90,11 @@ void set_follow_height(float height);
 // turned yaw. Off: first person.
 void set_chase(bool on, float back_m, float up_m);
 bool chase();
+// Free camera: the view stays where it is (no follow) and move_free flies it: `right` / `forward` (-1..1, along where the
+// head looks, level) at up to 4 m/s, `up` (-1..1) at up to 2.5 m/s.
+void set_free(bool on);
+bool free_camera();
+void move_free(float right, float forward, float up, float seconds);
 void set_anchor(bool head, float eye_offset, float smoothing_s);
 // [xr] world_scale (game units per real metre of head and hand movement); live from the VR menu.
 void set_world_scale(float scale);

@@ -875,9 +875,15 @@ HandState hand_state(const xr::Hand& hand, std::uint64_t sample, std::size_t ind
 void request_view_toggle() {
     // First person <-> third person, both in VR (the stereo, head-tracked view behind the character). From the old
     // flat-screen third person (only reachable by hand now) it goes back to first person.
-    const bool in_third = vrplay::third_person() || camera::chase();
-    bridge::push_request(in_third ? "view_first" : "view_chase");
-    log::info("vr: asking the Lua side for {}", in_third ? "first person" : "third person (in VR)");
+    // First person -> third person (VR) -> free camera -> first person.
+    const char* request = camera::free_camera()                          ? "view_first"
+                          : camera::chase()                              ? "view_free"
+                          : vrplay::third_person()                       ? "view_first"
+                                                                         : "view_chase";
+    bridge::push_request(request);
+    log::info("vr: asking the Lua side for {}", std::string_view(request) == "view_first"   ? "first person"
+                                                : std::string_view(request) == "view_free" ? "the free camera"
+                                                                                            : "third person (in VR)");
 }
 
 // The game UI panel between the world and the left wrist; returns true when it is now on the wrist.

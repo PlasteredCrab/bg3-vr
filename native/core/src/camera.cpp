@@ -64,6 +64,9 @@ std::optional<EyeFov> g_eye_fov;
 std::atomic<bool> g_chase{false};
 std::atomic<float> g_chase_back{2.5f};
 std::atomic<float> g_chase_up{0.6f};
+// Free camera (set_free): the view leaves the character where it is and the sticks fly it (move_free), for aiming
+// spells out of the character's sight. Still stereo and head-tracked; moves only with the head, the sticks and turns.
+std::atomic<bool> g_free{false};
 // Agent Z 2: the CPU cull frustum (0x4086010) is built from the controller's game FOV +0x14 and aspect +0x20 (55 deg /
 // 1.6), symmetric, at the head. Each eye's wider, lopsided field of view reached past it on a different side, so
 // ground decals and blood tiles were culled in blocks, different per eye. With head tracking on these two fields
@@ -359,7 +362,7 @@ void on_view_update(safetyhook::Context& ctx) {
         if (!g_pose) {
             return;
         }
-        if (g_follow) {
+        if (g_follow && !g_free.load(std::memory_order_relaxed)) {
             update_follow();
         }
         if (g_sweep) {
@@ -624,6 +627,51 @@ void set_chase(bool on, float back_m, float up_m) {
 
 bool chase() {
     return g_chase.load(std::memory_order_relaxed);
+}
+
+void set_free(bool on) {
+    if (g_free.exchange(on) != on) {
+        std::scoped_lock lock(g_mutex);
+        log::info("camera: {}", on ? std::format("free camera at ({:.2f}, {:.2f}, {:.2f}): the sticks fly it", g_pose ? g_pose->x : 0.0f,
+                                                 g_pose ? g_pose->y : 0.0f, g_pose ? g_pose->z : 0.0f)
+                                   : std::string("free camera off: following the character again"));
+    }
+}
+
+bool free_camera() {
+    return g_free.load(std::memory_order_relaxed);
+}
+
+void move_free(float right, float forward, float up, float seconds) {
+    if (!g_free.load(std::memory_order_relaxed) || seconds <= 0.0f) {
+        return;
+    }
+    std::scoped_lock lock(g_mutex);
+    if (!g_pose || !g_written) {
+        return;
+    }
+    // Along where the head looks, kept level (the left stick flies horizontally; the right stick's y is height).
+    const vr::Vec3 look = vr::rotate(g_written->orientation, {0.0f, 0.0f, 1.0f});
+    float fx = look[0], fz = look[2];
+    const float l = std::sqrt(fx * fx + fz * fz);
+    if (l < 1e-3f) {
+        return;
+    }
+    fx /= l;
+    fz /= l;
+    // Right: the head's own right axis (+X of the view, as converted from the headset), kept level.
+    const vr::Vec3 side = vr::rotate(g_written->orientation, {1.0f, 0.0f, 0.0f});
+    float rx = side[0], rz = side[2];
+    const float rl = std::sqrt(rx * rx + rz * rz);
+    if (rl < 1e-3f) {
+        return;
+    }
+    rx /= rl;
+    rz /= rl;
+    const float speed = 4.0f * seconds;
+    g_pose->x += (fx * forward + rx * right) * speed;
+    g_pose->z += (fz * forward + rz * right) * speed;
+    g_pose->y += up * 2.5f * seconds;
 }
 
 void set_anchor(bool head, float eye_offset, float smoothing_s) {

@@ -45,7 +45,7 @@ Status: what has been seen working in a headset and what is only built so far is
 | Touch the UI panel with the right controller's tip | Click there (push in to press, pull back to release); handy on the wrist panel |
 | Left trigger (hold) | Highlight items |
 | X | Show / hide the game UI (in front of you) |
-| Y (hold half a second) | Switch between first person and third person, both in VR: third person sees from behind and above your character (`[vr] third_person_back` / `third_person_up`), your head turns the view |
+| Y (hold half a second) | Cycle first person → third person → free camera → first person, all in VR. Third person sees from behind and above your character (`[vr] third_person_back` / `third_person_up`). The free camera stays where it is and you fly it: left stick along where you look, right stick up / down for height (left / right still turns); your character stands still, and the laser and trigger work from the camera (aiming spells out of your character's sight) |
 | Menu (☰) | The VR menu too, where the runtime passes the button on (a Quest 2 through SteamVR keeps it for its own menu) |
 
 The key bindings assume BG3's default PC keys; change any of them in `[bindings]`. Every button press gives a

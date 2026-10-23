@@ -374,6 +374,16 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.ik) {
         bodyik::set_enabled(*request.ik);
     }
+    if (request.free_camera) {
+        // Free camera: the sticks fly the view; the character stands (no stick walking), arms on the game's animation.
+        camera::set_free(*request.free_camera);
+        if (*request.free_camera) {
+            locomotion::set_enabled(false);
+            bodyik::set_enabled(false);
+        } else if (vrplay::active()) {
+            locomotion::set_enabled(g_config.get_bool("vr", "stick_locomotion", true));
+        }
+    }
     if (request.chase) {
         // Third person in VR: stereo and head tracking stay; the view sits behind and above the character, the arms
         // follow the game's animation (not the controllers).
@@ -392,7 +402,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
         vrplay::set_third_person(third);
         resolution::set_suspended(third);
         picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
-        bodyik::set_enabled(!third && !camera::chase() && g_config.get_bool("ik", "arms", true));
+        bodyik::set_enabled(!third && !camera::chase() && !camera::free_camera() && g_config.get_bool("ik", "arms", true));
     }
     if (request.move_stick) {
         locomotion::set_enabled(*request.move_stick);

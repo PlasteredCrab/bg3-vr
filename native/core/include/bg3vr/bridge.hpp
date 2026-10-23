@@ -57,7 +57,8 @@ struct Request {
     std::optional<std::string> vr;                             // VR play: start | stop | pause (level unloading)
     std::optional<bool> ik;                                    // arm IK on/off
     std::optional<bool> third_person;                          // view=third (true) | view=first / chase (false)
-    std::optional<bool> chase;                                 // view=chase (true) | view=first / third (false)
+    std::optional<bool> chase;                                 // view=chase (true) | view=first / third / free (false)
+    std::optional<bool> free_camera;                           // view=free (true) | any other view (false)
     std::vector<std::pair<std::string, std::string>> settings; // set=<section>.<key> <value> (the VR menu)
     std::optional<std::pair<std::uint64_t, std::uint8_t>> weapon_set; // weaponset=<hex server entity> melee|ranged
     std::optional<std::string> wield;                          // wield=melee|bow|crossbow|none (what is in hand)

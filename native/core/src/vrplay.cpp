@@ -600,6 +600,13 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
         g_down[c] = now[c];
     }
 
+    // Free camera: the left stick flies it level along the look, the right stick's y raises / lowers it (x still turns).
+    const bool free_camera = camera::free_camera() && !menu_open;
+    if (free_camera) {
+        const auto axis = [](float v) { return std::abs(v) > 0.15f ? (v - (v > 0 ? 0.15f : -0.15f)) / 0.85f : 0.0f; };
+        camera::move_free(l.active ? axis(l.stick_x) : 0.0f, l.active ? axis(l.stick_y) : 0.0f,
+                          r.active ? axis(r.stick_y) : 0.0f, static_cast<float>(dt));
+    }
     // Right stick: x turns, y scrolls.
     g_turn_rate.store(0.0f, std::memory_order_relaxed);
     const int capture = g_stick_capture.load(std::memory_order_relaxed);
@@ -621,7 +628,7 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             camera::add_yaw((x > 0.0f ? 1.0f : -1.0f) * t * g_smooth_degrees_per_s * static_cast<float>(dt));
         }
         const float y = r.stick_y;
-        if (g_wheel && !talking && std::abs(y) > 0.6f && std::abs(y) > std::abs(x)) {
+        if (g_wheel && !talking && !free_camera && std::abs(y) > 0.6f && std::abs(y) > std::abs(x)) {
             if (time_s >= g_next_wheel) {
                 const std::uint16_t id = y > 0.0f ? layout::kWheelUp : layout::kWheelDown;
                 inject(layout::kDeviceMouse, id, true);

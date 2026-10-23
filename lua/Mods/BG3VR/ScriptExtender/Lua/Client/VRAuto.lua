@@ -20,6 +20,7 @@ local auto = {
     lastXr = nil,
     third = false,       -- third person (the game's camera on a screen in the headset)
     chase = false,       -- third person in VR (stereo, the view behind the character; the core places it)
+    free = false,        -- free camera (stereo; the sticks fly the view, the character stays)
     lastRequest = nil,   -- the last request= sequence handled
 }
 
@@ -38,13 +39,13 @@ function VRStart(height, reason)
         BG3VR.Log("VR started in third person (%s)", reason or "by hand")
         return true
     end
-    local extra = { "views=create", "vr=start", auto.chase and "view=chase" or "view=first" }
+    local extra = { "views=create", "vr=start", auto.free and "view=free" or auto.chase and "view=chase" or "view=first" }
     local skeleton = SkeletonBridgeLine and SkeletonBridgeLine()
     if skeleton then
         extra[#extra + 1] = skeleton
     end
     -- In third person (VR) the whole character is seen: no head hiding.
-    local hide = (not auto.chase) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
+    local hide = (not auto.chase and not auto.free) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
     extra[#extra + 1] = hide or "hide=off"
     if not StartNativeFollow(height or 1.7, extra) then
         return false
@@ -73,7 +74,7 @@ local function OnCharacterChanged()
         lines[#lines + 1] = skeleton
     end
     -- Third person shows the whole character: no head hiding there.
-    local hide = (not auto.third and not auto.chase) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
+    local hide = (not auto.third and not auto.chase and not auto.free) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
     lines[#lines + 1] = hide or "hide=off"
     BG3VR.WriteBridge(lines)
     auto.character = CharacterKey()
@@ -104,9 +105,21 @@ local function HandleOne(what)
         end
         return
     end
+    if what == "view_free" then
+        -- Free camera: as third person in VR, but the core stops following and the sticks fly the view.
+        auto.third = false
+        auto.chase = false
+        auto.free = true
+        if auto.started then
+            BG3VR.WriteBridge({ "view=free", "hide=off" })
+            BG3VR.Log("VR: free camera")
+        end
+        return
+    end
     if what == "view_chase" then
         -- Third person in VR: everything as in first person, the core places the view behind the character.
         auto.third = false
+        auto.free = false
         auto.chase = true
         if auto.started then
             VRStart(1.7, "third person in VR")
@@ -116,6 +129,7 @@ local function HandleOne(what)
     if what == "view_third" or what == "view_first" then
         auto.third = what == "view_third"
         auto.chase = false
+        auto.free = false
         if auto.started then
             if auto.third then
                 auto.stereoIn = nil -- a pending stereo=on from a just-started first person mustn't follow

@@ -321,9 +321,10 @@ Request parse(std::string_view content) {
             }
         } else if (key == "view") {
             const std::string word = text::to_lower(value);
-            if (word == "first" || word == "third" || word == "chase") {
+            if (word == "first" || word == "third" || word == "chase" || word == "free") {
                 request.third_person = word == "third";
                 request.chase = word == "chase";
+                request.free_camera = word == "free";
             }
         } else if (key == "ik") {
             const std::string word = text::to_lower(value);

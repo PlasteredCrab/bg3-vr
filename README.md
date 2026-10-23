@@ -90,7 +90,7 @@ The analysis behind them is in [re-local/ghidra/agents/](re-local/ghidra/agents/
 | Right trigger | Click: move, talk, loot, attack where the right hand points; press UI buttons |
 | Right grip | Right-click (context menu); with an item highlighted it grabs instead (gravity gloves) |
 | A / B | Inventory / cancel (back) |
-| X / Y | Show / hide the game UI / hold Y: first ↔ third person (both in VR; third person from behind your character) |
+| X / Y | Show / hide the game UI / hold Y: first person → third person → free camera (all in VR; the free camera flies with the sticks) |
 | Left stick | Walk where you look |
 | Right stick left / right | Snap turn (or smooth) |
 | Right stick up / down | Scroll |
