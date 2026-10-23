@@ -176,6 +176,40 @@ void on_surface_rays(safetyhook::Context& ctx) {
     }
 }
 
+// Agent AL 3: SSAO (stage 0x37 job 0x3E4F490) rebuilds view positions with cb0[1] = (2/(w P0), -2/(h P5), (-1-P2)/P0,
+// (1+P6)/P5): P2/P6 are 0 in this layout, so each eye's off-centre projection (P8/P9) was ignored and its AO was computed
+// on a sheared copy of the scene (the same bug class as the surface tiles). At the join 0x3E4FD36 (view [rbp-0x60],
+// controller rsi, the offsets at [rbp+0xA8] / [rbp+0xAC]) both eyes get (-1-P8)/P0 and (1-P9)/P5 from their own
+// unjittered PerCamera block [0]. [views] eye_ssao.
+constexpr std::uintptr_t kSsaoRaysRva = 0x3E4FD36;
+safetyhook::MidHook g_ssao_hook;
+std::atomic<bool> g_ssao_fix{true};
+std::atomic<std::uint64_t> g_ssao_fixed{0};
+
+void on_ssao_rays(safetyhook::Context& ctx) {
+    if (!g_ssao_fix.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::uintptr_t view = 0;
+    std::uint8_t orthographic = 1;
+    float p[16]{};
+    if (!mem::try_copy(&view, ctx.rbp - 0x60, sizeof(view)) || stereo::eye_of(view) < 0 ||
+        !mem::try_copy(&orthographic, ctx.rsi + kControllerOrthographic, 1) || orthographic ||
+        !mem::try_copy(p, view + layout::kPerCamera0 + layout::kProjection, sizeof(p)) || p[0] == 0.0f || p[5] == 0.0f) {
+        return;
+    }
+    const float x = (-1.0f - p[8]) / p[0], y = (1.0f - p[9]) / p[5];
+    float before[2]{};
+    mem::try_copy(before, ctx.rbp + 0xA8, sizeof(before));
+    *reinterpret_cast<float*>(ctx.rbp + 0xA8) = x;
+    *reinterpret_cast<float*>(ctx.rbp + 0xAC) = y;
+    const std::uint64_t n = g_ssao_fixed.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 4 || n % 40000 == 0) {
+        log::info("stereo: SSAO rays of {} eye view 0x{:X}: ({:.4f}, {:.4f}) -> ({:.4f}, {:.4f}) ({} times)",
+                  stereo::eye_of(view) == 0 ? "left" : "right", view, before[0], before[1], x, y, n);
+    }
+}
+
 constexpr std::uintptr_t kExposureRva = 0x3CCCB20;
 safetyhook::InlineHook g_exposure_hook;
 std::atomic<bool> g_exposure_from_left{true};
@@ -946,6 +980,16 @@ void install(const Config& config, const ModuleInfo& module) {
         }
         g_exposure_from_left.store(config.get_bool("views", "eye_exposure_from_left", true), std::memory_order_relaxed);
         g_surface_fix.store(config.get_bool("views", "eye_surface_mesh", true), std::memory_order_relaxed);
+        g_ssao_fix.store(config.get_bool("views", "eye_ssao", true), std::memory_order_relaxed);
+        // movss [rbp+0A0h], xmm0 ; mov edx, 40h
+        if (bytes_at(module.base + kSsaoRaysRva, {0xF3, 0x0F, 0x11, 0x85, 0xA0, 0x00, 0x00, 0x00, 0xBA, 0x40, 0x00, 0x00, 0x00})) {
+            if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kSsaoRaysRva), &on_ssao_rays)) {
+                g_ssao_hook = std::move(*h);
+                log::info("stereo: SSAO uses each eye's own projection (exe+0x{:X})", kSsaoRaysRva);
+            }
+        } else {
+            log::warn("stereo: the SSAO ray constants exe+0x{:X} don't match this build", kSsaoRaysRva);
+        }
         // mov [rcx+20h], edi ; mov edx, 57h
         if (bytes_at(module.base + kSurfaceRaysRva, {0x89, 0x79, 0x20, 0xBA, 0x57, 0x00, 0x00, 0x00})) {
             if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kSurfaceRaysRva), &on_surface_rays)) {

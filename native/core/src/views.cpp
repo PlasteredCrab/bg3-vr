@@ -157,12 +157,13 @@ using SetEnvironmentFn = bool (*)(std::uintptr_t view, std::uintptr_t source, st
 constexpr std::uint32_t kSetAtmosphereRva = 0x3CC9700, kSetLightingRva = 0x3CCAAC0;
 
 int call_set_environment(SetEnvironmentFn set_atmosphere, SetEnvironmentFn set_lighting, ReleaseIdFn release_id,
-                         std::uintptr_t pool, std::uintptr_t view, std::uintptr_t atmosphere, std::uintptr_t lighting) {
+                         std::uintptr_t pool, std::uintptr_t view, std::uintptr_t atmosphere, std::uintptr_t lighting,
+                         float atmosphere_blend, float lighting_blend) {
     int step = 1;
     __try {
         std::int32_t id = -1;
         if (atmosphere) {
-            set_atmosphere(view, atmosphere, &id, 0.0f, false);
+            set_atmosphere(view, atmosphere, &id, atmosphere_blend, true);
             if (id != -1) {
                 release_id(pool, &id);
             }
@@ -170,7 +171,7 @@ int call_set_environment(SetEnvironmentFn set_atmosphere, SetEnvironmentFn set_l
         step = 2;
         id = -1;
         if (lighting) {
-            set_lighting(view, lighting, &id, 0.0f, false);
+            set_lighting(view, lighting, &id, lighting_blend, true);
             if (id != -1) {
                 release_id(pool, &id);
             }
@@ -202,7 +203,7 @@ std::string fog_layers(std::uintptr_t view) {
             mem::try_copy(&ids[i], resource + 8, sizeof(ids[i]));
         }
     }
-    std::string out = std::format("{} layer(s) (variant {}, refresh {}, atmosphere from {} to {} active {})", count, variant,
+    std::string out = std::format("{} layer(s) (variant {}, refresh {}, atmosphere target {} start {} active {})", count, variant,
                                   refresh, ids[0], ids[1], ids[2]);
     for (std::uint32_t i = 0; entries && i < std::min<std::uint32_t>(count, 8); ++i) {
         std::int32_t id = -1, entry_variant = -1;
@@ -278,21 +279,38 @@ void copy_environment(std::uintptr_t view, bool verbose = true) {
     if (!eyes) {
         return;
     }
+    // Agent AL 1: main's TARGET (+0x2880 / +0x28B8: where its blend is going) with the blend time it has left, forced,
+    // so the eye blends along with it. Copying main's active object (as before) at the start of a blend froze the eye
+    // on the almost-old lighting (sun colour, shadows, AO, fog and sky rows, exposure settings) with a 0 s blend.
     std::uintptr_t atmosphere = 0, lighting = 0, pool_global = 0;
     std::int32_t atmosphere_id = -1, lighting_id = -1;
-    mem::try_copy(&atmosphere, (*eyes)[0] + 0x28A0, sizeof(atmosphere));
-    mem::try_copy(&lighting, (*eyes)[0] + 0x28D8, sizeof(lighting));
+    mem::try_copy(&atmosphere, (*eyes)[0] + 0x2880, sizeof(atmosphere));
+    mem::try_copy(&lighting, (*eyes)[0] + 0x28B8, sizeof(lighting));
+    float atm_elapsed = 0.0f, atm_duration = 0.0f, light_elapsed = 0.0f, light_duration = 0.0f;
+    std::uint8_t atm_blending = 0, light_blending = 0;
+    mem::try_copy(&atm_elapsed, (*eyes)[0] + 0x28A8, sizeof(float));
+    mem::try_copy(&atm_duration, (*eyes)[0] + 0x28AC, sizeof(float));
+    mem::try_copy(&atm_blending, (*eyes)[0] + 0x28B0, 1);
+    mem::try_copy(&light_elapsed, (*eyes)[0] + 0x28E0, sizeof(float));
+    mem::try_copy(&light_duration, (*eyes)[0] + 0x28E4, sizeof(float));
+    mem::try_copy(&light_blending, (*eyes)[0] + 0x28E8, 1);
+    const auto left = [](bool blending, float elapsed, float duration) {
+        return blending && std::isfinite(elapsed) && std::isfinite(duration) ? std::clamp(duration - elapsed, 0.0f, 30.0f) : 0.0f;
+    };
+    const float atmosphere_blend = left(atm_blending != 0, atm_elapsed, atm_duration);
+    const float lighting_blend = left(light_blending != 0, light_elapsed, light_duration);
     mem::try_copy(&atmosphere_id, atmosphere + 8, sizeof(atmosphere_id));
     mem::try_copy(&lighting_id, lighting + 8, sizeof(lighting_id));
     mem::try_copy(&pool_global, base + kIdPoolGlobalRva, sizeof(pool_global));
     if (verbose) {
-        log::info("views: environment from the main view: atmosphere 0x{:X} (id {}), lighting 0x{:X} (id {})", atmosphere,
-                  atmosphere_id, lighting, lighting_id);
+        log::info("views: environment from the main view's targets: atmosphere 0x{:X} (id {}, {:.2f} s of blend left), "
+                  "lighting 0x{:X} (id {}, {:.2f} s left)",
+                  atmosphere, atmosphere_id, atmosphere_blend, lighting, lighting_id, lighting_blend);
     }
     const int faulted = call_set_environment(reinterpret_cast<SetEnvironmentFn>(*set_atmosphere),
                                              reinterpret_cast<SetEnvironmentFn>(*set_lighting),
                                              reinterpret_cast<ReleaseIdFn>(*release_id), pool_global + 0xC600, view,
-                                             atmosphere, lighting);
+                                             atmosphere, lighting, atmosphere_blend, lighting_blend);
     std::uintptr_t split_atmosphere = 0, split_lighting = 0;
     std::int32_t split_atmosphere_id = -1, split_lighting_id = -1;
     mem::try_copy(&split_atmosphere, view + 0x28A0, sizeof(split_atmosphere));
@@ -348,8 +366,28 @@ void sync_environment() {
     if (++frames % 1800 == 0) {
         log::info("views: fog layers: main {}; eye {}", fog_layers((*eyes)[0]), fog_layers((*eyes)[1]));
     }
+    // The lock / pause bytes (requests only recorded / blend paused: timelines and dialogues set them on main).
+    for (const std::size_t offset : {std::size_t{0x2AE8}, std::size_t{0x2AE9}, std::size_t{0x2AEB}, std::size_t{0x2AEC}}) {
+        std::uint8_t value = 0;
+        if (mem::try_copy(&value, (*eyes)[0] + offset, 1)) {
+            *reinterpret_cast<std::uint8_t*>((*eyes)[1] + offset) = value;
+        }
+    }
+    // Copy only when main's targets differ from the eye's: when the game's own request loop (0x1E1E1D0) started the
+    // same blend on both views, the eye blends by itself (AL 1.2).
+    const auto target_id = [](std::uintptr_t view, std::size_t offset) {
+        std::uintptr_t object = 0;
+        std::int32_t id = -1;
+        if (mem::try_copy(&object, view + offset, sizeof(object)) && object) {
+            mem::try_copy(&id, object + 8, sizeof(id));
+        }
+        return id;
+    };
+    const bool targets_equal = target_id((*eyes)[0], 0x2880) == target_id((*eyes)[1], 0x2880) &&
+                               target_id((*eyes)[0], 0x28B8) == target_id((*eyes)[1], 0x28B8);
     const Environment now = read_environment((*eyes)[0]);
-    if (g_environment_copied && *g_environment_copied == now) {
+    if (targets_equal) {
+        g_environment_copied = now;
         return;
     }
     const bool verbose = g_environment_syncs < 20 || g_environment_syncs % 100 == 0;

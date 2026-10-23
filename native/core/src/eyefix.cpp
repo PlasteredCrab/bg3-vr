@@ -116,7 +116,10 @@ std::string predecessors(std::uintptr_t counter) {
 
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
-    g_shared_exposure = config.get_bool("views", "shared_exposure", true);
+    // Off by default (agent AM 3): the skip never ran (the game uses the older exposure job), and if the newer path ever
+    // ran, the right eye's re-expose would read buffers nothing wrote (black / NaN). The exposure redirect in stereo.cpp
+    // is what gives the right eye the left eye's exposure.
+    g_shared_exposure = config.get_bool("views", "shared_exposure", false);
     if (config.get_bool("views", "eye_slot", true)) {
         const std::uintptr_t site = module.base + kSlotStoreRva;
         // movsx edx, byte [rax+0x2268] ; mov [rcx+0x219C], edx
