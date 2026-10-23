@@ -5,6 +5,7 @@
 #include "bg3vr/memory.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
+#include "bg3vr/views.hpp"
 
 #include <safetyhook.hpp>
 
@@ -96,6 +97,33 @@ std::uint64_t g_used_serial = 0;
 std::uintptr_t g_eye_view_seen = 0;
 
 int g_validated = 0;
+int g_worst_index = -1;          // the element with the largest difference (0..63 matrices, 64.. splits, 999 count)
+std::uint64_t g_rejected_frames = 0; // frames since a rejection: checked again after kRetryFrames (agent AN M1)
+constexpr std::uint64_t kRetryFrames = 1800;
+
+// Both views' environments equal and settled (agent AN 2: the 15:10 check ran while the eye's environment copy wasn't
+// applied yet: its atmosphere's cascade distances differed, and the rejection was never retried).
+bool environments_settled() {
+    const auto views = views::eye_views();
+    if (!views || !(*views)[0] || !(*views)[1]) {
+        return false;
+    }
+    const auto id_at = [](std::uintptr_t view, std::size_t offset) {
+        std::uintptr_t object = 0;
+        std::int32_t id = -1;
+        if (mem::try_copy(&object, view + offset, sizeof(object)) && object) {
+            mem::try_copy(&id, object + 8, sizeof(id));
+        }
+        return id;
+    };
+    std::uint8_t blending[4]{};
+    mem::try_copy(&blending[0], (*views)[0] + 0x28B0, 1);
+    mem::try_copy(&blending[1], (*views)[0] + 0x28E8, 1);
+    mem::try_copy(&blending[2], (*views)[1] + 0x28B0, 1);
+    mem::try_copy(&blending[3], (*views)[1] + 0x28E8, 1);
+    return !blending[0] && !blending[1] && !blending[2] && !blending[3] &&
+           id_at((*views)[0], 0x28A0) == id_at((*views)[1], 0x28A0) && id_at((*views)[0], 0x28D8) == id_at((*views)[1], 0x28D8);
+}
 float g_max_error = 0.0f;
 std::atomic<std::uint64_t> g_shared{0};
 std::atomic<std::uint64_t> g_skipped{0};
@@ -146,7 +174,7 @@ std::array<float, 64> rebased(const float (&origin)[3]) {
 
 void validate(std::uintptr_t stage, std::uintptr_t view) {
     const auto* base = reinterpret_cast<const std::uint8_t*>(stage);
-    if (!g_main.ran || g_main.serial == g_used_serial || base[kRun] == 0) {
+    if (!g_main.ran || g_main.serial == g_used_serial || base[kRun] == 0 || !environments_settled()) {
         return;
     }
     g_used_serial = g_main.serial;
@@ -162,17 +190,30 @@ void validate(std::uintptr_t stage, std::uintptr_t view) {
     std::memcpy(splits, base + kSplits, sizeof(splits));
     std::memcpy(&count, base + kCount, sizeof(count));
     float error = 0.0f;
+    int worst = -1;
     const std::uint32_t used = std::min<std::uint32_t>(count, 4);
     for (std::uint32_t i = 0; i < used * 16; ++i) {
-        error = std::max(error, std::abs(own[i] - expect[i]) / std::max(1.0f, std::abs(own[i])));
+        const float e = std::abs(own[i] - expect[i]) / std::max(1.0f, std::abs(own[i]));
+        if (e > error) {
+            error = e;
+            worst = static_cast<int>(i);
+        }
     }
     for (std::size_t i = 0; i < std::size(splits); ++i) {
-        error = std::max(error, std::abs(splits[i] - g_main.splits[i]) / std::max(1.0f, std::abs(splits[i])));
+        const float e = std::abs(splits[i] - g_main.splits[i]) / std::max(1.0f, std::abs(splits[i]));
+        if (e > error) {
+            error = e;
+            worst = 64 + static_cast<int>(i);
+        }
     }
     if (count != g_main.count) {
         error = std::max(error, 1.0f);
+        worst = 999;
     }
-    g_max_error = std::max(g_max_error, error);
+    if (error > g_max_error) {
+        g_max_error = error;
+        g_worst_index = worst;
+    }
     ++g_validated;
     if (g_validated <= 3 || error > kTolerance) {
         log::info("shadows: check {}: {} cascades (left eye {}), largest difference between the right eye's own cascades "
@@ -186,9 +227,19 @@ void validate(std::uintptr_t stage, std::uintptr_t view) {
     if (g_validated >= kValidationFrames) {
         const bool ok = g_max_error <= kTolerance;
         g_state = ok ? State::Sharing : State::Rejected;
-        log::info("shadows: {} frames checked, largest difference {:.2e}: {}", g_validated, g_max_error,
+        const int w = g_worst_index;
+        const std::string where = w < 0     ? std::string("-")
+                                  : w < 64  ? std::format("cascade {} matrix element {} (row {}, column {}): right {:.5f}, "
+                                                          "left re-based {:.5f}", w / 16, w % 16, (w % 16) / 4, w % 4, own[w], expect[w])
+                                  : w < 999 ? std::format("split value {}: right {:.5f}, left {:.5f}", w - 64, splits[w - 64],
+                                                          g_main.splits[static_cast<std::size_t>(w - 64)])
+                                            : std::format("cascade count: right {}, left {}", count, g_main.count);
+        log::info("shadows: {} frames checked (environments equal and settled), largest difference {:.2e} at {}: {}",
+                  g_validated, g_max_error, where,
                   ok ? "the right eye now reuses the left eye's sun shadows (its own cascade pass is skipped)"
-                     : "the eyes' cascades differ more than expected; each eye keeps rendering its own");
+                     : "the eyes' cascades differ more than expected; each eye keeps rendering its own (checked again in "
+                       "30 s)");
+        g_rejected_frames = 0;
     }
 }
 
@@ -259,6 +310,12 @@ void on_execute(std::uintptr_t stage) {
         g_eye_view_seen = view;
         g_validated = 0;
         g_max_error = 0.0f;
+        g_state = State::Validating;
+    }
+    if (g_state.load(std::memory_order_relaxed) == State::Rejected && ++g_rejected_frames >= kRetryFrames) {
+        g_validated = 0;
+        g_max_error = 0.0f;
+        g_worst_index = -1;
         g_state = State::Validating;
     }
     const State state = g_state.load(std::memory_order_relaxed);
@@ -341,7 +398,7 @@ void on_cache_index(safetyhook::Context& ctx) {
             mem::try_copy(&eye_parity, stage + kCacheFlag, 1);
             log::info("shadows: right eye reads its own distant-shadow cache (index {} at exe+0x{:X}; {} times so far). "
                       "Cache on main {} / eye {}, index main {} / eye {}, parity main {} / eye {}",
-                      index, ctx.rip - g_module_base, n, main_on, eye_on, main_index, index, main_parity, eye_parity);
+                      index, kFogCacheIndexRva, n, main_on, eye_on, main_index, index, main_parity, eye_parity);
         }
     }
 }

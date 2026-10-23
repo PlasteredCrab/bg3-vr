@@ -326,12 +326,17 @@ bool copy_environment(std::uintptr_t view, bool verbose = true) {
         mem::try_copy(&elapsed, main + r.elapsed, sizeof(elapsed));
         mem::try_copy(&duration, main + r.duration, sizeof(duration));
         mem::try_copy(&blending, main + r.blending, 1);
-        const float blend = blending && std::isfinite(elapsed) && std::isfinite(duration)
-                                ? std::clamp(duration - elapsed, 0.0f, 30.0f)
-                                : 0.0f;
+        // Main's whole blend: its full duration, then main's elapsed time (agent AN M2: with only the remaining time the
+        // eye blended from a different point and differed for the whole blend).
+        const bool timed = blending && std::isfinite(elapsed) && std::isfinite(duration) && duration > 0.0f;
+        const float blend = timed ? std::clamp(duration, 0.0f, 30.0f) : 0.0f;
         const int faulted = call_setter(reinterpret_cast<SetEnvironmentFn>(r.setter),
                                         reinterpret_cast<AssignIdFn>(base + kAssignIdRva), view, main, main_target,
                                         r.request, r.previous, r.lock, blend);
+        if (!faulted && timed) {
+            const float e = std::clamp(elapsed, 0.0f, blend);
+            *reinterpret_cast<float*>(view + r.elapsed) = e;
+        }
         copied = copied || !faulted;
         if (verbose || faulted) {
             std::uint32_t request_after = 0;

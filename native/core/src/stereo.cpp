@@ -199,10 +199,19 @@ void on_ssao_rays(safetyhook::Context& ctx) {
         return;
     }
     const float x = (-1.0f - p[8]) / p[0], y = (1.0f - p[9]) / p[5];
+    std::int32_t size[2]{};
     float before[2]{};
     mem::try_copy(before, ctx.rbp + 0xA8, sizeof(before));
     *reinterpret_cast<float*>(ctx.rbp + 0xA8) = x;
     *reinterpret_cast<float*>(ctx.rbp + 0xAC) = y;
+    // The scale terms from the same projection (agent AN M3: they came from the proxy's +0x110, the eye's only while
+    // [views] eye_surface_mesh is on): xmm0 is about to be stored at [rbp+0xA0] (2/(w P0)); [rbp+0xA4] = -2/(h P5).
+    if (mem::try_copy(size, ctx.rbp + 0x30, sizeof(size)) && size[0] > 0 && size[1] > 0) {
+        const float sx = 2.0f / (static_cast<float>(size[0]) * p[0]);
+        const float sy = -2.0f / (static_cast<float>(size[1]) * p[5]);
+        std::memcpy(&ctx.xmm0, &sx, sizeof(sx));
+        *reinterpret_cast<float*>(ctx.rbp + 0xA4) = sy;
+    }
     const std::uint64_t n = g_ssao_fixed.fetch_add(1, std::memory_order_relaxed) + 1;
     if (n <= 4 || n % 40000 == 0) {
         log::info("stereo: SSAO rays of {} eye view 0x{:X}: ({:.4f}, {:.4f}) -> ({:.4f}, {:.4f}) ({} times)",
