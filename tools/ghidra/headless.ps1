@@ -27,9 +27,10 @@ $temp = Join-Path $work "temp"
 New-Item -ItemType Directory -Force $work, $temp | Out-Null
 $env:TEMP = $temp
 $env:TMP = $temp
-# Ghidra's caches go under %LOCALAPPDATA%\ghidra; keep them on E: as well.
+# Ghidra's caches go under %LOCALAPPDATA%\ghidra, its settings and application.log under %APPDATA%\ghidra: keep both on E:.
 $env:LOCALAPPDATA = Join-Path $work "localappdata"
-New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+$env:APPDATA = Join-Path $work "appdata"
+New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
 Remove-Item Env:_JAVA_OPTIONS -ErrorAction SilentlyContinue # its "Picked up" line breaks launch.bat's Java check
 
 $launch = Join-Path $Ghidra "support\launch.bat"
