@@ -23,6 +23,7 @@
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
 #include "bg3vr/dolls.hpp"
+#include "bg3vr/gameui.hpp"
 #include "bg3vr/eyefix.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/holster.hpp"
@@ -464,6 +465,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     health::log_summary("report");
     camera::report();
     cull::report();
+    gameui::report();
     skeleton::report();
     dialogue::report();
     eyefix::report();
@@ -524,6 +526,7 @@ int init(const wchar_t* root_dir) {
     stereo::install(g_config, module);
     shadows::install(g_config, module);
     dolls::install(g_config, module);
+    gameui::install(g_config, module);
     render::configure(g_config);
     render::install(module);
     watchdog::start(module);

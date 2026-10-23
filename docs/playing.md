@@ -19,8 +19,10 @@ Status: what has been seen working in a headset and what is only built so far is
    - first-person view at your character's eye height;
    - stereo three seconds later;
    - your own head hidden;
-   - the game UI hidden: X shows it in front of you (and hides it again); it comes up by itself in combat and in
-     conversations (VR menu, Game interface: always in front of you, or on your wrist, instead);
+   - the game UI hidden: X shows it in front of you (and hides it again); it comes up by itself in combat, in
+     conversations and whenever a game window opens (inventory, map, journal, trade, loot, the game menu); VR menu,
+     Game interface: always in front of you, or on your wrist, instead. While your laser points into the world, the
+     hidden UI never blocks a click there;
    - hand pointing, thumbstick walking and the controller bindings.
 
    After a loading screen it starts again, and switching characters moves it to the new one.

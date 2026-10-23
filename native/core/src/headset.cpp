@@ -1,5 +1,7 @@
 #include "bg3vr/headset.hpp"
 
+#include "bg3vr/gameui.hpp"
+
 #include "bg3vr/blit.hpp"
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
@@ -1449,8 +1451,12 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     // Hidden until revealed (or combat, or a conversation): no panel, no laser on it, and the UI stays out of the eyes.
     const bool conversation = g_ui_dialogue.load(std::memory_order_relaxed) && g_ui_dialogue_front.load(std::memory_order_relaxed);
     const bool combat = g_ui_combat.load(std::memory_order_relaxed);
+    // A game window (inventory, map, trade, loot, game menu, ...) open brings it up too (gameui.cpp, agent AB).
+    const bool window = gameui::window_open();
     const bool visible = !g_ui_on_demand.load(std::memory_order_relaxed) || g_ui_revealed.load(std::memory_order_relaxed) ||
-                         combat || conversation;
+                         combat || conversation || window;
+    // The laser on the panel (last frame): otherwise the invisible screen UI under the cursor mustn't eat world clicks.
+    gameui::set_pointer(vrplay::active() && !vrplay::third_person(), visible && g_ui_cursor_on_panel);
     if (!visible) {
         release_touch();
         g_ui_target.reset();
@@ -1479,7 +1485,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     }
     // Where it is this frame: the world panel, or on the left wrist.
     const std::array<HandState, 2> both = hands();
-    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed) && !conversation && !combat;
+    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed) && !conversation && !combat && !window;
     // A tracked hand has no grip action space for the runtime to anchor the panel to: place it in LOCAL from the
     // hand's grip every frame instead.
     const bool wrist_hand_tracked = wrist && both[wrist_hand()].hand_tracked && both[wrist_hand()].tracked;

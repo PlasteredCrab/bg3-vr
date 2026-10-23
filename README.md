@@ -42,7 +42,7 @@ Legend: ✅ seen working in a headset run · 🧪 built, not yet tried in the he
 | Controllers: bindings for every button, combos, haptics | ✅ |
 | Arms follow your hands (IK), weapon in your hand, natural elbows, shoulders, finger curl | ✅ arms, 🧪 elbows / shoulders / fingers |
 | Aiming laser (styles, colour, opacity), stops on the UI and the menu | ✅ laser, 🧪 stopping on panels |
-| Game UI hidden until X shows it in front of you; up by itself in combat and conversations (or always in front, or on the wrist) | 🧪 hidden by default |
+| Game UI hidden until X shows it in front of you; up by itself in combat, conversations and when a game window opens (or always in front, or on the wrist) | 🧪 hidden by default |
 | Holsters: draw and stow weapons over the shoulders and at the hips; torch at the chest; bag behind the back | ✅ draw, 🧪 stow and the rest |
 | Hand tracking (point, pinch, close the hand to click or grab) | 🧪 |
 | Grab and throw dead bodies (the game's ragdolls) | 🧪 (within ~1 m of where they fell for now) |
