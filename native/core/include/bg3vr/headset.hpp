@@ -23,6 +23,8 @@ void install(const Config& config);
 void configure_ui(const Config& config);
 // The first VR start ever ([menu] welcomed not set): the VR menu opens by itself on the Guide.
 void set_first_run(bool first);
+// The controlled character is in combat (Lua: incombat=): with [ui] placement = hidden the game UI comes up in front.
+void set_in_combat(bool on);
 // A conversation is on (game thread): the game UI, where the answers are, comes off the wrist to a panel in front of
 // the head until it ends ([ui] dialogue_in_front, default on), so the laser and trigger can pick an answer.
 void set_dialogue(bool on);

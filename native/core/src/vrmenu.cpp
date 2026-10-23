@@ -52,7 +52,7 @@ struct Control {
 };
 constexpr Control kControls[] = {
     {"left_trigger", false, Input::Trigger, "key:lalt"}, {"left_grip", false, Input::Grip, "none"},
-    {"left_x", false, Input::Primary, "key:m"},          {"left_y", false, Input::Secondary, "view"},
+    {"left_x", false, Input::Primary, "panel"},          {"left_y", false, Input::Secondary, "view"},
     {"left_menu", false, Input::Menu, "vrmenu"},         {"left_stick_click", false, Input::Stick, "vrmenu"},
     {"right_trigger", true, Input::Trigger, "mouse_left"}, {"right_grip", true, Input::Grip, "mouse_right"},
     {"right_a", true, Input::Primary, "key:i"},          {"right_b", true, Input::Secondary, "key:escape"},
@@ -126,7 +126,8 @@ Menu::Menu() {
 
     section("View");
     live("Perspective", Item::Live::View, {{"First person", "first"}, {"Third person", "third"}});
-    live("Game interface", Item::Live::Ui, {{"In front of you", "world"}, {"On your wrist", "wrist"}});
+    choice("Game interface", "ui.placement",
+           {{"Hidden until X (shown in combat)", "hidden"}, {"Always in front of you", "world"}, {"On your wrist", "wrist"}}, 0);
     choice("Render resolution", "render.vr_resolution",
            {{"Game's own", "0", true}, {"60%", "60"}, {"70%", "70"}, {"80%", "80"}, {"90%", "90"}, {"100%", "100"},
             {"120%", "120"}},

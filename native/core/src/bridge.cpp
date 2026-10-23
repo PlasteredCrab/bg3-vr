@@ -299,6 +299,11 @@ Request parse(std::string_view content) {
             }
         } else if (key == "wield") {
             request.wield = text::to_lower(value);
+        } else if (key == "incombat") {
+            const std::string v = text::to_lower(value);
+            if (v == "on" || v == "off") {
+                request.in_combat = v == "on";
+            }
         } else if (key == "weaponset") {
             const auto space = value.find(' ');
             const auto entity = parse_address(value.substr(0, space));

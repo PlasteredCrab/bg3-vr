@@ -126,7 +126,12 @@ std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
 std::atomic<bool> g_ui_dialogue{false};       // a conversation is on
 std::atomic<bool> g_ui_dialogue_front{true};  // [ui] dialogue_in_front
-std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist (toggled by the "panel" binding)
+std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist
+// [ui] placement = hidden (the default): the game UI stays hidden until the "panel" binding (X) reveals it, and comes
+// up by itself in combat and in conversations; shown, it is in front of you.
+std::atomic<bool> g_ui_on_demand{true};
+std::atomic<bool> g_ui_revealed{false};       // the "panel" binding showed it
+std::atomic<bool> g_ui_combat{false};         // the controlled character is in combat (Lua: incombat=)
 std::atomic<bool> g_menu_toggle_request{false}; // the "vrmenu" binding was pressed
 // [vr] dominant_hand: the hand that points (laser, poke, menu, picking, melee) and gets the "right_*" bindings; the
 // other hand carries the wrist UI and walks with its stick. Right by default.
@@ -867,6 +872,20 @@ void request_view_toggle() {
 }
 
 // The game UI panel between the world and the left wrist; returns true when it is now on the wrist.
+// [ui] placement: hidden (shown on demand), world (always in front) or wrist.
+void apply_placement(const std::string& placement) {
+    const bool wrist = placement == "wrist";
+    const bool on_demand = placement != "wrist" && placement != "world";
+    const bool was_wrist = g_ui_wrist.exchange(wrist, std::memory_order_relaxed);
+    const bool was_on_demand = g_ui_on_demand.exchange(on_demand, std::memory_order_relaxed);
+    if (was_wrist != wrist || was_on_demand != on_demand) {
+        g_ui_place_request.store(true, std::memory_order_relaxed);
+        log::info("ui: the game interface {}", on_demand ? "is hidden until the panel button (X) shows it, and comes up in "
+                                                          "combat and conversations"
+                                               : wrist ? "is on your wrist" : "is always in front of you");
+    }
+}
+
 bool toggle_ui_wrist() {
     const bool wrist = !g_ui_wrist.load(std::memory_order_relaxed);
     g_ui_wrist.store(wrist, std::memory_order_relaxed);
@@ -1045,7 +1064,16 @@ void update_input(const xr::Frame& frame) {
         request_view_toggle();
     }
     if (feedback.toggle_panel) {
-        bridge::post(std::format("set=ui.placement {}\n", toggle_ui_wrist() ? "wrist" : "world"));
+        if (g_ui_on_demand.load(std::memory_order_relaxed)) {
+            const bool revealed = !g_ui_revealed.load(std::memory_order_relaxed);
+            g_ui_revealed.store(revealed, std::memory_order_relaxed);
+            if (revealed) {
+                g_ui_place_request.store(true, std::memory_order_relaxed); // in front of where you look now
+            }
+            log::info("ui: the game interface {} (panel button)", revealed ? "shown" : "hidden");
+        } else {
+            bridge::post(std::format("set=ui.placement {}\n", toggle_ui_wrist() ? "wrist" : "world"));
+        }
     }
     if (feedback.toggle_menu) {
         g_menu_toggle_request.store(true, std::memory_order_relaxed);
@@ -1409,6 +1437,30 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
                   g_ui_panel_height, desc.Width, desc.Height, static_cast<int>(desc.Format),
                   g_ui_linearize ? " (sRGB-decoded)" : "", g_ui_width, g_ui_distance);
     }
+    // Hidden until revealed (or combat, or a conversation): no panel, no laser on it, and the UI stays out of the eyes.
+    const bool conversation = g_ui_dialogue.load(std::memory_order_relaxed) && g_ui_dialogue_front.load(std::memory_order_relaxed);
+    const bool combat = g_ui_combat.load(std::memory_order_relaxed);
+    const bool visible = !g_ui_on_demand.load(std::memory_order_relaxed) || g_ui_revealed.load(std::memory_order_relaxed) ||
+                         combat || conversation;
+    if (!visible) {
+        release_touch();
+        g_ui_target.reset();
+        if (g_ui_shown) {
+            g_session->set_panel(std::nullopt);
+            g_ui_shown = false;
+            log::info("ui: panel hidden (press the panel button, X, to show it)");
+        }
+        if (g_ui_cursor_on_panel) {
+            move_cursor(0.5f, 0.5f);
+            g_ui_cursor_on_panel = false;
+        }
+        ui_set_in_eyes(!g_ui_remove_from_eyes);
+        ui->Release();
+        return;
+    }
+    if (!g_ui_shown && g_ui_on_demand.load(std::memory_order_relaxed)) {
+        g_ui_place_request.store(true, std::memory_order_relaxed); // shown again: in front of where you look now
+    }
     if ((g_ui_place_request.exchange(false, std::memory_order_relaxed) || !g_ui_place) && frame.views.size() == 2) {
         g_ui_place = place_in_front(centre_view(frame.views).pose);
     }
@@ -1418,8 +1470,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     }
     // Where it is this frame: the world panel, or on the left wrist.
     const std::array<HandState, 2> both = hands();
-    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed) &&
-                       !(g_ui_dialogue.load(std::memory_order_relaxed) && g_ui_dialogue_front.load(std::memory_order_relaxed));
+    const bool wrist = g_ui_wrist.load(std::memory_order_relaxed) && !conversation && !combat;
     // A tracked hand has no grip action space for the runtime to anchor the panel to: place it in LOCAL from the
     // hand's grip every frame instead.
     const bool wrist_hand_tracked = wrist && both[wrist_hand()].hand_tracked && both[wrist_hand()].tracked;
@@ -2017,7 +2068,7 @@ void install(const Config& config) {
     g_ui_width = ui_number("width", 1.1f, 0.2f, 5.0f);
     g_ui_drop = ui_number("below_eyes", 0.15f, -1.0f, 1.0f);
     g_ui_wrist_width = ui_number("wrist_width", 0.8f, 0.1f, 2.0f);
-    g_ui_wrist.store(text::to_lower(config.get("ui", "placement", "wrist")) == "wrist", std::memory_order_relaxed);
+    apply_placement(text::to_lower(config.get("ui", "placement", "hidden")));
     g_ui_dialogue_front.store(config.get_bool("ui", "dialogue_in_front", true), std::memory_order_relaxed);
     g_menu_enabled = config.get_bool("menu", "enabled", true);
     g_menu_width = ui_number("menu_width", 0.62f, 0.2f, 2.0f);
@@ -2030,6 +2081,18 @@ void install(const Config& config) {
     }
     render::set_present_callback(&on_present);
     log::info("xr: enabled, mode {}; the session opens on the first presented frame", mode_name(g_mode));
+}
+
+void set_in_combat(bool on) {
+    if (g_ui_combat.exchange(on, std::memory_order_relaxed) != on) {
+        if (on && g_ui_on_demand.load(std::memory_order_relaxed)) {
+            g_ui_place_request.store(true, std::memory_order_relaxed);
+        }
+        log::info("ui: combat {}{}", on ? "started" : "ended",
+                  g_ui_on_demand.load(std::memory_order_relaxed) ? (on ? ": the game interface comes up in front of you"
+                                                                       : ": the game interface hides again unless shown")
+                                                                 : "");
+    }
 }
 
 void set_first_run(bool first) {
@@ -2091,6 +2154,7 @@ void configure_ui(const Config& config) {
         const std::string text = config.get("ui", key);
         return text.empty() ? fallback : std::clamp(std::strtof(text.c_str(), nullptr), lo, hi);
     };
+    apply_placement(text::to_lower(config.get("ui", "placement", "hidden")));
     g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
     g_ui_wrist_along = ui_value("wrist_along", 0.2f, -0.3f, 0.6f);
     const std::string v = config.get("ui", "wrist_width");

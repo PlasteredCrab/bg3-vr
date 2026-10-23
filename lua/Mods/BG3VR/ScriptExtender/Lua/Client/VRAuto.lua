@@ -159,6 +159,22 @@ local function Tick(dt)
         elseif auto.running and CharacterKey() and CharacterKey() ~= auto.character then
             OnCharacterChanged()
         end
+        -- In combat or not (the game UI, hidden by default in VR, comes up in combat): SE's IsInCombat tag
+        -- (eoc::combat::IsInCombatComponent) or a combat handle on CombatParticipant.
+        local character = BG3VR.Controlled()
+        local ok, inCombat = pcall(function()
+            if not character then
+                return false
+            end
+            local participant = character.CombatParticipant
+            return character.IsInCombat ~= nil or (participant ~= nil and participant.CombatHandle ~= nil)
+        end)
+        inCombat = ok and inCombat or false
+        if inCombat ~= auto.inCombat then
+            auto.inCombat = inCombat
+            BG3VR.WriteBridge({ "incombat=" .. (inCombat and "on" or "off") })
+            BG3VR.Log("VR: %s combat", inCombat and "in" or "out of")
+        end
         return
     end
     if ready and auto.running and status.autostart ~= "0" and not auto.suppressed and _C() then

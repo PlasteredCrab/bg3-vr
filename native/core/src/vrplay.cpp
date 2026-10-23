@@ -90,7 +90,7 @@ constexpr ComboDefault kComboDefaults[] = {
     {LeftGrip, LeftY, "key:tab"},         // party view
     {LeftGrip, RightTrigger, "key:space"}, // end turn
     {LeftGrip, RightStickClick, "key:c"}, // sneak
-    {LeftGrip, LeftStickClick, "panel"},  // the game UI panel to the wrist and back
+    {LeftGrip, LeftStickClick, "key:m"},  // map
 };
 std::vector<Combo> g_combos;
 std::array<bool, kControlCount> g_swallow{};    // pressed as a combo's button: ignore until released
@@ -108,7 +108,7 @@ std::array<Binding, kControlCount> parse_bindings(const Config& config, std::str
 constexpr const char* kDefaults[kControlCount] = {
     "key:lalt",     // left trigger: hold to highlight items / show tooltips
     "",             // left grip: reserved for grabbing
-    "key:m",        // X: map
+    "panel",        // X: show / hide the game interface (key:m, the map, is on left grip + left stick click)
     "view",         // Y: first / third person
     "vrmenu",       // menu: the VR menu, where the runtime passes it on (a Quest 2 through SteamVR opens its own menu)
     "vrmenu",       // left stick click: the VR menu (works on every controller)

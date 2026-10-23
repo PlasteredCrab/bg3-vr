@@ -1098,8 +1098,8 @@ void test_vrmenu() {
     CHECK(a.toggle_view && a.settings.empty());
     const std::uint64_t before = menu.revision();
     a = menu.update(std::nullopt, false, 0.0f, Live{true, true});
-    CHECK(menu.revision() != before && menu.value_of("Perspective") == "Third person" &&
-          menu.value_of("Game interface") == "On your wrist");
+    CHECK(menu.revision() != before && menu.value_of("Perspective") == "Third person");
+    CHECK(menu.value_of("Game interface") == "Hidden until X (shown in combat)");
     // Buttons: recentre, calibrate, close (left to right); a click off the buttons does nothing.
     const float buttons = centre("#buttons");
     CHECK(menu.update(std::array<float, 2>{0.15f, buttons}, true, 0.0f, live).recenter);
