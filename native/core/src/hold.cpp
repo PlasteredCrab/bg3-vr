@@ -1,6 +1,7 @@
 #include "bg3vr/hold.hpp"
 
 #include "bg3vr/bridge.hpp"
+#include "bg3vr/camera.hpp"
 #include "bg3vr/corpse.hpp"
 #include "bg3vr/grab_math.hpp"
 #include "bg3vr/health.hpp"
@@ -225,9 +226,12 @@ void on_outline_update(std::uintptr_t sys, std::uintptr_t ctx) {
             }
         }
     }
+    static int thread_logs = 0;
     if (logged_thread != GetCurrentThreadId()) {
         logged_thread = GetCurrentThreadId();
-        log::info("gloves: the outline system updates on thread {}", logged_thread);
+        if (thread_logs++ < 8) {
+            log::info("gloves: the outline system updates on thread {} (ECS workers take turns)", logged_thread);
+        }
     }
     g_outline_hook.call<void>(sys, ctx);
 }
@@ -354,6 +358,52 @@ struct Resolved {
     float distance = 0.0f;
 };
 
+// The client EntityWorld, as the game's own PickUp task reads it ([[exe+0x5FDA240]+0x1A8], agent AD). The global at
+// exe+0x6007F68 that was used before held a bad value on 2026-10-23 (skeleton.cpp saw it too), and the entity-to-item
+// lookup 0x704BD0, which reads world+0x210, crashed in it at 12:34 the first time the gloves scanned every frame.
+// Logged against the camera controller's world (+0x320) and that global whenever it changes.
+std::uintptr_t client_world() {
+    std::uintptr_t holder = 0, world = 0;
+    if (!mem::try_copy(&holder, g_module.base + kClientWorldHolder, sizeof(holder)) || !holder ||
+        !mem::try_copy(&world, holder + 0x1A8, sizeof(world))) {
+        world = 0;
+    }
+    static std::uintptr_t logged = 1;
+    if (world != logged) {
+        logged = world;
+        std::uintptr_t camera_world = 0, global = 0;
+        if (const std::uintptr_t controller = camera::controller()) {
+            mem::try_copy(&camera_world, controller + 0x320, sizeof(camera_world));
+        }
+        mem::try_copy(&global, g_module.base + kEntityHelper, sizeof(global));
+        log::info("gloves: client world 0x{:X} (camera controller's 0x{:X}{}, the exe+0x6007F68 global 0x{:X})", world,
+                  camera_world, camera_world == world ? ", same" : ", DIFFERENT", global);
+    }
+    return world;
+}
+
+// 0x704BD0(world, handle) -> ecl::Item*, guarded: a fault in it is logged and treated as "no item".
+std::uintptr_t entity_to_item_raw(std::uintptr_t world, std::uint64_t entity, bool& faulted) {
+    __try {
+        return fn<EntityToItemFn>(kEntityToItem)(world, entity);
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        faulted = true;
+        return 0;
+    }
+}
+
+std::uint64_t g_lookup_faults = 0;
+
+std::uintptr_t entity_to_item(std::uintptr_t world, std::uint64_t entity) {
+    bool faulted = false;
+    const std::uintptr_t item = entity_to_item_raw(world, entity, faulted);
+    if (faulted && ++g_lookup_faults <= 20) {
+        log::warn("gloves: the entity-to-item lookup faulted for entity 0x{:016X} in world 0x{:X} ({} so far)", entity, world,
+                  g_lookup_faults);
+    }
+    return item;
+}
+
 // Can the controlled character take this item in the hand, by the game's own pick-up rule? The client PickUp task's
 // checks without the carry-capacity one (a full pack mustn't stop the hand holding a cup): the pick-up flag, the
 // CanBeIn component, not in an inventory or attached, no busy bits, and the weight within Strength x 5 kg (CanLift).
@@ -434,15 +484,14 @@ const Liftable& liftable(std::uintptr_t item, std::uint64_t entity) {
     LiftVerdict& v = g_lift_cache[entity];
     v.until = now + 1.0;
     v.lift = {};
-    std::uintptr_t holder = 0;
     LiftCall call;
     call.item = item;
     call.handle = entity;
     call.player = skeleton::controlled_character();
+    call.world = client_world();
     if (!g_lift_ready) {
         v.lift.why = "the lift check doesn't match this build (refused to be safe)";
-    } else if (!mem::try_copy(&holder, g_module.base + kClientWorldHolder, sizeof(holder)) || !holder ||
-               !mem::try_copy(&call.world, holder + 0x1A8, sizeof(call.world)) || !call.world || !call.player) {
+    } else if (!call.world || !call.player) {
         v.lift.why = "no client world or controlled character";
     } else if (lift_calls(call, v.lift) != 0) {
         v.lift = {};
@@ -462,9 +511,8 @@ std::uintptr_t item_of(std::uint64_t entity) {
     if (entity == rayprobe::kNullEntity) {
         return 0;
     }
-    std::uintptr_t helper = 0;
-    mem::try_copy(&helper, g_module.base + kEntityHelper, sizeof(helper));
-    const std::uintptr_t item = helper ? fn<EntityToItemFn>(kEntityToItem)(helper, entity) : 0;
+    const std::uintptr_t world = client_world();
+    const std::uintptr_t item = world ? entity_to_item(world, entity) : 0;
     return item && still_item(item, entity) ? item : 0;
 }
 
@@ -576,11 +624,7 @@ std::optional<Resolved> aim_at_item(std::size_t h, const HandInput& input, float
         log::info("grab: {} hand: nothing within {:.1f} m", hand_name(h), range);
         return std::nullopt;
     }
-    std::uintptr_t helper = 0;
-    mem::try_copy(&helper, g_module.base + kEntityHelper, sizeof(helper));
-    const std::uintptr_t item = hit->entity != rayprobe::kNullEntity && helper
-                                    ? fn<EntityToItemFn>(kEntityToItem)(helper, hit->entity)
-                                    : 0;
+    const std::uintptr_t item = item_of(hit->entity);
     const bool is_item = item && still_item(item, hit->entity);
     const auto pose = is_item ? item_pose(item) : std::nullopt;
     log::info("grab: {} hand hit at {:.2f} m ({:.2f}, {:.2f}, {:.2f}), actor type {}, wrapper 0x{:X} {}, container 0x{:X}, "

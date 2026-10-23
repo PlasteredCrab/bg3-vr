@@ -193,7 +193,17 @@ std::string fog_layers(std::uintptr_t view) {
     mem::try_copy(&count, view + 0x295C, sizeof(count));
     mem::try_copy(&variant, view + 0x2961, sizeof(variant));
     mem::try_copy(&refresh, view + 0x28B0, sizeof(refresh));
-    std::string out = std::format("{} layer(s) (variant {}, refresh {})", count, variant, refresh);
+    // The atmosphere the view blends from / to / has (+0x2880 / +0x2890 / +0x28A0, id at +8): an entry is made for one
+    // of these (agent Z 1); which one is what this shows.
+    std::int32_t ids[3] = {-1, -1, -1};
+    for (int i = 0; i < 3; ++i) {
+        std::uintptr_t resource = 0;
+        if (mem::try_copy(&resource, view + 0x2880 + i * 0x10, sizeof(resource)) && resource) {
+            mem::try_copy(&ids[i], resource + 8, sizeof(ids[i]));
+        }
+    }
+    std::string out = std::format("{} layer(s) (variant {}, refresh {}, atmosphere from {} to {} active {})", count, variant,
+                                  refresh, ids[0], ids[1], ids[2]);
     for (std::uint32_t i = 0; entries && i < std::min<std::uint32_t>(count, 8); ++i) {
         std::int32_t id = -1, entry_variant = -1;
         float weight = -1.0f;

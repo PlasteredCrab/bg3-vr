@@ -52,7 +52,7 @@ bool g_override_mouse = true; // [ui] world_clicks_through
 std::atomic<std::uint64_t> g_mouse_queries{0};
 std::atomic<std::uint64_t> g_mouse_overridden{0};
 std::atomic<std::uint64_t> g_updates{0};
-std::string g_last_open; // UI update thread
+std::string g_last_open = "(not read yet)"; // UI update thread
 std::uint64_t g_list_logs = 0;
 
 std::string file_name(std::uintptr_t widget) {
