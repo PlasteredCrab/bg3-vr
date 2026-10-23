@@ -9,7 +9,17 @@ local kSteadyTicks = 45 -- about a second at the game's tick rate
 
 local steady = { character = nil, key = nil, candidate = nil, ticks = 0, disagreements = 0, total = 0 }
 
+-- The core's acting=0x<handle> (the character the hotbar acts for, read natively; agent AF) when it has one: _C()
+-- returns the first ClientControl character, which in combat isn't always the one being played. _C() otherwise.
 local function Read()
+    if BG3VR.ActingHex then
+        local ok, character = pcall(function()
+            return Ext.Entity.Get(Ext.Utils.IntegerToHandle(math.tointeger(tonumber(BG3VR.ActingHex))))
+        end)
+        if ok and character then
+            return character, tostring(character)
+        end
+    end
     local ok, character = pcall(_C)
     if not ok then
         return nil, nil
@@ -41,7 +51,8 @@ Ext.Events.Tick:Subscribe(function()
         steady.candidate, steady.ticks = key, 0
     end
     steady.ticks = steady.ticks + 1
-    if steady.ticks >= kSteadyTicks or not steady.key then
+    -- The native acting character is the game's own answer: only a few ticks to settle; _C() needs the long wait.
+    if steady.ticks >= (BG3VR.ActingHex and 3 or kSteadyTicks) or not steady.key then
         BG3VR.Log("controlled character now %s (was %s; _C() disagreed with the steady one on %d of %d ticks so far)",
             tostring(key), tostring(steady.key), steady.disagreements, steady.total)
         steady.character, steady.key = character, key

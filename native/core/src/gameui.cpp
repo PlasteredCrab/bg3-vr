@@ -1,5 +1,6 @@
 #include "bg3vr/gameui.hpp"
 
+#include "bg3vr/bridge.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
@@ -42,6 +43,66 @@ constexpr std::array<const char*, 36> kWindowPages{
     "tadpolepowerstree", "learnspells",   "companionspanel",  "rewardpanel",         "longrest",
     "makecamp",       "book",             "characterlevelup", "characterrespec",     "characterchangeappearance",
     "henchmen"};
+
+// The acting character (agent AF, AF_acting_character.md): PlayerManager [exe+0x60487A0], its first player id +0xD0,
+// VMPlayer = 0x1300990(GameUI+0x878, &id), SelectedCharacter VMCharacter* at +0x6B8 (the hotbar's UseSlot 0x1718060 and
+// UseGameObject 0x159DB00 act with it), its entity handle at +0xA8. Pending selection +0x750, IsCurrentTurn +0x650,
+// InTurnBasedMode VMCharacter+0x628 are logged with it.
+constexpr std::uintptr_t kPlayerManagerRva = 0x60487A0;
+constexpr std::uintptr_t kVmPlayerRva = 0x1300990;
+constexpr std::size_t kVmProvider = 0x878, kPlayerId = 0xD0, kSelected = 0x6B8, kPending = 0x750, kCurrentTurn = 0x650;
+constexpr std::size_t kCharacterHandle = 0xA8, kTurnBased = 0x628;
+using VmPlayerFn = std::uintptr_t (*)(std::uintptr_t provider, const std::uint16_t* player);
+std::atomic<std::uint64_t> g_acting{0};
+bool g_acting_ready = false;
+struct ActingRead {
+    std::uint16_t player = 0;
+    std::uintptr_t vm_player = 0, vm_character = 0, pending = 0;
+    std::uint64_t handle = 0;
+    std::uint8_t current_turn = 0, turn_based = 0;
+};
+
+int read_acting(std::uintptr_t ui, ActingRead& out) {
+    __try {
+        const std::uintptr_t manager = *reinterpret_cast<const std::uintptr_t*>(g_module.base + kPlayerManagerRva);
+        if (!manager) {
+            return 1;
+        }
+        out.player = *reinterpret_cast<const std::uint16_t*>(manager + kPlayerId);
+        out.vm_player = reinterpret_cast<VmPlayerFn>(g_module.base + kVmPlayerRva)(ui + kVmProvider, &out.player);
+        if (!out.vm_player) {
+            return 2;
+        }
+        out.vm_character = *reinterpret_cast<const std::uintptr_t*>(out.vm_player + kSelected);
+        out.pending = *reinterpret_cast<const std::uintptr_t*>(out.vm_player + kPending);
+        out.current_turn = *reinterpret_cast<const std::uint8_t*>(out.vm_player + kCurrentTurn);
+        if (out.vm_character) {
+            out.handle = *reinterpret_cast<const std::uint64_t*>(out.vm_character + kCharacterHandle);
+            out.turn_based = *reinterpret_cast<const std::uint8_t*>(out.vm_character + kTurnBased);
+        }
+        return 0;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 3;
+    }
+}
+
+void update_acting(std::uintptr_t ui) {
+    if (!g_acting_ready) {
+        return;
+    }
+    ActingRead r;
+    const int result = read_acting(ui, r);
+    constexpr std::uint64_t kNull = 0xFFC0000000000000ull;
+    const std::uint64_t handle = result == 0 && r.handle && r.handle != kNull ? r.handle : 0;
+    const std::uint64_t before = g_acting.exchange(handle, std::memory_order_relaxed);
+    if (handle != before) {
+        bridge::set_status("acting", handle ? std::format("0x{:016X}", handle) : std::string());
+        log::info("gameui: the character the player acts with (the hotbar's) is now 0x{:016X} (was 0x{:016X}); player {}, "
+                  "VMPlayer 0x{:X}, VMCharacter 0x{:X}, pending 0x{:X}, current turn {}, turn-based {}{}",
+                  handle, before, r.player, r.vm_player, r.vm_character, r.pending, r.current_turn, r.turn_based,
+                  result ? std::format(" (read stopped at step {})", result) : std::string());
+    }
+}
 
 safetyhook::InlineHook g_update_hook;
 safetyhook::InlineHook g_mouse_hook;
@@ -152,6 +213,7 @@ void on_update(std::uintptr_t ui, std::uintptr_t ctx) {
         log::info("gameui: the game UI updates on thread {} (GameUI 0x{:X})", GetCurrentThreadId(), ui);
     }
     scan_widgets(ui);
+    update_acting(ui);
 }
 
 std::uint8_t on_mouse_over_ui(std::uintptr_t ui) {
@@ -178,6 +240,15 @@ bool bytes_at(std::uintptr_t address, std::initializer_list<std::uint8_t> expect
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
     g_override_mouse = config.get_bool("ui", "world_clicks_through", true);
+    {
+        // mov [rsp+18h], rbx ; push rsi ; sub rsp, 20h ; mov rax, [rip+..]
+        const bool ok = bytes_at(module.base + kVmPlayerRva, {0x48, 0x89, 0x5C, 0x24, 0x18, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x05});
+        g_acting_ready = ok && config.get_bool("vr", "follow_hotbar_character", true);
+        log::info("gameui: {}", g_acting_ready ? "the camera, hands, head hiding and gloves follow the hotbar's character"
+                                               : ok ? "following the player manager's character ([vr] follow_hotbar_character)"
+                                                    : "the VMPlayer lookup doesn't match this build; following the player "
+                                                      "manager's character");
+    }
     const std::uintptr_t update = module.base + kUpdateRva;
     const std::uintptr_t mouse = module.base + kMouseOverUiRva;
     if (!bytes_at(update, {0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55}) ||
@@ -202,6 +273,10 @@ void install(const Config& config, const ModuleInfo& module) {
               g_mouse_hook && g_override_mouse ? "; world clicks pass through the invisible UI while the laser is off "
                                                  "the panel (MouseOverUI exe+0x120E0C0)"
                                                : "");
+}
+
+std::uint64_t acting_character() {
+    return g_acting.load(std::memory_order_relaxed);
 }
 
 bool window_open() {

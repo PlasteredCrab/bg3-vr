@@ -43,8 +43,23 @@ constexpr float kTolerance = 2e-3f;
 
 enum class State { Validating, Sharing, Rejected };
 
+std::uintptr_t g_module_base = 0;
 safetyhook::InlineHook g_prepare_hook;
 safetyhook::InlineHook g_execute_hook;
+
+// The distant-shadow cache index (agent AE 1): the right eye's stage 0x02 was made for split index 1
+// (ctor 0x3E194E0 stores stage+0x241A = [view+0x2268]) and renders its cache into player 2's textures, but the eye
+// renders with [view+0x2268] = 0, so the fog lighting job (0x3E3D11A) and the sun-shadow resolve (0x3E1F683) bound
+// the LEFT eye's cache textures with the right eye's matrices and parity: far froxels read as shadowed, no sun haze on
+// the far scene and the sky in the right eye. At the `test al, al` after each of those reads (rcx = the view) the
+// right eye gets its own stage's index, as split-screen player 2 does. Not while sharing: then the eye's cache records
+// are the left eye's. [views] eye_distant_cache.
+constexpr std::uintptr_t kFogCacheIndexRva = 0x3E3D121, kResolveCacheIndexRva = 0x3E1F68A;
+constexpr std::size_t kCacheIndex = 0x241A; // byte: which player's cache textures this stage renders
+safetyhook::MidHook g_fog_index_hook, g_resolve_index_hook;
+std::atomic<bool> g_cache_fix{true};
+std::atomic<std::uintptr_t> g_eye_stage{0}, g_main_stage{0};
+std::atomic<std::uint64_t> g_index_fixed{0}, g_index_left{0};
 std::atomic<bool> g_enabled{true};
 std::atomic<State> g_state{State::Validating};
 std::atomic<bool> g_eye_wanted{false}; // the right eye's prepare would have run the stage this frame
@@ -193,9 +208,14 @@ void on_prepare(std::uintptr_t stage) {
     g_prepare_hook.call<void>(stage);
     std::uintptr_t view = 0;
     mem::try_copy(&view, stage + kView, sizeof(view));
-    if (stereo::eye_of(view) != 1) {
+    const int eye = stereo::eye_of(view);
+    if (eye == 0) {
+        g_main_stage.store(stage, std::memory_order_relaxed);
+    }
+    if (eye != 1) {
         return;
     }
+    g_eye_stage.store(stage, std::memory_order_relaxed);
     auto* run = reinterpret_cast<std::uint8_t*>(stage + kRun);
     const bool wanted = *run != 0;
     g_eye_wanted.store(wanted, std::memory_order_relaxed);
@@ -257,9 +277,42 @@ bool bytes_at(std::uintptr_t address, std::initializer_list<std::uint8_t> expect
 } // namespace
 
 void configure(const Config& config) {
+    g_cache_fix.store(config.get_bool("views", "eye_distant_cache", true), std::memory_order_relaxed);
     const bool on = config.get_bool("views", "share_shadows", true);
     if (g_enabled.exchange(on) != on) {
         log::info("shadows: sharing the sun shadows between the eyes {}", on ? "on" : "off");
+    }
+}
+
+void on_cache_index(safetyhook::Context& ctx) {
+    if (!g_cache_fix.load(std::memory_order_relaxed) || (ctx.rax & 0xFF) != 0 || stereo::eye_of(ctx.rcx) != 1) {
+        return;
+    }
+    const std::uintptr_t stage = g_eye_stage.load(std::memory_order_relaxed);
+    std::uint8_t index = 0;
+    if (!stage || !mem::try_copy(&index, stage + kCacheIndex, 1)) {
+        return;
+    }
+    if (g_enabled.load(std::memory_order_relaxed) && g_state.load(std::memory_order_relaxed) == State::Sharing) {
+        g_index_left.fetch_add(1, std::memory_order_relaxed); // the eye's cache records are the left eye's: index 0 is right
+        return;
+    }
+    if (index != 0) {
+        ctx.rax = (ctx.rax & ~std::uintptr_t{0xFF}) | index;
+        const std::uint64_t n = g_index_fixed.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 4 || n % 5000 == 0) {
+            std::uint8_t main_index = 0xFF, main_on = 0xFF, eye_on = 0xFF, main_parity = 0xFF, eye_parity = 0xFF;
+            if (const std::uintptr_t m = g_main_stage.load(std::memory_order_relaxed)) {
+                mem::try_copy(&main_index, m + kCacheIndex, 1);
+                mem::try_copy(&main_on, m + kCacheOn, 1);
+                mem::try_copy(&main_parity, m + kCacheFlag, 1);
+            }
+            mem::try_copy(&eye_on, stage + kCacheOn, 1);
+            mem::try_copy(&eye_parity, stage + kCacheFlag, 1);
+            log::info("shadows: right eye reads its own distant-shadow cache (index {} at exe+0x{:X}; {} times so far). "
+                      "Cache on main {} / eye {}, index main {} / eye {}, parity main {} / eye {}",
+                      index, ctx.rip - g_module_base, n, main_on, eye_on, main_index, index, main_parity, eye_parity);
+        }
     }
 }
 
@@ -272,6 +325,28 @@ void install(const Config& config, const ModuleInfo& module) {
         health::set("shared sun shadows", health::State::Unavailable, "stage 0x02 functions differ in this build");
         log::warn("shadows: the sun shadow stage's prepare / execute don't match this build; each eye renders its own");
         return;
+    }
+    g_module_base = module.base;
+    g_cache_fix.store(config.get_bool("views", "eye_distant_cache", true));
+    {
+        // movzx eax, byte [rcx+0x2268] ; test al, al ; jnz
+        const bool fog_ok =
+            bytes_at(module.base + kFogCacheIndexRva - 7, {0x0F, 0xB6, 0x81, 0x68, 0x22, 0x00, 0x00, 0x84, 0xC0, 0x75});
+        const bool resolve_ok =
+            bytes_at(module.base + kResolveCacheIndexRva - 7, {0x0F, 0xB6, 0x81, 0x68, 0x22, 0x00, 0x00, 0x84, 0xC0, 0x75});
+        if (fog_ok && resolve_ok) {
+            auto f = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kFogCacheIndexRva), &on_cache_index);
+            auto r = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kResolveCacheIndexRva), &on_cache_index);
+            if (f && r) {
+                g_fog_index_hook = std::move(*f);
+                g_resolve_index_hook = std::move(*r);
+                log::info("shadows: the right eye's fog and sun-shadow resolve read its own distant-shadow cache (exe+0x{:X}, "
+                          "exe+0x{:X}){}",
+                          kFogCacheIndexRva, kResolveCacheIndexRva, g_cache_fix.load() ? "" : " - off ([views] eye_distant_cache)");
+            }
+        } else {
+            log::warn("shadows: the distant-shadow cache index reads don't match this build; the right eye may lack far haze");
+        }
     }
     auto p = safetyhook::InlineHook::create(reinterpret_cast<void*>(prepare), reinterpret_cast<void*>(&on_prepare));
     auto e = safetyhook::InlineHook::create(reinterpret_cast<void*>(execute), reinterpret_cast<void*>(&on_execute));
@@ -289,6 +364,8 @@ void install(const Config& config, const ModuleInfo& module) {
 }
 
 void report() {
+    log::info("shadows: right eye's distant-shadow cache index replaced {} times, left at 0 while sharing {} times",
+              g_index_fixed.load(), g_index_left.load());
     const State state = g_state.load();
     log::info("shadows: {}; {} right-eye cascade passes skipped, {} shared copies ({} from a repeated left-eye frame, {} "
               "with no left-eye cascades)",

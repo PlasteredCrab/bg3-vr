@@ -3,6 +3,8 @@
 #include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
 
+#include <cstdint>
+
 // The game's own UI (Noesis), as seen from its update (agent AB, AB_ui_system.md):
 //   - which windows are open: after GameUI::Update 0x1210210 the WindowManager's widget list (GameUI+0x4C0, widgets
 //     +0x108, count +0x114, lock +0x150; per widget the XAML file name at +0x328) is read, and a window page
@@ -18,6 +20,11 @@ void install(const Config& config, const ModuleInfo& module);
 
 // A window page is open (any thread).
 bool window_open();
+
+// The character the player is acting with: the one the hotbar and clicks act for (agent AF: [[VMPlayer+0x6B8]+0xA8],
+// read after each game UI update), 0 until the UI has one. Any thread. The camera, hand IK, head hiding, gloves and the
+// Lua side all follow this one (published to Lua as acting=0x<handle>).
+std::uint64_t acting_character();
 
 // The headset (presenting thread): the laser is on the UI panel, and whether the override applies at all
 // (VR play on, first person).

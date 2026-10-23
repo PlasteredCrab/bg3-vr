@@ -2,6 +2,7 @@
 
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
+#include "bg3vr/gameui.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
@@ -72,7 +73,17 @@ using PlayerCharacterFn = std::uint64_t* (*)(std::uintptr_t, std::uint64_t*, std
 using ByHandleFn = std::uintptr_t (*)(std::uintptr_t, std::uint64_t);
 
 // The game calls, guarded: during loads the player manager or the world can be half built.
+std::uint64_t player_manager_character();
+
+// The character to follow: the one the hotbar acts for (gameui.cpp, agent AF), else the player manager's.
 std::uint64_t controlled_raw() {
+    if (const std::uint64_t acting = gameui::acting_character()) {
+        return acting;
+    }
+    return player_manager_character();
+}
+
+std::uint64_t player_manager_character() {
     __try {
         const auto manager = *reinterpret_cast<std::uintptr_t*>(g_module.base + kPlayerManager);
         if (!manager) {

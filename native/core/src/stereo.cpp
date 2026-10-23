@@ -122,6 +122,8 @@ const Proxy* doll_proxy(std::uintptr_t controller) {
     return nullptr;
 }
 std::array<std::uintptr_t, kProxyVtableSlots> g_proxy_vtable{};
+constexpr std::size_t kLastSeenController = 0x2B00; // the controller 0x3CC6DC0 compared +0x21D8 with last frame
+std::atomic<bool> g_keep_history{true};
 bool g_proxy_ready = false;
 safetyhook::MidHook g_begin_hook;
 std::array<std::atomic<std::uint64_t>, 2> g_proxied{};
@@ -726,6 +728,17 @@ void on_view_begin(safetyhook::Context& ctx) {
     proxy.translate[2] = position[2];
     proxy.fov = fov;
     *reinterpret_cast<std::uintptr_t*>(view + layout::kReadStateController) = reinterpret_cast<std::uintptr_t>(&proxy);
+    // Agent AE 3: begin-recording step 0x3CC6DC0 sets the view's "camera changed" flag (+0x2AED: fog history reset,
+    // exposure jumps instead of adapting) whenever +0x21D8 differs from the controller it saw last (+0x2B00). The
+    // proxy comes from a ring, so that was every frame, in both eyes. The last-seen field gets this frame's proxy too,
+    // unless the real controller changed (a real camera cut keeps its reset). [views] keep_view_history.
+    if (g_keep_history.load(std::memory_order_relaxed)) {
+        static std::array<std::uintptr_t, 2> last_real{};
+        if (last_real[static_cast<std::size_t>(eye)] == controller) {
+            *reinterpret_cast<std::uintptr_t*>(view + kLastSeenController) = reinterpret_cast<std::uintptr_t>(&proxy);
+        }
+        last_real[static_cast<std::size_t>(eye)] = controller;
+    }
     const std::uint64_t n = g_proxied[static_cast<std::size_t>(eye)].load(std::memory_order_relaxed);
     if (n < 4 || n % 600 == 0) {
         // The real controller's origin (its slot 9) next to the eye's: they should differ by half the IPD along the
@@ -796,6 +809,7 @@ void install(const Config& config, const ModuleInfo& module) {
             code == expected) {
             g_real_transform = real_transform;
             g_roll_free.store(config.get_bool("views", "particles_level", true), std::memory_order_relaxed);
+            g_keep_history.store(config.get_bool("views", "keep_view_history", true), std::memory_order_relaxed);
             g_proxy_vtable[kTransformSlot] = reinterpret_cast<std::uintptr_t>(&proxy_transform);
             log::info("stereo: proxy slot 11 (camera Transform, exe+0x3CF0760) replaced: camera-facing particles {}",
                       g_roll_free.load() ? "stay level when the head rolls" : "roll with the head ([views] particles_level)");

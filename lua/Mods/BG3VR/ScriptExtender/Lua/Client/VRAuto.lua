@@ -159,6 +159,7 @@ local function Tick(dt)
     end
     auto.checkIn = 0.25
     local status = BG3VR.ReadStatus()
+    BG3VR.ActingHex = status.acting ~= "" and status.acting or nil -- the hotbar's character (Controlled.lua)
     HandleRequest(status)
     local ready = status.xr == "ready" and status.mode ~= "screen"
     if status.xr ~= auto.lastXr then
