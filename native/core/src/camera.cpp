@@ -18,6 +18,7 @@
 #include <numbers>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -96,6 +97,7 @@ std::atomic<std::uint64_t> g_head_writes{0};
 
 // Following the character (under g_mutex, except the counters).
 std::optional<Follow> g_follow;
+float g_follow_requested = std::numeric_limits<float>::quiet_NaN(); // the height the bridge last asked for
 bool g_follow_has_last = false;
 std::array<float, 3> g_follow_last{};
 std::atomic<std::uint64_t> g_follow_reads{0};
@@ -768,6 +770,14 @@ std::optional<vr::Vec3> follow_position() {
     return vr::Vec3{g_follow_last[0], g_follow_last[1], g_follow_last[2]};
 }
 
+std::optional<float> follow_height() {
+    std::scoped_lock lock(g_mutex);
+    if (!g_follow) {
+        return std::nullopt;
+    }
+    return g_follow->height;
+}
+
 void add_yaw(float degrees) {
     std::scoped_lock lock(g_mutex);
     if (!g_pose || !std::isfinite(degrees)) {
@@ -781,6 +791,14 @@ void add_yaw(float degrees) {
 
 void set_follow(std::optional<Follow> follow) {
     std::scoped_lock lock(g_mutex);
+    // The Lua follow tick re-sends its start height (1.7) whenever the character's transform moves (cutscenes,
+    // conversations, equipment). A re-send of the same height keeps the one calibrated from the eyes
+    // (set_follow_height); a different height is a new request and applies.
+    if (follow && g_follow && follow->height == g_follow_requested) {
+        follow->height = g_follow->height;
+    } else if (follow) {
+        g_follow_requested = follow->height;
+    }
     const bool changed = follow.has_value() != g_follow.has_value() ||
                          (follow && (follow->transform != g_follow->transform || follow->height != g_follow->height));
     if (!follow || !g_follow || follow->transform != g_follow->transform) {

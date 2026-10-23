@@ -2,6 +2,7 @@
 
 #include "bg3vr/blit.hpp"
 #include "bg3vr/bridge.hpp"
+#include "bg3vr/camera.hpp"
 #include "bg3vr/pose.hpp"
 #include "bg3vr/config.hpp"
 #include "bg3vr/hooks.hpp"
@@ -1314,6 +1315,23 @@ void test_elbow() {
           near_eq(ik::wrist_roll_correction(120.0f), 3.0f));
 }
 
+void test_follow_height() {
+    // The Lua follow tick re-sends its start height whenever the character's transform moves; the eye height
+    // calibrated in between must survive it (2026-10-23: 126 re-sends put a 1.9 m character's view back at 1.7).
+    camera::set_follow(camera::Follow{0x1000, 1.7f});
+    CHECK(camera::follow_height() == 1.7f);
+    camera::set_follow_height(1.92f);
+    camera::set_follow(camera::Follow{0x2000, 1.7f}); // same start height, new transform: keep the calibration
+    CHECK(camera::follow_height() == 1.92f);
+    camera::set_follow(camera::Follow{0x2000, 1.5f}); // a different height is a new request
+    CHECK(camera::follow_height() == 1.5f);
+    camera::set_follow(std::nullopt);
+    CHECK(!camera::follow_height());
+    camera::set_follow(camera::Follow{0x3000, 1.5f}); // following again starts from the request
+    CHECK(camera::follow_height() == 1.5f);
+    camera::set_follow(std::nullopt);
+}
+
 } // namespace
 
 int main() {
@@ -1343,6 +1361,7 @@ int main() {
     test_holster();
     test_stereo_view_block();
     test_elbow();
+    test_follow_height();
     if (g_failures == 0) {
         std::printf("all tests passed\n");
     }
