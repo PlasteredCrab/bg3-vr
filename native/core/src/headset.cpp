@@ -128,6 +128,7 @@ std::atomic<bool> g_recenter_request{true}; // the first tracked frame recenters
 std::atomic<bool> g_ui_place_request{true}; // place the UI panel in front of the head on the next frame
 std::atomic<bool> g_ui_dialogue{false};       // a conversation is on
 std::atomic<bool> g_ui_dialogue_front{true};  // [ui] dialogue_in_front
+std::string g_third_style = "vr";             // [vr] third_person: vr (stereo, behind the character) | screen
 std::atomic<bool> g_ui_wrist{false};         // [ui] placement = wrist
 // [ui] placement = hidden (the default): the game UI stays hidden until the "panel" binding (X) reveals it, and comes
 // up by itself in combat and in conversations; shown, it is in front of you.
@@ -872,9 +873,14 @@ HandState hand_state(const xr::Hand& hand, std::uint64_t sample, std::size_t ind
 // Once per submitted frame: sample the controllers, publish them, log changes, run queued haptics.
 // First <-> third person: the Lua side switches the camera, then tells the core (bridge view=).
 void request_view_toggle() {
-    const bool to_third = !vrplay::third_person();
-    bridge::push_request(to_third ? "view_third" : "view_first");
-    log::info("vr: asking the Lua side for {} person", to_third ? "third" : "first");
+    const bool in_third = vrplay::third_person() || camera::chase();
+    // Third person is the stereo view behind the character unless [vr] third_person = screen (the game's camera on a
+    // flat screen in front of you).
+    const bool screen = text::to_lower(g_third_style) == "screen";
+    const char* request = in_third ? "view_first" : screen ? "view_third" : "view_chase";
+    bridge::push_request(request);
+    log::info("vr: asking the Lua side for {}", in_third ? "first person" : screen ? "third person (flat screen)"
+                                                                                    : "third person (in VR)");
 }
 
 // The game UI panel between the world and the left wrist; returns true when it is now on the wrist.
@@ -2037,7 +2043,7 @@ void update_menu(const xr::Frame& frame) {
                               ? right.stick_x
                               : (other.active ? other.stick_x : 0.0f);
     const vrmenu::Actions actions = g_menu.update(pointer, click, stick_x,
-                                                  {vrplay::third_person(), g_ui_wrist.load(std::memory_order_relaxed), profile},
+                                                  {vrplay::third_person() || camera::chase(), g_ui_wrist.load(std::memory_order_relaxed), profile},
                                                   nav);
     if (click || nav.accept || nav.back) {
         ++g_menu_clicks;
@@ -2490,6 +2496,7 @@ void configure_ui(const Config& config) {
         return text.empty() ? fallback : std::clamp(std::strtof(text.c_str(), nullptr), lo, hi);
     };
     apply_placement(text::to_lower(config.get("ui", "placement", "hidden")));
+    g_third_style = config.get("vr", "third_person", "vr");
     g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
     g_laser_through_transparent = config.get_bool("ui", "laser_through_transparent", true);
     g_snapshots = config.get_bool("ui", "snapshots", true);

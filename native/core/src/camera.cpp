@@ -58,6 +58,12 @@ std::chrono::steady_clock::time_point g_sweep_start;
 // so a change sets g_projection_dirty and the next view update of the driven camera marks the
 // controller dirty (on the game thread). Under g_mutex.
 std::optional<EyeFov> g_eye_fov;
+// Third person in VR (set_chase): the view stays stereo and head-tracked, its origin behind and above the character
+// along the turned yaw (stick turns, not the head and not the body's facing), so it moves only with the character's
+// position, your head and your own turns.
+std::atomic<bool> g_chase{false};
+std::atomic<float> g_chase_back{2.5f};
+std::atomic<float> g_chase_up{0.6f};
 // Agent Z 2: the CPU cull frustum (0x4086010) is built from the controller's game FOV +0x14 and aspect +0x20 (55 deg /
 // 1.6), symmetric, at the head. Each eye's wider, lopsided field of view reached past it on a different side, so
 // ground decals and blood tiles were culled in blocks, different per eye. With head tracking on these two fields
@@ -198,7 +204,7 @@ void update_follow() {
     }
     g_follow_last = {translate[0], translate[1], translate[2]};
     g_follow_has_last = true;
-    if (eyes) {
+    if (eyes && !g_chase.load(std::memory_order_relaxed)) {
         g_pose->x = (*eyes)[0];
         g_pose->y = (*eyes)[1] + g_eye_offset.load(std::memory_order_relaxed);
         g_pose->z = (*eyes)[2];
@@ -207,6 +213,17 @@ void update_follow() {
         g_pose->x = translate[0];
         g_pose->y = translate[1] + g_follow->height;
         g_pose->z = translate[2];
+    }
+    if (g_chase.load(std::memory_order_relaxed)) {
+        // Behind along the turned yaw (pitch and head left out), and up.
+        Pose level = *g_pose;
+        level.pitch_deg = 0.0f;
+        const auto turned = pose_quaternion(level);
+        const vr::Vec3 forward = vr::rotate(vr::Quat{turned[0], turned[1], turned[2], turned[3]}, {0.0f, 0.0f, 1.0f});
+        const float back = g_chase_back.load(std::memory_order_relaxed);
+        g_pose->x -= forward[0] * back;
+        g_pose->z -= forward[2] * back;
+        g_pose->y += g_chase_up.load(std::memory_order_relaxed);
     }
     if (from_visual) {
         g_follow_from_visual.fetch_add(1, std::memory_order_relaxed);
@@ -592,6 +609,21 @@ void set_world_scale(float scale) {
 
 float world_scale() {
     return g_world_scale.load(std::memory_order_relaxed);
+}
+
+void set_chase(bool on, float back_m, float up_m) {
+    const bool was = g_chase.exchange(on);
+    g_chase_back.store(std::clamp(back_m, 0.5f, 8.0f));
+    g_chase_up.store(std::clamp(up_m, -1.0f, 4.0f));
+    if (was != on) {
+        log::info("camera: {}", on ? std::format("third person in VR: {:.1f} m behind and {:.1f} m above the character's eyes",
+                                                 g_chase_back.load(), g_chase_up.load())
+                                   : std::string("first person"));
+    }
+}
+
+bool chase() {
+    return g_chase.load(std::memory_order_relaxed);
 }
 
 void set_anchor(bool head, float eye_offset, float smoothing_s) {

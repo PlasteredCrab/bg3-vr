@@ -321,8 +321,9 @@ Request parse(std::string_view content) {
             }
         } else if (key == "view") {
             const std::string word = text::to_lower(value);
-            if (word == "first" || word == "third") {
+            if (word == "first" || word == "third" || word == "chase") {
                 request.third_person = word == "third";
+                request.chase = word == "chase";
             }
         } else if (key == "ik") {
             const std::string word = text::to_lower(value);

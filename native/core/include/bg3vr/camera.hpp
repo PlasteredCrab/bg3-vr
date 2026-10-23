@@ -86,6 +86,10 @@ void set_follow(std::optional<Follow> follow);
 void set_follow_height(float height);
 // [vr] camera_anchor (head: the eyes, their offset from the body smoothed over `smoothing_s` seconds; head_exact:
 // smoothing 0; body) and [vr] eye_offset (metres added to the eye height in head mode); any thread.
+// Third person in VR: the stereo, head-tracked view `back_m` behind and `up_m` above the followed character along the
+// turned yaw. Off: first person.
+void set_chase(bool on, float back_m, float up_m);
+bool chase();
 void set_anchor(bool head, float eye_offset, float smoothing_s);
 // [xr] world_scale (game units per real metre of head and hand movement); live from the VR menu.
 void set_world_scale(float scale);

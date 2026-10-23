@@ -372,13 +372,25 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     if (request.ik) {
         bodyik::set_enabled(*request.ik);
     }
+    if (request.chase) {
+        // Third person in VR: stereo and head tracking stay; the view sits behind and above the character, the arms
+        // follow the game's animation (not the controllers).
+        const auto number = [&](const char* key, float fallback) {
+            const std::string v = g_config.get("vr", key);
+            return v.empty() ? fallback : std::strtof(v.c_str(), nullptr);
+        };
+        camera::set_chase(*request.chase, number("third_person_back", 2.5f), number("third_person_up", 0.6f));
+        if (*request.chase) {
+            bodyik::set_enabled(false);
+        }
+    }
     if (request.third_person) {
         // Third person: the game's camera and its mouse picking; first person: the [vr] profile again.
         const bool third = *request.third_person;
         vrplay::set_third_person(third);
         resolution::set_suspended(third);
         picking::set_hand(!third && g_config.get_bool("vr", "hand_pointing", true));
-        bodyik::set_enabled(!third && g_config.get_bool("ik", "arms", true));
+        bodyik::set_enabled(!third && !camera::chase() && g_config.get_bool("ik", "arms", true));
     }
     if (request.move_stick) {
         locomotion::set_enabled(*request.move_stick);

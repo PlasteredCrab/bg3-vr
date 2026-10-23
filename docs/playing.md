@@ -45,7 +45,7 @@ Status: what has been seen working in a headset and what is only built so far is
 | Touch the UI panel with the right controller's tip | Click there (push in to press, pull back to release); handy on the wrist panel |
 | Left trigger (hold) | Highlight items |
 | X | Show / hide the game UI (in front of you) |
-| Y | Switch between first person and third person (the game's own camera on a big screen in front of you; the laser works as the mouse there) |
+| Y (hold half a second) | Switch between first person and third person: by default in VR, from behind and above your character (`[vr] third_person_back` / `third_person_up`); or the game's own camera on a flat screen in front of you (VR menu, Comfort: Third person is) |
 | Menu (☰) | The VR menu too, where the runtime passes the button on (a Quest 2 through SteamVR keeps it for its own menu) |
 
 The key bindings assume BG3's default PC keys; change any of them in `[bindings]`. Every button press gives a

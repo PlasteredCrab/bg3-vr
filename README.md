@@ -30,7 +30,7 @@ Legend: ✅ seen working in a headset run · 🧪 built, not yet tried in the he
 | Render resolution from the headset (80% by default), DLSS Balanced while in VR | ✅ resolution, 🧪 DLSS profile |
 | Your own head hidden from your view | ✅ |
 | Your shadow keeps its head | 🧪 |
-| Third-person toggle: the game's camera on a big screen in front of you, the laser as the mouse | ✅ |
+| Third person: in VR behind your character (stereo, head-tracked), or the game's camera on a flat screen | 🧪 in VR, ✅ flat screen |
 | Comfort vignette, snap or smooth turning, recentre | ✅ turning, 🧪 the rest |
 | Characters in UI screens (inventory, character sheet, trade) in 3D | 🧪 |
 | Items in UI screens in 3D | 🗓️ |
@@ -90,7 +90,7 @@ The analysis behind them is in [re-local/ghidra/agents/](re-local/ghidra/agents/
 | Right trigger | Click: move, talk, loot, attack where the right hand points; press UI buttons |
 | Right grip | Right-click (context menu); with an item highlighted it grabs instead (gravity gloves) |
 | A / B | Inventory / cancel (back) |
-| X / Y | Show / hide the game UI / first ↔ third person |
+| X / Y | Show / hide the game UI / hold Y: first ↔ third person (in VR, behind your character; or a flat screen, VR menu) |
 | Left stick | Walk where you look |
 | Right stick left / right | Snap turn (or smooth) |
 | Right stick up / down | Scroll |
