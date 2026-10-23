@@ -1,8 +1,7 @@
 # Playing BG3 VR
 
-Status: everything below is built and deployed, but the headset path hasn't been tested in the game yet (see
-[headset-test-2026-10-20.md](headset-test-2026-10-20.md)). Some pieces are off by default until that test confirms
-them; they are marked "(off)".
+Status: what has been seen working in a headset and what is only built so far is listed in the
+[README](../README.md#status). Some pieces are off by default until a test confirms them; they are marked "(off)".
 
 ## Setup (once)
 
@@ -43,7 +42,7 @@ them; they are marked "(off)".
 | Left trigger (hold) | Highlight items |
 | X | Map |
 | Y | Switch between first person and third person (the game's own camera on a big screen in front of you; the laser works as the mouse there) |
-| Menu | The VR menu (B is the game's Escape / game menu) |
+| Menu (☰) | The VR menu too, where the runtime passes the button on (a Quest 2 through SteamVR keeps it for its own menu) |
 
 The key bindings assume BG3's default PC keys; change any of them in `[bindings]`. Every button press gives a
 light buzz.
@@ -60,6 +59,19 @@ is tracked instead:
 - Turn your other palm toward your face and pinch thumb and index finger: the VR menu.
 
 The log says at start-up whether hand tracking is available (`xr input: ... hand tracking`).
+
+## Conversations
+
+When someone talks to you, the game UI with the answers comes off your wrist to a panel in front of you until the
+conversation ends. Push either stick up or down to move through the answers and press A to pick one (or point at it
+and pull the trigger); B skips the line being spoken. VR menu Comfort page: "Answers in front of you" and "Sticks
+and A / B in conversations".
+
+## Characters in UI screens
+
+The character in the inventory, character sheet, party and trade screens is shown in 3D: each eye looks through the
+picture's place on the UI panel as through a window, so the character stands behind the panel with real depth.
+VR menu Scale page: "3D characters in menus" (off brings back the flat picture).
 
 ## Dead bodies
 
@@ -101,10 +113,13 @@ button, B to close; or point at it and pull the trigger:
 
 - View: first or third person, the render resolution (a share of the headset's own resolution per eye; 80% by
   default, "Game's own" uses the game's setting), where the game UI sits (in front of you or on your wrist), the
+  upscaling used in VR (DLSS Balanced or Performance, or the game's own setting) and depth of field, the
   wrist UI size, and the aiming beam (off, solid, dashed, flowing dots or pulse; its colour and opacity).
-- Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement.
+- Comfort: snap or smooth turning, snap angle, smooth turn speed, comfort vignette, stick movement, where the camera
+  sits (at the character's eyes, or steady without head sway), and the conversation controls.
 - Body: dominant hand (which hand points; the wrist UI goes on the other), arms following the controllers, weapon angle, pointing to select, grabbing, physical melee, holsters.
-- Scale: IPD (the headset's own, or a fixed 56-72 mm), world scale (100% is true scale), eye height.
+- Scale: IPD (the headset's own, or a fixed 56-72 mm), 3D characters in menus, 3D depth (each eye its own view, or
+  flat), world scale (100% is true scale), eye height.
 - Combos: hold one button and press another (left grip + A character sheet, + B journal, + X spellbook, + Y party
   view, + right trigger end turn, + right stick click sneak by default); each one's action is yours to pick.
 - Buttons: what every controller button does, named for the controllers in your hands (Touch, Index, Vive) and
@@ -115,10 +130,10 @@ button, B to close; or point at it and pull the trigger:
 
 Recentre, Calibrate height and Close buttons sit at the bottom.
 
-Point at a row with the right hand and pull the trigger to change it (the left arrow steps back), push the right
-stick left or right while pointing at a row, or touch the panel with the tip of the controller. While it is open
-your buttons and sticks don't reach the game. Changes take effect at once and are saved to `bing3vr\menu.ini`,
-which overrides `bg3vr.ini` (delete it to go back to the ini's values).
+Pointing works too: point at a row with the right hand and pull the trigger to change it (the left arrow steps
+back), or touch the panel with the tip of the controller; the laser stops on the panel where it points. While it is
+open your buttons and sticks don't reach the game. Changes take effect at once and are saved to
+`<game>/bin/bg3vr/menu.ini`, which overrides `bg3vr.ini` (delete it to go back to the ini's values).
 
 ## Settings worth knowing
 
@@ -128,13 +143,21 @@ which overrides `bg3vr.ini` (delete it to go back to the ini's values).
 | `[vr] turn`, `snap_degrees` | snap, 30 | turning style |
 | `[vr] comfort_vignette` | 0.5 | darken the view's edges while walking or turning with the sticks (0 = off) |
 | `[vr] eye_offset` | 0 | eye height above the character's eyes, metres |
-| `[ui] placement`, `width`, `distance` | wrist, 1.1, 1.0 | the UI panel (`world` puts it in front of you; left grip + left stick click switches) |
+| `[ui] placement`, `width`, `distance`, `wrist_width` | wrist, 1.1, 1.0, 1.2 | the UI panel (`world` puts it in front of you; left grip + left stick click switches) |
 | `[locomotion] invert_forward` | false | if pushing forward walks backwards |
 | `[dialogue] first_person_types` | 1 | which conversation types stay first person |
 | `[quality] texture_distance` | (game) | 1.5 to 2.0 sharpens textures at a distance in VR |
 | `[ik] arms` | true | arms and the held weapon follow your hands |
 | `[grab] probe` / `hold` | false (off) | pick items up with the grips; with `hold`, throw by letting go mid-swing and pull far items by flicking the hand back while aiming and holding the grip |
 | `[combat] physical` | false (off) | swing the right hand through a character to make your normal weapon attack (the game rolls) |
+| `[vr] camera_anchor` | head | `head`: the camera at your character's eyes as animated; `body`: steady, no head sway |
+| `[render] vr_upscaler` | dlss_balanced | upscaling while in VR (`dlss_performance`, or `game` for the graphics menu's); put back when VR stops |
+| `[render] vr_resolution` | 80 | per-eye render size, percent of the headset's |
+| `[views] eye_origin` | proxy | `proxy`: each eye drawn from its own position (stereo depth); `head`: both from the head (flat) |
+| `[views] share_shadows` | true | the right eye reuses the left eye's sun shadows (checked over the first 60 frames) |
+| `[xr] async_wait` | true | wait for the headset's frame on its own thread, not in the game's Present |
+| `[perf] worker_threads` | 0 | the game's job worker threads (0 = the game's 6; try 10-12 on an 8-core CPU) |
+| `[ui] stereo_dolls` | true | characters in UI screens in 3D |
 
 ## Console commands (Script Extender console, client context)
 
