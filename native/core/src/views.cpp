@@ -231,6 +231,10 @@ int call_fog_refresh(FogRefreshFn refresh, std::uintptr_t view, std::uint8_t var
     }
 }
 
+// The cinematic variant (+0x2961: 1 in conversations / timelines) last applied to the eye with 0x3CCCC20 (agent AP 1:
+// the game applies it only to player-manager views; a byte copy alone doesn't switch the fog layers).
+int g_eye_variant = -1;
+
 void refresh_eye_fog(std::uintptr_t main, std::uintptr_t eye, bool verbose) {
     if (!g_eye_fog_layers) {
         return;
@@ -253,6 +257,9 @@ void refresh_eye_fog(std::uintptr_t main, std::uintptr_t eye, bool verbose) {
     mem::try_copy(&variant, main + 0x2961, sizeof(variant));
     const std::string before = verbose ? fog_layers(eye) : std::string();
     const int faulted = call_fog_refresh(reinterpret_cast<FogRefreshFn>(g_module.base + kFogRefreshRva), eye, variant);
+    if (!faulted) {
+        g_eye_variant = variant;
+    }
     if (verbose || faulted) {
         log::info("views:   eye fog layers refreshed{} (variant {}): before {}; after {}; main view {}",
                   faulted ? " (FAULTED)" : "", variant, before, fog_layers(eye), fog_layers(main));
@@ -374,6 +381,7 @@ void sync_environment() {
     }
     if (!eyes || !(*eyes)[0] || !(*eyes)[1]) {
         g_environment_copied.reset();
+        g_eye_variant = -1; // a new eye view gets the refresh again
         return;
     }
     static std::uint64_t frames = 0;
@@ -400,6 +408,13 @@ void sync_environment() {
         if (mem::try_copy(&value, (*eyes)[0] + offset, 1)) {
             *reinterpret_cast<std::uint8_t*>((*eyes)[1] + offset) = value;
         }
+    }
+    // A conversation starting or ending switches main's fog variant: the eye gets the game's own refresh with it.
+    std::uint8_t variant = 0;
+    if (g_eye_fog_layers && mem::try_copy(&variant, (*eyes)[0] + 0x2961, 1) && variant != g_eye_variant) {
+        log::info("views: the main view's fog variant is now {} ({}); refreshing the eye's", variant,
+                  variant ? "conversation / cinematic" : "gameplay");
+        refresh_eye_fog((*eyes)[0], (*eyes)[1], true);
     }
     const bool verbose = g_environment_syncs < 20 || g_environment_syncs % 100 == 0;
     if (copy_environment((*eyes)[1], verbose)) {
