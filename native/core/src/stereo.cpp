@@ -181,6 +181,43 @@ safetyhook::InlineHook g_exposure_hook;
 std::atomic<bool> g_exposure_from_left{true};
 std::atomic<std::uint64_t> g_exposure_redirects{0};
 
+// Agent AI 1: the fog lighting job (0x3E3CCE0) keeps 93% of last frame's in-scatter rescaled by t26 / t1 (this frame's
+// exposure / last frame's). t26 comes from 0x3CCCB20 (redirected above), but t1 is picked inline from the view's own
+// exposure step (0x3E3E266..0x3E3E337), so the right eye's history was scaled by main's exposure over its own every
+// frame and its glow toward the sun and the far haze drained away. At the join 0x3E3E337 (rsi = view, r8 = the t1
+// record) the right eye gets main's record too, the one t26 got: the ratio is 1 again.
+constexpr std::uintptr_t kFogHistoryExposureRva = 0x3E3E337;
+safetyhook::MidHook g_fog_history_hook;
+std::atomic<std::uint64_t> g_fog_history_fixed{0};
+
+std::uintptr_t on_exposure(std::uintptr_t view);
+
+void on_fog_history_exposure(safetyhook::Context& ctx) {
+    if (!g_exposure_from_left.load(std::memory_order_relaxed) || !g_exposure_hook) {
+        return;
+    }
+    std::uintptr_t main = 0;
+    {
+        std::scoped_lock lock(g_mutex);
+        if (ctx.rsi && ctx.rsi == g_views[1]) {
+            main = g_views[0];
+        }
+    }
+    if (!main) {
+        return;
+    }
+    const std::uintptr_t before = ctx.r8;
+    const std::uintptr_t left = g_exposure_hook.call<std::uintptr_t>(main);
+    if (left) {
+        ctx.r8 = left;
+    }
+    const std::uint64_t n = g_fog_history_fixed.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 4 || n % 20000 == 0) {
+        log::info("stereo: right eye's fog history exposure (t1) 0x{:X} replaced by the left eye's 0x{:X} ({} times)", before,
+                  left, n);
+    }
+}
+
 std::uintptr_t on_exposure(std::uintptr_t view) {
     std::uintptr_t main = 0;
     if (g_exposure_from_left.load(std::memory_order_relaxed)) {
@@ -925,6 +962,18 @@ void install(const Config& config, const ModuleInfo& module) {
             if (auto e = safetyhook::InlineHook::create(reinterpret_cast<void*>(module.base + kExposureRva),
                                                         reinterpret_cast<void*>(&on_exposure))) {
                 g_exposure_hook = std::move(*e);
+                // movsd xmm0, [rip+..] ; lea rdx, [rbp+120h]
+                if (bytes_at(module.base + kFogHistoryExposureRva, {0xF2, 0x0F, 0x10, 0x05}) &&
+                    bytes_at(module.base + kFogHistoryExposureRva + 8, {0x48, 0x8D, 0x95, 0x20, 0x01, 0x00, 0x00})) {
+                    if (auto f = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kFogHistoryExposureRva),
+                                                             &on_fog_history_exposure)) {
+                        g_fog_history_hook = std::move(*f);
+                        log::info("stereo: the right eye's fog history uses the left eye's exposure too (exe+0x{:X})",
+                                  kFogHistoryExposureRva);
+                    }
+                } else {
+                    log::warn("stereo: the fog history exposure read exe+0x{:X} doesn't match this build", kFogHistoryExposureRva);
+                }
                 log::info("stereo: the right eye uses the left eye's exposure (exe+0x{:X}){}", kExposureRva,
                           g_exposure_from_left.load() ? "" : " - off ([views] eye_exposure_from_left)");
             }
