@@ -71,10 +71,12 @@ constexpr std::size_t kControllerSize = 0x330;
 constexpr std::size_t kTranslateSlot = 9;
 constexpr std::size_t kProxyVtableSlots = 96;
 constexpr std::size_t kProxyRing = 8; // the render side may still read proxies from the last few frames
+constexpr std::size_t kTransformSlot = 11; // 0x3CF0760: the camera entity's Transform (quat +0x00, translate +0x10)
 struct alignas(16) Proxy {
     std::uint8_t object[kControllerSize]; // first: `this` of a virtual call is the Proxy
     alignas(16) float translate[4]{};
     camera::EyeFov fov{};
+    alignas(16) float transform[16]{}; // slot 11's Transform with the head roll taken out (render thread)
 };
 struct ProxyRing {
     std::array<Proxy, kProxyRing> slots{};
@@ -128,6 +130,32 @@ std::atomic<std::uint64_t> g_proxy_no_head{0};
 
 const float* proxy_translate(const Proxy* self) {
     return self->translate;
+}
+
+// Slot 11 (agent Z 3b): the CPU-built particles (stage 0x48 fills 0x3F59B10 / 0x3F5D2E0) take their facing from the
+// camera entity's Transform. camera.cpp writes the head's full rotation into it, roll included, so camera-facing
+// particles rolled in the world when the head tilted. The proxy returns a copy with the roll removed: the same forward
+// axis (local +Z), the local X axis made level. Everything else in the Transform is the game's.
+using TransformFn = const float* (*)(const void*);
+std::uintptr_t g_real_transform = 0;
+std::atomic<bool> g_roll_free{true}; // [views] particles_level
+std::atomic<std::uint64_t> g_roll_free_calls{0};
+
+const float* proxy_transform(Proxy* self) {
+    const float* real = reinterpret_cast<TransformFn>(g_real_transform)(self);
+    if (!real || !g_roll_free.load(std::memory_order_relaxed) || !mem::try_copy(self->transform, reinterpret_cast<std::uintptr_t>(real), sizeof(self->transform))) {
+        return real;
+    }
+    const vr::Quat q{self->transform[0], self->transform[1], self->transform[2], self->transform[3]};
+    const vr::Vec3 f = vr::rotate(q, {0.0f, 0.0f, 1.0f});
+    const float yaw = std::atan2(f[0], f[2]);
+    const float pitch = std::atan2(-f[1], std::sqrt(f[0] * f[0] + f[2] * f[2]));
+    const vr::Quat qy{0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+    const vr::Quat qx{std::sin(pitch * 0.5f), 0.0f, 0.0f, std::cos(pitch * 0.5f)};
+    const vr::Quat level = vr::multiply(qy, qx);
+    std::memcpy(self->transform, level.data(), sizeof(level));
+    g_roll_free_calls.fetch_add(1, std::memory_order_relaxed);
+    return self->transform;
 }
 
 // The eye's offset in the head and its field of view, for the head view `head` (or the latest located eyes when the
@@ -759,6 +787,22 @@ void install(const Config& config, const ModuleInfo& module) {
         mem::try_copy(&real_translate, real_vtable + kTranslateSlot * sizeof(void*), sizeof(real_translate)) &&
         real_translate == module.base + 0x3CF0740) {
         g_proxy_vtable[kTranslateSlot] = reinterpret_cast<std::uintptr_t>(&proxy_translate);
+        // Slot 11 only when it is the expected Transform getter (mov rdx,[rcx+318h]; mov rcx,[rcx+320h]; jmp).
+        std::uintptr_t real_transform = g_proxy_vtable[kTransformSlot];
+        std::array<std::uint8_t, 14> code{};
+        constexpr std::array<std::uint8_t, 14> expected{0x48, 0x8B, 0x91, 0x18, 0x03, 0x00, 0x00,
+                                                        0x48, 0x8B, 0x89, 0x20, 0x03, 0x00, 0x00};
+        if (real_transform == module.base + 0x3CF0760 && mem::try_copy(code.data(), real_transform, code.size()) &&
+            code == expected) {
+            g_real_transform = real_transform;
+            g_roll_free.store(config.get_bool("views", "particles_level", true), std::memory_order_relaxed);
+            g_proxy_vtable[kTransformSlot] = reinterpret_cast<std::uintptr_t>(&proxy_transform);
+            log::info("stereo: proxy slot 11 (camera Transform, exe+0x3CF0760) replaced: camera-facing particles {}",
+                      g_roll_free.load() ? "stay level when the head rolls" : "roll with the head ([views] particles_level)");
+        } else {
+            log::warn("stereo: controller slot 11 isn't the expected Transform getter (0x{:X}); particles roll with the head",
+                      real_transform);
+        }
         if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(*begin), &on_view_begin)) {
             g_begin_hook = std::move(*h);
             g_proxy_ready = true;

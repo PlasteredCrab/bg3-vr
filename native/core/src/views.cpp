@@ -182,6 +182,74 @@ int call_set_environment(SetEnvironmentFn set_atmosphere, SetEnvironmentFn set_l
     }
 }
 
+// The fog-layer list of a view (agent Z 1): array at +0x2950, count +0x295C, 0xA4-byte entries (atmosphere id +0x00,
+// variant +0x04, weight +0xA0). The fog density step 0x3E3A650 stops at the first entry with weight < 0.01, so a view
+// without an entry for its atmosphere draws no fog or haze at all.
+std::string fog_layers(std::uintptr_t view) {
+    std::uintptr_t entries = 0;
+    std::uint32_t count = 0;
+    std::uint8_t variant = 0, refresh = 0;
+    mem::try_copy(&entries, view + 0x2950, sizeof(entries));
+    mem::try_copy(&count, view + 0x295C, sizeof(count));
+    mem::try_copy(&variant, view + 0x2961, sizeof(variant));
+    mem::try_copy(&refresh, view + 0x28B0, sizeof(refresh));
+    std::string out = std::format("{} layer(s) (variant {}, refresh {})", count, variant, refresh);
+    for (std::uint32_t i = 0; entries && i < std::min<std::uint32_t>(count, 8); ++i) {
+        std::int32_t id = -1, entry_variant = -1;
+        float weight = -1.0f;
+        const std::uintptr_t e = entries + i * 0xA4;
+        mem::try_copy(&id, e, sizeof(id));
+        mem::try_copy(&entry_variant, e + 4, sizeof(entry_variant));
+        mem::try_copy(&weight, e + 0xA0, sizeof(weight));
+        out += std::format(" [id {} variant {} weight {:.3f}]", id, entry_variant, weight);
+    }
+    return out;
+}
+
+// The game's own per-player-view fog refresh 0x3CCCC20(view, variant): sets +0x2961, +0x28E8 / +0x28B0 and creates the
+// layer entry for the view's atmosphere (0x3CCCCC0); the next environment tick weights it in. Only views registered
+// with the player manager get it from the game, so the eye view (CreatePlayerView) had no fog.
+using FogRefreshFn = void (*)(std::uintptr_t view, std::uint8_t variant);
+constexpr std::uint32_t kFogRefreshRva = 0x3CCCC20;
+bool g_eye_fog_layers = true; // [views] eye_fog_layers
+
+int call_fog_refresh(FogRefreshFn refresh, std::uintptr_t view, std::uint8_t variant) {
+    __try {
+        refresh(view, variant);
+        return 0;
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return 1;
+    }
+}
+
+void refresh_eye_fog(std::uintptr_t main, std::uintptr_t eye, bool verbose) {
+    if (!g_eye_fog_layers) {
+        return;
+    }
+    static const bool matches = [] {
+        constexpr std::uint8_t expected[] = {0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0xD9, 0x88, 0x91, 0x61, 0x29, 0x00, 0x00};
+        std::uint8_t actual[sizeof(expected)]{};
+        const bool ok = mem::try_copy(actual, g_module.base + kFogRefreshRva, sizeof(actual)) &&
+                        std::memcmp(actual, expected, sizeof(expected)) == 0;
+        if (!ok) {
+            log::warn("views: the fog layer refresh exe+0x{:X} doesn't match this build; the right eye may have no fog",
+                      kFogRefreshRva);
+        }
+        return ok;
+    }();
+    if (!matches) {
+        return;
+    }
+    std::uint8_t variant = 0;
+    mem::try_copy(&variant, main + 0x2961, sizeof(variant));
+    const std::string before = verbose ? fog_layers(eye) : std::string();
+    const int faulted = call_fog_refresh(reinterpret_cast<FogRefreshFn>(g_module.base + kFogRefreshRva), eye, variant);
+    if (verbose || faulted) {
+        log::info("views:   eye fog layers refreshed{} (variant {}): before {}; after {}; main view {}",
+                  faulted ? " (FAULTED)" : "", variant, before, fog_layers(eye), fog_layers(main));
+    }
+}
+
 void copy_environment(std::uintptr_t view, bool verbose = true) {
     const auto set_atmosphere = sig::lookup("view_set_atmosphere");
     const auto set_lighting = sig::lookup("view_set_lighting");
@@ -226,6 +294,9 @@ void copy_environment(std::uintptr_t view, bool verbose = true) {
                   faulted ? std::format("FAULTED at step {}", faulted) : std::string("copied"), split_atmosphere_id,
                   split_lighting_id);
     }
+    if (!faulted) {
+        refresh_eye_fog((*eyes)[0], view, verbose);
+    }
 }
 
 // The main view's active atmosphere / lighting (resource object and its id), to notice when the game applies new
@@ -262,6 +333,10 @@ void sync_environment() {
     if (!eyes || !(*eyes)[0] || !(*eyes)[1]) {
         g_environment_copied.reset();
         return;
+    }
+    static std::uint64_t frames = 0;
+    if (++frames % 1800 == 0) {
+        log::info("views: fog layers: main {}; eye {}", fog_layers((*eyes)[0]), fog_layers((*eyes)[1]));
     }
     const Environment now = read_environment((*eyes)[0]);
     if (g_environment_copied && *g_environment_copied == now) {
@@ -1924,6 +1999,10 @@ void dump() {
 std::vector<std::uintptr_t> found() {
     std::scoped_lock lock(g_mutex);
     return g_found;
+}
+
+void configure(const Config& config) {
+    g_eye_fog_layers = config.get_bool("views", "eye_fog_layers", true);
 }
 
 } // namespace bg3vr::views

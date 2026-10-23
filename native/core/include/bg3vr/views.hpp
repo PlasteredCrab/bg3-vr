@@ -1,5 +1,7 @@
 #pragma once
 
+#include "bg3vr/config.hpp"
+
 #include "bg3vr/module_info.hpp"
 
 #include <array>
@@ -109,5 +111,8 @@ int stage_id_of(std::uintptr_t stage);
 
 // The ReadState addresses of the render views found by the last scan.
 std::vector<std::uintptr_t> found();
+
+// [views] eye_fog_layers: give the eye view its own fog layers after each environment copy (agent Z 1).
+void configure(const Config& config);
 
 } // namespace bg3vr::views

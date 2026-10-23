@@ -272,6 +272,17 @@ std::optional<Highlight> aim_ray(const vr::RigidPose& aim, const vr::Vec3& local
     if (!item || busy_item(hit->entity)) {
         return std::nullopt;
     }
+    // Big and fixed things (chests, crates, furniture) mustn't fly. Until the game's own pick-up / weight check is in
+    // (agent AD), only items with a dynamic PhysX actor (type 5) are taken: static ones (6) can't move anyway.
+    if (hit->actor_type != 5) {
+        static std::uint64_t last_logged = 0;
+        if (hit->entity != last_logged) {
+            last_logged = hit->entity;
+            log::info("gloves: item 0x{:X} (entity 0x{:016X}) skipped: its physics actor is type {} (not dynamic)", item,
+                      hit->entity, hit->actor_type);
+        }
+        return std::nullopt;
+    }
     return Highlight{item, hit->entity, hit->distance + kAimSkip, 0.0};
 }
 

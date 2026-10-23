@@ -86,6 +86,8 @@ finds is highlighted: a tick in that hand, and the right hand's laser turns cyan
 - Hold it and turn your hand to look at it from every side.
 - Let go to drop it where it is. Let go mid-swing to throw it.
 - Let go over a shoulder or behind your back to put it in your inventory.
+  Items that belong to someone outside the party aren't stowed yet: taking them will go through the game's theft
+  system (being seen, the item marked stolen) once that path is in.
 
 A grip only grabs when something is highlighted, held or flying to that hand; otherwise it does what it is bound to
 (the right grip right-clicks). On / off: VR menu Body page, Gravity gloves. Settings: `[grab]` (`reach`,
@@ -175,6 +177,9 @@ open your buttons and sticks don't reach the game. Changes take effect at once a
 | `[render] vr_resolution` | 80 | per-eye render size, percent of the headset's |
 | `[views] eye_origin` | proxy | `proxy`: each eye drawn from its own position (stereo depth); `head`: both from the head (flat) |
 | `[views] share_shadows` | true | the right eye reuses the left eye's sun shadows (checked over the first 60 frames) |
+| `[views] eye_fog_layers` | true | the right eye gets its own fog layers (it had no fog or haze) |
+| `[views] cull_both_eyes` | true | culling covers both eyes' fields of view (blocks of blood and ground decals were missing per eye) |
+| `[views] particles_level` | true | camera-facing particles stay level when you tilt your head |
 | `[xr] async_wait` | false | wait for the headset's frame on its own thread, not in the game's Present |
 | `[perf] worker_threads` | 0 | the game's job worker threads (0 = the game's 6; try 10-12 on an 8-core CPU) |
 | `[ui] stereo_dolls` | true | characters in UI screens in 3D |

@@ -85,6 +85,38 @@ local function OnHolster(message, user)
         if type(item) ~= "string" then
             return {}
         end
+        -- Stowing must go through the theft system like a normal pick-up. Until the mod uses the game's own pick-up
+        -- path (agent AC is decompiling it), an item that belongs to anyone outside the party isn't stowed at all;
+        -- it stays where it was let go. Both ownership fields are logged (which one the crime system reads is not
+        -- confirmed yet), and either one pointing outside the party refuses.
+        local function OwnerOf(field, key)
+            local ok, owner = pcall(function()
+                local entity = Ext.Entity.Get(item)
+                return entity[field] and entity[field][key] or nil
+            end)
+            return ok and owner or nil
+        end
+        local function Describe(owner)
+            if owner == nil then
+                return "none", false
+            end
+            local ok, info = pcall(function()
+                local uuid = owner.Uuid and owner.Uuid.EntityUuid or "?"
+                return { uuid = uuid, party = owner.PartyMember ~= nil or uuid == character }
+            end)
+            if not ok then
+                return "unreadable", true
+            end
+            return string.format("%s (%s)", tostring(info.uuid), info.party and "party" or "NOT party"), not info.party
+        end
+        local ownee, owneeForeign = Describe(OwnerOf("OwneeCurrent", "Ownee"))
+        local owned, ownedForeign = Describe(OwnerOf("InventoryIsOwned", "Owner"))
+        BG3VR.Log("gloves: %s wants to stow %s: OwneeCurrent.Ownee %s, InventoryIsOwned.Owner %s", character, item, ownee, owned)
+        if owneeForeign or ownedForeign then
+            BG3VR.Log("gloves: %s belongs to someone outside the party: not stowed (taking it must go through the "
+                .. "theft system, not in yet)", item)
+            return {}
+        end
         local ok, err = pcall(Osi.ToInventory, item, character, 1, 1, 0)
         BG3VR.Log("gloves: %s stows %s: ToInventory %s%s", character, item, ok and "called" or "FAILED",
             ok and "" or (": " .. tostring(err)))

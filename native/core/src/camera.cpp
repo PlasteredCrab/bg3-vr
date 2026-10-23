@@ -58,6 +58,14 @@ std::chrono::steady_clock::time_point g_sweep_start;
 // so a change sets g_projection_dirty and the next view update of the driven camera marks the
 // controller dirty (on the game thread). Under g_mutex.
 std::optional<EyeFov> g_eye_fov;
+// Agent Z 2: the CPU cull frustum (0x4086010) is built from the controller's game FOV +0x14 and aspect +0x20 (55 deg /
+// 1.6), symmetric, at the head. Each eye's wider, lopsided field of view reached past it on a different side, so
+// ground decals and blood tiles were culled in blocks, different per eye. With head tracking on these two fields
+// get a symmetric frustum enclosing both eyes (2 degrees of margin for the eye offset); the game's values come back
+// when head tracking stops. [views] cull_both_eyes.
+bool g_cull_both_eyes = true;
+std::optional<std::pair<float, float>> g_saved_fov; // the game's +0x14 / +0x20
+std::uint64_t g_cull_fov_writes = 0;
 bool g_projection_dirty = false;
 std::atomic<std::uint64_t> g_projection_overrides{0};
 
@@ -290,6 +298,43 @@ void on_view_update(safetyhook::Context& ctx) {
             g_eye_fov = g_head->fov;
             g_projection_dirty = true;
         }
+        if (g_cull_both_eyes && g_pose && g_head) {
+            constexpr float kRadians = std::numbers::pi_v<float> / 180.0f;
+            constexpr float kMarginDeg = 2.0f;
+            float up = 0.0f, down = 0.0f, left = 0.0f, right = 0.0f;
+            for (const EyeFov& f : {g_head->fov, g_head->eye_fov[0], g_head->eye_fov[1]}) {
+                up = std::max(up, std::tan(std::clamp(f.up_deg + kMarginDeg, 1.0f, 85.0f) * kRadians));
+                down = std::max(down, std::tan(std::clamp(-f.down_deg + kMarginDeg, 1.0f, 85.0f) * kRadians));
+                right = std::max(right, std::tan(std::clamp(f.right_deg + kMarginDeg, 1.0f, 85.0f) * kRadians));
+                left = std::max(left, std::tan(std::clamp(-f.left_deg + kMarginDeg, 1.0f, 85.0f) * kRadians));
+            }
+            const float vertical = std::max(up, down);
+            const float fov = 2.0f * std::atan(vertical);
+            const float aspect = std::max(left, right) / vertical;
+            float* fields = reinterpret_cast<float*>(ctx.rcx + layout::kFov);
+            float* aspect_field = reinterpret_cast<float*>(ctx.rcx + layout::kAspectRatio);
+            if (!g_saved_fov) {
+                g_saved_fov = std::pair{*fields, *aspect_field};
+                log::info("camera: cull frustum widened to enclose both eyes: fov {:.1f} deg, aspect {:.2f} (the game's "
+                          "{:.1f} deg / {:.2f} come back when head tracking stops)",
+                          fov / kRadians, aspect, *fields / kRadians, *aspect_field);
+            }
+            if (std::abs(*fields - fov) > 1e-4f || std::abs(*aspect_field - aspect) > 1e-4f) {
+                *fields = fov;
+                *aspect_field = aspect;
+                g_projection_dirty = true;
+                if (++g_cull_fov_writes <= 5 || g_cull_fov_writes % 500 == 0) {
+                    log::info("camera: cull fov / aspect set to {:.1f} deg / {:.3f} ({} writes; the game or a new field of "
+                              "view changed them)", fov / kRadians, aspect, g_cull_fov_writes);
+                }
+            }
+        } else if (g_saved_fov && !g_head) {
+            *reinterpret_cast<float*>(ctx.rcx + layout::kFov) = g_saved_fov->first;
+            *reinterpret_cast<float*>(ctx.rcx + layout::kAspectRatio) = g_saved_fov->second;
+            g_projection_dirty = true;
+            log::info("camera: the game's fov / aspect restored ({:.3f} rad / {:.2f})", g_saved_fov->first, g_saved_fov->second);
+            g_saved_fov.reset();
+        }
         if (g_projection_dirty) {
             *reinterpret_cast<std::uint8_t*>(ctx.rcx + layout::kProjectionDirty) = 1;
             g_projection_dirty = false;
@@ -463,6 +508,7 @@ void install(const Config& config, const ModuleInfo& module) {
         g_world_scale = std::clamp(std::strtof(scale.c_str(), nullptr), 0.25f, 4.0f);
     }
     g_teleport_turn = config.get_bool("vr", "teleport_turn", false);
+    g_cull_both_eyes = config.get_bool("views", "cull_both_eyes", true);
     install_mid_hook("camera_view_update", &on_view_update, g_view_update_hook);
     install_mid_hook("camera_set_view_call", &on_set_view, g_set_view_hook);
     install_mid_hook("camera_set_projection_call", &on_set_projection, g_set_projection_hook);
