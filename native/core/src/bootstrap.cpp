@@ -532,6 +532,7 @@ int init(const wchar_t* root_dir) {
     watchdog::start(module);
 #if BG3VR_HAVE_OPENXR
     headset::install(g_config);
+    headset::set_root(g_root);
 #endif
     cull::init(module);
     bodyik::configure(g_config, module);

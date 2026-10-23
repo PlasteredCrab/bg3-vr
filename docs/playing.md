@@ -22,7 +22,8 @@ Status: what has been seen working in a headset and what is only built so far is
    - the game UI hidden: X shows it in front of you (and hides it again); it comes up by itself in combat, in
      conversations and whenever a game window opens (inventory, map, journal, trade, loot, the game menu); VR menu,
      Game interface: always in front of you, or on your wrist, instead. While your laser points into the world, the
-     hidden UI never blocks a click there;
+     hidden UI never blocks a click there, and on the shown panel the laser stops only on what the UI draws (buttons,
+     portraits, the hotbar, windows): over the empty parts it goes on into the world;
    - hand pointing, thumbstick walking and the controller bindings.
 
    After a loading screen it starts again, and switching characters moves it to the new one.
@@ -201,3 +202,9 @@ Everything the mod does is logged in `<game>\bin\bg3vr\bg3vr.log`, by module:
 `xr:`, `xr input:`, `vr:`, `ui:`, `views:`, `stereo:`, `skeleton:`, `ik:`, `pick:`, `locomotion:`, `dialogue:`,
 `grab:`, `quality:`. `!vr_fps` adds a report from each. To turn the mod off without uninstalling, create an empty
 file `<game>\bin\bg3vr\disabled`.
+
+## Reporting UI problems
+
+The SteamVR mirror (and recordings of it) shows only the game's eye images, not the UI panel or the VR menu. While the
+panel is shown, the mod saves a picture of the UI image every 20 seconds to `<game>\bin\bg3vr\ui_shots\` (at most 60
+per session; `[ui] snapshots = false` turns it off). Attach those with `bg3vr.log`.

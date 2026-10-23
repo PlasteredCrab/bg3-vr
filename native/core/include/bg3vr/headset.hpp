@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "bg3vr/config.hpp"
 #include "bg3vr/vr_math.hpp"
 
@@ -25,6 +27,8 @@ void configure_ui(const Config& config);
 void set_first_run(bool first);
 // The controlled character is in combat (Lua: incombat=): with [ui] placement = hidden the game UI comes up in front.
 void set_in_combat(bool on);
+// The mod's folder (bin\bg3vr): UI snapshots go to its ui_shots folder.
+void set_root(const std::filesystem::path& root);
 // A conversation is on (game thread): the game UI, where the answers are, comes off the wrist to a panel in front of
 // the head until it ends ([ui] dialogue_in_front, default on), so the laser and trigger can pick an answer.
 void set_dialogue(bool on);

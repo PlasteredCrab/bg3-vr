@@ -502,6 +502,7 @@ struct PanelTarget {
     float height_m = 0.0f;
 };
 std::optional<PanelTarget> g_ui_target;   // the game UI panel (wrist or in front), while shown
+bool g_ui_laser_through = false;          // the laser is over a transparent part of the UI: it goes on into the world
 std::optional<PanelTarget> g_menu_target; // the VR menu, while open
 
 // A LOCAL-space point in an eye image's uv, for the pose and field of view the image was rendered with.
@@ -1354,6 +1355,255 @@ void release_touch() {
     }
 }
 
+// What is under the laser on the UI panel (presenting thread, the immediate context, like the panel blit): the UI
+// texture is transparent outside what the game draws (agent AB 2), so only drawn things (buttons, portraits, the
+// hotbar, windows) stop the laser and take the cursor; over the transparent rest it goes on into the world. A 17x17
+// pixel box around the laser is copied into one of two small staging textures each frame and read back a frame later
+// without waiting. [ui] laser_through_transparent.
+struct AlphaProbe {
+    std::array<ID3D11Texture2D*, 2> staging{};
+    std::array<bool, 2> pending{};
+    int next = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    bool unsupported = false;
+    std::optional<float> alpha; // the latest read: the most opaque pixel of the box
+    bool opaque = true;         // with hysteresis
+    std::uint64_t reads = 0, through = 0;
+};
+AlphaProbe g_alpha;
+bool g_laser_through_transparent = true;
+constexpr UINT kProbeBox = 17;
+
+float alpha_of(const std::uint8_t* pixel, DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        return static_cast<float>(pixel[3]) / 255.0f;
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: {
+        std::uint32_t v = 0;
+        std::memcpy(&v, pixel, 4);
+        return static_cast<float>(v >> 30) / 3.0f;
+    }
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS: {
+        std::uint16_t h = 0;
+        std::memcpy(&h, pixel + 6, 2);
+        const int exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+        const float value = exponent == 0 ? std::ldexp(static_cast<float>(mantissa), -24)
+                                          : std::ldexp(static_cast<float>(mantissa | 0x400), exponent - 25);
+        return (h & 0x8000) ? -value : value;
+    }
+    default:
+        return -1.0f;
+    }
+}
+
+UINT bytes_per_pixel(DXGI_FORMAT format) {
+    return format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R16G16B16A16_TYPELESS ? 8 : 4;
+}
+
+void probe_alpha(ID3D11Texture2D* ui, const D3D11_TEXTURE2D_DESC& desc, std::optional<std::array<float, 2>> uv) {
+    if (g_alpha.unsupported) {
+        return;
+    }
+    if (desc.SampleDesc.Count != 1 || alpha_of(std::array<std::uint8_t, 8>{}.data(), desc.Format) < 0.0f) {
+        g_alpha.unsupported = true;
+        log::warn("ui: the UI texture (format {}, {} samples) can't be read for the laser; the whole panel stops it",
+                  static_cast<int>(desc.Format), desc.SampleDesc.Count);
+        return;
+    }
+    ID3D11DeviceContext* context = nullptr;
+    render::device()->GetImmediateContext(&context);
+    if (g_alpha.format != desc.Format) {
+        for (auto*& s : g_alpha.staging) {
+            if (s) {
+                s->Release();
+                s = nullptr;
+            }
+        }
+        g_alpha.pending = {};
+        g_alpha.format = desc.Format;
+    }
+    // The read of an earlier copy, without waiting for the GPU.
+    for (int i = 0; i < 2; ++i) {
+        if (!g_alpha.pending[i] || !g_alpha.staging[i]) {
+            continue;
+        }
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (context->Map(g_alpha.staging[i], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) == S_OK) {
+            float most = 0.0f;
+            const UINT bpp = bytes_per_pixel(desc.Format);
+            for (UINT y = 0; y < kProbeBox; ++y) {
+                const auto* row = static_cast<const std::uint8_t*>(mapped.pData) + y * mapped.RowPitch;
+                for (UINT x = 0; x < kProbeBox; ++x) {
+                    most = std::max(most, alpha_of(row + x * bpp, desc.Format));
+                }
+            }
+            context->Unmap(g_alpha.staging[i], 0);
+            g_alpha.pending[i] = false;
+            g_alpha.alpha = most;
+            ++g_alpha.reads;
+            g_alpha.opaque = g_alpha.opaque ? most > 0.02f : most > 0.06f;
+        }
+    }
+    if (uv && desc.Width > kProbeBox && desc.Height > kProbeBox) {
+        const int slot = g_alpha.next;
+        if (!g_alpha.staging[slot]) {
+            D3D11_TEXTURE2D_DESC s{};
+            s.Width = kProbeBox;
+            s.Height = kProbeBox;
+            s.MipLevels = 1;
+            s.ArraySize = 1;
+            s.Format = desc.Format;
+            s.SampleDesc.Count = 1;
+            s.Usage = D3D11_USAGE_STAGING;
+            s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(render::device()->CreateTexture2D(&s, nullptr, &g_alpha.staging[slot]))) {
+                g_alpha.unsupported = true;
+                log::warn("ui: no staging texture for the laser probe; the whole panel stops the laser");
+                context->Release();
+                return;
+            }
+        }
+        if (!g_alpha.pending[slot]) {
+            const UINT cx = static_cast<UINT>(std::clamp((*uv)[0], 0.0f, 1.0f) * static_cast<float>(desc.Width - 1));
+            const UINT cy = static_cast<UINT>(std::clamp((*uv)[1], 0.0f, 1.0f) * static_cast<float>(desc.Height - 1));
+            const UINT left = std::min(cx > kProbeBox / 2 ? cx - kProbeBox / 2 : 0u, desc.Width - kProbeBox);
+            const UINT top = std::min(cy > kProbeBox / 2 ? cy - kProbeBox / 2 : 0u, desc.Height - kProbeBox);
+            const D3D11_BOX box{left, top, 0, left + kProbeBox, top + kProbeBox, 1};
+            context->CopySubresourceRegion(g_alpha.staging[slot], 0, 0, 0, 0, ui, 0, &box);
+            g_alpha.pending[slot] = true;
+            g_alpha.next = 1 - slot;
+        }
+    }
+    context->Release();
+}
+
+// Snapshots of the UI image (what the panel shows) for the log, because the SteamVR mirror records only the eye
+// images, not the panels: every 20 s while the panel is shown and right after it comes up, half size, over grey,
+// as bin\bg3vr\ui_shots\ui_<time>.bmp (at most 60 a session). [ui] snapshots.
+struct Snapshot {
+    ID3D11Texture2D* staging = nullptr;
+    UINT width = 0, height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    bool pending = false;
+    std::chrono::steady_clock::time_point next{};
+    int written = 0;
+    std::string reason;
+};
+Snapshot g_snapshot;
+bool g_snapshots = true;
+std::filesystem::path g_root_dir;
+
+void write_snapshot(const D3D11_MAPPED_SUBRESOURCE& mapped) {
+    const UINT w = g_snapshot.width / 2, h = g_snapshot.height / 2;
+    const UINT row_bytes = (w * 3 + 3) & ~3u;
+    std::vector<std::uint8_t> bmp(54 + static_cast<std::size_t>(row_bytes) * h);
+    auto put32 = [&](std::size_t at, std::uint32_t v) { std::memcpy(bmp.data() + at, &v, 4); };
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    put32(2, static_cast<std::uint32_t>(bmp.size()));
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, w);
+    put32(22, h);
+    bmp[26] = 1;
+    bmp[28] = 24;
+    put32(34, static_cast<std::uint32_t>(bmp.size() - 54));
+    const UINT bpp = bytes_per_pixel(g_snapshot.format);
+    const bool bgr = g_snapshot.format == DXGI_FORMAT_B8G8R8A8_UNORM || g_snapshot.format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
+                     g_snapshot.format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+    for (UINT y = 0; y < h; ++y) {
+        const auto* src = static_cast<const std::uint8_t*>(mapped.pData) + static_cast<std::size_t>(y * 2) * mapped.RowPitch;
+        std::uint8_t* dst = bmp.data() + 54 + static_cast<std::size_t>(h - 1 - y) * row_bytes;
+        for (UINT x = 0; x < w; ++x) {
+            const std::uint8_t* p = src + static_cast<std::size_t>(x * 2) * bpp;
+            float r = 0, g = 0, b = 0;
+            if (bpp == 4 && g_snapshot.format != DXGI_FORMAT_R10G10B10A2_UNORM) {
+                r = p[bgr ? 2 : 0] / 255.0f;
+                g = p[1] / 255.0f;
+                b = p[bgr ? 0 : 2] / 255.0f;
+            }
+            const float a = std::clamp(alpha_of(p, g_snapshot.format), 0.0f, 1.0f);
+            // Over a dark grey checker, so transparent areas show; the UI is premultiplied (agent F), so colour + (1-a) bg.
+            const float bg = ((x / 16 + y / 16) & 1) ? 0.18f : 0.12f;
+            dst[x * 3 + 0] = static_cast<std::uint8_t>(std::clamp(b + (1 - a) * bg, 0.0f, 1.0f) * 255.0f);
+            dst[x * 3 + 1] = static_cast<std::uint8_t>(std::clamp(g + (1 - a) * bg, 0.0f, 1.0f) * 255.0f);
+            dst[x * 3 + 2] = static_cast<std::uint8_t>(std::clamp(r + (1 - a) * bg, 0.0f, 1.0f) * 255.0f);
+        }
+    }
+    std::error_code ec;
+    const auto dir = g_root_dir / "ui_shots";
+    std::filesystem::create_directories(dir, ec);
+    SYSTEMTIME t{};
+    GetLocalTime(&t);
+    const auto file = dir / std::format("ui_{:02}{:02}{:02}_{:03}.bmp", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, file.c_str(), L"wb") == 0 && f) {
+        fwrite(bmp.data(), 1, bmp.size(), f);
+        fclose(f);
+        ++g_snapshot.written;
+        log::info("ui: snapshot {} ({}; {}x{} from the UI texture, format {})", file.filename().string(), g_snapshot.reason, w,
+                  h, static_cast<int>(g_snapshot.format));
+    }
+}
+
+void snapshot_ui(ID3D11Texture2D* ui, const D3D11_TEXTURE2D_DESC& desc, bool shown_now) {
+    if (!g_snapshots || g_root_dir.empty() || g_snapshot.written >= 60 || desc.SampleDesc.Count != 1 ||
+        alpha_of(std::array<std::uint8_t, 8>{}.data(), desc.Format) < 0.0f) {
+        return;
+    }
+    ID3D11DeviceContext* context = nullptr;
+    render::device()->GetImmediateContext(&context);
+    if (g_snapshot.pending) {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (context->Map(g_snapshot.staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped) == S_OK) {
+            write_snapshot(mapped);
+            context->Unmap(g_snapshot.staging, 0);
+            g_snapshot.pending = false;
+        }
+        context->Release();
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!shown_now && now < g_snapshot.next) {
+        context->Release();
+        return;
+    }
+    if (!g_snapshot.staging || g_snapshot.width != desc.Width || g_snapshot.height != desc.Height || g_snapshot.format != desc.Format) {
+        if (g_snapshot.staging) {
+            g_snapshot.staging->Release();
+            g_snapshot.staging = nullptr;
+        }
+        D3D11_TEXTURE2D_DESC s = desc;
+        s.MipLevels = 1;
+        s.ArraySize = 1;
+        s.BindFlags = 0;
+        s.MiscFlags = 0;
+        s.Usage = D3D11_USAGE_STAGING;
+        s.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(render::device()->CreateTexture2D(&s, nullptr, &g_snapshot.staging))) {
+            g_snapshots = false;
+            log::warn("ui: no staging texture for UI snapshots; snapshots off");
+            context->Release();
+            return;
+        }
+        g_snapshot.width = desc.Width;
+        g_snapshot.height = desc.Height;
+        g_snapshot.format = desc.Format;
+    }
+    context->CopySubresourceRegion(g_snapshot.staging, 0, 0, 0, 0, ui, 0, nullptr); // mip 0 only
+    g_snapshot.pending = true;
+    g_snapshot.reason = shown_now ? "the panel just came up" : "every 20 s while shown";
+    g_snapshot.next = now + std::chrono::seconds(20);
+    context->Release();
+}
+
 void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     update_screen_laser();
     const bool want = g_ui_enabled && !g_ui_failed && vrplay::active() && !vrplay::third_person() && g_mode != Mode::Screen;
@@ -1533,7 +1783,16 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
             vrplay::mouse_left(false);
             g_ui_touch_down = false;
         }
-        const auto uv = touch ? touch : right.aim_valid && target ? panel_uv(right.aim, *target, height_m) : std::nullopt;
+        const auto aimed = right.aim_valid && target ? panel_uv(right.aim, *target, height_m) : std::nullopt;
+        if (g_laser_through_transparent) {
+            probe_alpha(ui, ui_desc, aimed);
+        }
+        // Over a transparent part the laser goes on into the world (no cursor on the panel, the beam isn't stopped).
+        g_ui_laser_through = g_laser_through_transparent && !g_alpha.unsupported && aimed && !touch && !g_alpha.opaque;
+        if (g_ui_laser_through) {
+            ++g_alpha.through;
+        }
+        const auto uv = touch ? touch : g_ui_laser_through ? std::nullopt : aimed;
         if (uv) {
             overlay.cursor_u = (*uv)[0];
             overlay.cursor_v = (*uv)[1];
@@ -1551,6 +1810,7 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         g_ui_blitter.draw(ui, {}, image.view, g_ui_panel_width, g_ui_panel_height, g_ui_linearize, overlay);
         g_session->release_panel();
     }
+    snapshot_ui(ui, ui_desc, !g_ui_shown);
     ui->Release();
     g_session->set_panel(place);
     ui_set_in_eyes(!g_ui_remove_from_eyes);
@@ -1832,7 +2092,7 @@ blit::Blitter::Overlay beam_overlay(const vr::RigidPose& eye, const camera::EyeF
     const auto world_hit = menu_open ? std::nullopt : rayprobe::beam_distance();
     float length = world_hit ? *world_hit / scale : (menu_open ? 2.0f : g_beam_range.load(std::memory_order_relaxed) / scale);
     bool hit = world_hit.has_value();
-    for (const auto& target : {menu_open ? g_menu_target : g_ui_target}) {
+    for (const auto& target : {menu_open ? g_menu_target : g_ui_laser_through ? std::optional<PanelTarget>{} : g_ui_target}) {
         if (const auto at = target ? panel_hit(hand.aim, target->place, target->height_m) : std::nullopt;
             at && (*at)[2] < length) {
             length = (*at)[2];
@@ -2111,6 +2371,10 @@ void install(const Config& config) {
     log::info("xr: enabled, mode {}; the session opens on the first presented frame", mode_name(g_mode));
 }
 
+void set_root(const std::filesystem::path& root) {
+    g_root_dir = root;
+}
+
 void set_in_combat(bool on) {
     if (g_ui_combat.exchange(on, std::memory_order_relaxed) != on) {
         if (on && g_ui_on_demand.load(std::memory_order_relaxed)) {
@@ -2184,6 +2448,8 @@ void configure_ui(const Config& config) {
     };
     apply_placement(text::to_lower(config.get("ui", "placement", "hidden")));
     g_ui_wrist_out = ui_value("wrist_out", 0.045f, -0.2f, 0.3f);
+    g_laser_through_transparent = config.get_bool("ui", "laser_through_transparent", true);
+    g_snapshots = config.get_bool("ui", "snapshots", true);
     g_ui_wrist_along = ui_value("wrist_along", 0.2f, -0.3f, 0.6f);
     const std::string v = config.get("ui", "wrist_width");
     const float width = v.empty() ? 0.8f : std::clamp(std::strtof(v.c_str(), nullptr), 0.1f, 2.0f);

@@ -435,8 +435,9 @@ int lift_calls(const LiftCall& in, Liftable& out) {
         int grams = 0;
         fn<WeightFn>(kWeight)(&grams, ctx, &in.handle, 1, 1);
         out.grams = grams;
-        const std::uintptr_t weight_ctx[1] = {in.world};
-        out.stack_grams = fn<LiftingWeightFn>(kLiftingWeight)(weight_ctx, in.handle, 1);
+        // GetLiftingWeight 0x1BA9130 faulted on every item in the 12:44 run (reading 0x40030): not called. The throw
+        // rule uses the one-unit weight.
+        out.stack_grams = grams;
         const std::uintptr_t stats = fn<StatsFn>(kStats)(in.world, in.player);
         out.strength = stats ? *reinterpret_cast<const int*>(stats + 8) : -1;
         if (!(flags & kItemCanBePickedUp)) {
@@ -914,8 +915,7 @@ void install(const Config& config, const ModuleInfo& module) {
     if (g_ready) {
         install_outline();
     }
-    g_lift_ready = check(kCharacterOf) && check(kHasCanBeIn) && check(kWeight) && check(kCanLift) && check(kLiftingWeight) &&
-                   check(kStats);
+    g_lift_ready = check(kCharacterOf) && check(kHasCanBeIn) && check(kWeight) && check(kCanLift) && check(kStats);
     log::info("gloves: the game's pick-up rule {}", g_lift_ready ? "is used (flag, CanBeIn, not in an inventory, Strength x 5 kg)"
                                                                  : "doesn't match this build: nothing is taken");
     if (!g_probe && !g_hold) {
