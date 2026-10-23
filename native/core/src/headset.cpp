@@ -1551,10 +1551,37 @@ void update_menu(const xr::Frame& frame) {
         g_menu.tick(last ? std::clamp(static_cast<float>(static_cast<double>(now_time - last) * 1e-9), 0.0f, 0.1f) : 0.0f);
         last = now_time;
     }
-    const vrmenu::Actions actions = g_menu.update(pointer, click, right.active ? right.stick_x : 0.0f,
-                                                  {vrplay::third_person(), g_ui_wrist.load(std::memory_order_relaxed), profile});
-    if (click) {
+    // Controller navigation (no laser needed): either stick up / down moves the highlight, A activates, B closes.
+    const HandState other = hands()[wrist_hand()];
+    static bool was_a = false, was_b = false;
+    const bool a_down = (right.active && right.primary) || (other.active && other.primary);
+    const bool b_down = (right.active && right.secondary) || (other.active && other.secondary);
+    vrmenu::Menu::Nav nav;
+    nav.stick_y = right.active && std::abs(right.stick_y) > std::abs(other.active ? other.stick_y : 0.0f)
+                      ? right.stick_y
+                      : (other.active ? other.stick_y : 0.0f);
+    nav.accept = a_down && !was_a;
+    nav.back = b_down && !was_b;
+    was_a = a_down;
+    was_b = b_down;
+    const float stick_x = right.active && std::abs(right.stick_x) >= std::abs(other.active ? other.stick_x : 0.0f)
+                              ? right.stick_x
+                              : (other.active ? other.stick_x : 0.0f);
+    const vrmenu::Actions actions = g_menu.update(pointer, click, stick_x,
+                                                  {vrplay::third_person(), g_ui_wrist.load(std::memory_order_relaxed), profile},
+                                                  nav);
+    if (click || nav.accept || nav.back) {
         ++g_menu_clicks;
+        log::info("menu: {} on '{}'{}{}", click ? "laser click" : nav.accept ? "A" : "B", g_menu.hovered_label(),
+                  pointer ? std::format(" (laser at {:.2f}, {:.2f})", (*pointer)[0], (*pointer)[1]) : std::string(" (no laser hit)"),
+                  actions.settings.empty() ? std::string() : std::format(": {} = {}", actions.settings[0].first, actions.settings[0].second));
+    }
+    // Where the laser is, now and then, so a log shows whether it reaches the menu at all.
+    if (static std::uint64_t frames = 0; ++frames % 180 == 1) {
+        log::info("menu: open, {} hand aim {}, laser {}, trigger {:.2f}, sticks ({:.2f}, {:.2f})", pointer_hand() == 0 ? "left" : "right",
+                  right.aim_valid ? "tracked" : "not tracked",
+                  pointer ? std::format("on the menu at ({:.2f}, {:.2f})", (*pointer)[0], (*pointer)[1]) : std::string("off the menu"),
+                  right.trigger, stick_x, nav.stick_y);
     }
     if (!actions.settings.empty()) {
         std::string lines;

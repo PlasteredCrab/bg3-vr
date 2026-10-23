@@ -1006,6 +1006,42 @@ void test_vrmenu_custom_values() {
     }
 }
 
+void test_vrmenu_controller_navigation() {
+    using namespace bg3vr::vrmenu;
+    // Without the laser: the stick moves the highlight, A changes the highlighted row, B closes.
+    Menu menu;
+    const Live live{};
+    menu.show_page(menu.page_of("Turning"));
+    const auto push = [&](float y) {
+        Menu::Nav nav;
+        nav.stick_y = y;
+        menu.update(std::nullopt, false, 0.0f, live, nav);
+        return menu.update(std::nullopt, false, 0.0f, live, Menu::Nav{}); // back to the centre
+    };
+    bool reached = false;
+    for (int i = 0; i < 12 && !reached; ++i) {
+        push(-1.0f);
+        reached = menu.hovered_label() == "Turning";
+    }
+    CHECK(reached);
+    Menu::Nav a;
+    a.accept = true;
+    Actions act = menu.update(std::nullopt, false, 0.0f, live, a);
+    CHECK(act.settings.size() == 1 && act.settings[0].first == "vr.turn" && act.settings[0].second == "smooth");
+    // The stick sideways on the highlighted row steps it back.
+    menu.update(std::nullopt, false, 0.0f, live, Menu::Nav{});
+    act = menu.update(std::nullopt, false, -1.0f, live, Menu::Nav{});
+    CHECK(act.settings.size() == 1 && act.settings[0].second == "snap");
+    // Up from the first row stays on the tabs; B closes.
+    for (int i = 0; i < 20; ++i) {
+        push(1.0f);
+    }
+    CHECK(menu.hovered_label() == "the tabs");
+    Menu::Nav b;
+    b.back = true;
+    CHECK(menu.update(std::nullopt, false, 0.0f, live, b).close);
+}
+
 void test_vrmenu() {
     using namespace bg3vr::vrmenu;
     Menu menu;
@@ -1303,6 +1339,7 @@ int main() {
     test_rigid();
     test_vrmenu();
     test_vrmenu_custom_values();
+    test_vrmenu_controller_navigation();
     test_holster();
     test_stereo_view_block();
     test_elbow();

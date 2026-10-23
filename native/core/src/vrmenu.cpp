@@ -652,15 +652,67 @@ void Menu::step(int index, int direction, Actions& actions) {
     ++revision_;
 }
 
-Actions Menu::update(std::optional<std::array<float, 2>> pointer, bool click, float stick_x, const Live& live) {
+std::string Menu::hovered_label() const {
+    if (hovered_ < 0 || hovered_ >= static_cast<int>(items_.size())) {
+        return "nothing";
+    }
+    const Item& item = items_[hovered_];
+    return item.kind == Kind::Tabs      ? "the tabs"
+           : item.kind == Kind::Buttons ? "the buttons"
+           : item.kind == Kind::Guide   ? "the guide"
+                                        : label_of(item);
+}
+
+int Menu::next_row(int from, int direction) const {
+    const int count = static_cast<int>(items_.size());
+    // Rows in screen order: the tabs, this page's rows, the button strip.
+    std::vector<int> order;
+    for (int i = 0; i < count; ++i) {
+        const Item& item = items_[i];
+        if (item.kind != Kind::Section && item.height > 0 && item.top >= 0) {
+            order.push_back(i);
+        }
+    }
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return items_[a].top < items_[b].top; });
+    if (order.empty()) {
+        return -1;
+    }
+    const auto at = std::find(order.begin(), order.end(), from);
+    if (at == order.end()) {
+        return direction > 0 ? order.front() : order.back();
+    }
+    const auto index = static_cast<int>(at - order.begin()) + direction;
+    return order[static_cast<std::size_t>(std::clamp(index, 0, static_cast<int>(order.size()) - 1))];
+}
+
+Actions Menu::update(std::optional<std::array<float, 2>> pointer, bool click, float stick_x, const Live& live, Nav nav) {
     Actions actions;
     if (live.third_person != live_.third_person || live.ui_wrist != live_.ui_wrist || live.profile != live_.profile) {
         live_ = live;
         ++revision_;
     }
-    const int row = pointer ? row_at((*pointer)[1]) : -1;
-    int button = pointer ? button_at(row, (*pointer)[0]) : -1;
-    if (row >= 0 && items_[row].kind == Kind::Guide) {
+    const int laser_row = pointer ? row_at((*pointer)[1]) : -1;
+    if (laser_row >= 0) {
+        focus_ = laser_row; // the laser takes the highlight; the sticks carry on from there
+    }
+    if (focus_ >= static_cast<int>(items_.size()) || (focus_ >= 0 && items_[focus_].height == 0)) {
+        focus_ = -1; // on another page
+    }
+    if (stick_y_armed_ && std::abs(nav.stick_y) > 0.7f) {
+        focus_ = next_row(focus_, nav.stick_y > 0.0f ? -1 : 1);
+        stick_y_armed_ = false;
+        actions.haptic = 0.1f;
+    }
+    if (std::abs(nav.stick_y) < 0.3f) {
+        stick_y_armed_ = true;
+    }
+    const int row = laser_row >= 0 ? laser_row : focus_;
+    int button = laser_row >= 0 ? button_at(row, (*pointer)[0])
+                 : row < 0      ? -1
+                 : items_[row].kind == Kind::Tabs    ? page_
+                 : items_[row].kind == Kind::Buttons ? focus_button_
+                                                     : -1;
+    if (laser_row >= 0 && items_[row].kind == Kind::Guide) {
         // Only the navigation strip at the bottom of the Guide is a button.
         const float y = (*pointer)[1] * static_cast<float>(kHeight);
         if (y < static_cast<float>(items_[row].top + items_[row].height - kGuideNavHeight)) {
@@ -677,7 +729,31 @@ Actions Menu::update(std::optional<std::array<float, 2>> pointer, bool click, fl
         hovered_button_ = button;
         ++revision_;
     }
-    if (click && row >= 0) {
+    if (nav.back) {
+        actions.close = true;
+        return actions;
+    }
+    if (nav.accept && row >= 0) {
+        const Item& item = items_[row];
+        if (item.kind == Kind::Choice || item.kind == Kind::Guide) {
+            step(row, 1, actions);
+        } else if (item.kind == Kind::Tabs) {
+            show_page((page_ + 1) % static_cast<int>(pages_.size()));
+        } else if (item.kind == Kind::Buttons) {
+            actions.recenter = button == 0;
+            actions.recalibrate = button == 1;
+            actions.close = button == 2;
+        }
+        actions.haptic = 0.25f;
+    }
+    if (laser_row < 0 && row >= 0 && items_[row].kind == Kind::Buttons && stick_armed_ && std::abs(stick_x) > 0.7f) {
+        focus_button_ = std::clamp(focus_button_ + (stick_x > 0.0f ? 1 : -1), 0, static_cast<int>(items_[row].buttons.size()) - 1);
+        hovered_button_ = focus_button_;
+        ++revision_;
+        actions.haptic = 0.1f;
+        stick_armed_ = false;
+    }
+    if (click && laser_row >= 0) {
         const Item& item = items_[row];
         if (item.kind == Kind::Tabs) {
             if (button >= 0) {
@@ -789,7 +865,7 @@ Snapshot Menu::snapshot() const {
         s.rows.push_back(std::move(row));
     }
     const std::string opener = control_for("vrmenu");
-    s.footer = std::format("Point and pull the trigger  ·  stick ◂ ▸ changes a row  ·  {} opens and closes this menu",
+    s.footer = std::format("Stick ▴ ▾ choose, ◂ ▸ change  ·  A change  ·  B close  ·  or point and pull the trigger  ·  {} opens it",
                            opener.empty() ? std::string("the menu button") : (opener.size() <= 2 ? opener : "the " + opener));
     return s;
 }

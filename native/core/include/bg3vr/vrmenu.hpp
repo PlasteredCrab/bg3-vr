@@ -76,7 +76,14 @@ public:
 
     // One frame of input: `pointer` is the laser (or fingertip) on the panel in uv (v down), nullopt when off it;
     // `click` is a trigger press (or a touch) this frame; `stick_x` the pointing hand's stick (-1..1).
-    Actions update(std::optional<std::array<float, 2>> pointer, bool click, float stick_x, const Live& live);
+    // Controller navigation without the laser: a stick up / down moves the highlight between rows, left / right changes
+    // the highlighted row (or the page on the tabs, the button on the button strip), A activates it, B closes the menu.
+    struct Nav {
+        float stick_y = 0.0f; // up positive
+        bool accept = false;  // A pressed this frame
+        bool back = false;    // B pressed this frame
+    };
+    Actions update(std::optional<std::array<float, 2>> pointer, bool click, float stick_x, const Live& live, Nav nav = {});
     // Time passing (seconds): animates the Guide page while it is shown.
     void tick(float seconds);
 
@@ -86,6 +93,8 @@ public:
 
     // For tests and the log: the current value text of the row labelled `label` ("" if none).
     std::string value_of(const std::string& label) const;
+    // The label of the highlighted row (laser or controller navigation), for the log.
+    std::string hovered_label() const;
     // The current value of a setting ("section.key") as the menu holds it ("" if no row has it).
     std::string setting(const std::string& name) const;
     // The row index under v (or -1), and for a Buttons / Tabs row which button is under u (or -1).
@@ -134,6 +143,10 @@ private:
     int hovered_button_ = -1;
     Live live_{};
     bool stick_armed_ = true;
+    bool stick_y_armed_ = true;
+    int focus_ = -1;        // the row the controller navigation is on (-1: none yet)
+    int focus_button_ = 0;  // on the button strip
+    int next_row(int from, int direction) const; // the next row that can be navigated to on this page
     int lesson_ = 0;
     float anim_time_ = 0.0f;
     float anim_since_draw_ = 0.0f;
