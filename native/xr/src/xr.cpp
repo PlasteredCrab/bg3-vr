@@ -55,27 +55,40 @@ Status open(System& system, std::string& error) {
     xrEnumerateInstanceExtensionProperties(nullptr, count, &count, extensions.data());
     bool has_d3d11 = false;
     bool has_hands = false;
+    bool has_time = false;
     for (const auto& extension : extensions) {
         has_d3d11 = has_d3d11 || std::strcmp(extension.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0;
         has_hands = has_hands || std::strcmp(extension.extensionName, XR_EXT_HAND_TRACKING_EXTENSION_NAME) == 0;
+        has_time = has_time ||
+                   std::strcmp(extension.extensionName, XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME) == 0;
     }
     if (!has_d3d11) {
         error = std::string("runtime lacks ") + XR_KHR_D3D11_ENABLE_EXTENSION_NAME;
         return Status::Failed;
     }
 
-    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME, XR_EXT_HAND_TRACKING_EXTENSION_NAME};
+    std::vector<const char*> enabled{XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    if (has_hands) {
+        enabled.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+    }
+    if (has_time) {
+        enabled.push_back(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
+    }
     XrInstanceCreateInfo create{XR_TYPE_INSTANCE_CREATE_INFO};
     strcpy_s(create.applicationInfo.applicationName, "BG3 VR");
     create.applicationInfo.applicationVersion = 1;
     strcpy_s(create.applicationInfo.engineName, "BG3VR");
     create.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    create.enabledExtensionCount = has_hands ? 2 : 1;
-    create.enabledExtensionNames = enabled;
+    create.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
+    create.enabledExtensionNames = enabled.data();
     result = xrCreateInstance(&create, &system.instance);
     if (XR_FAILED(result)) {
         error = describe(XR_NULL_HANDLE, "xrCreateInstance", result);
         return Status::Failed;
+    }
+    if (has_time) {
+        xrGetInstanceProcAddr(system.instance, "xrConvertWin32PerformanceCounterToTimeKHR",
+                              reinterpret_cast<PFN_xrVoidFunction*>(&system.convert_time));
     }
 
     XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
@@ -142,6 +155,7 @@ Session::~Session() {
 
 bool Session::create(const System& system, ID3D11Device* device, std::string& error, DXGI_FORMAT preferred,
                      int32_t eye_width, int32_t eye_height) {
+    convert_time_ = system.convert_time;
     instance_ = system.instance;
     device_ = device;
     hand_tracking_supported_ = system.hand_tracking;
@@ -933,6 +947,15 @@ std::string Session::pacing_report() const {
         text += async_wait_ ? "; async (not started)" : "; xrWaitFrame on the presenting thread";
     }
     return text;
+}
+
+XrTime Session::now() const {
+    LARGE_INTEGER counter{};
+    XrTime time = 0;
+    if (!convert_time_ || !QueryPerformanceCounter(&counter) || XR_FAILED(convert_time_(instance_, &counter, &time))) {
+        return 0;
+    }
+    return time;
 }
 
 bool Session::locate(XrTime time, std::vector<XrView>& views) {

@@ -1,11 +1,13 @@
 #include "bg3vr/render.hpp"
 
+#include "bg3vr/config.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/win_util.hpp"
 
 #include <safetyhook.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -32,6 +34,7 @@ std::atomic<std::uint64_t> g_frames{0};
 std::uint64_t g_last_frames = 0;
 std::chrono::steady_clock::time_point g_last_report = std::chrono::steady_clock::now();
 ModuleInfo g_module;
+std::atomic<int> g_max_latency{1}; // [render] max_frame_latency (0 = leave DXGI's default)
 
 void describe_swapchain(IDXGISwapChain* swapchain) {
     ID3D11Device* device = nullptr;
@@ -56,6 +59,21 @@ void describe_swapchain(IDXGISwapChain* swapchain) {
             adapter->Release();
         }
         dxgi->Release();
+    }
+    // The GPU frame queue (agent W 3.3): the game never sets it, so DXGI's default (3) lets the CPU run up to 3
+    // frames ahead of the GPU: in VR that is up to 3 frames between a head pose and its image.
+    IDXGIDevice1* dxgi1 = nullptr;
+    if (device && SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice1), reinterpret_cast<void**>(&dxgi1)))) {
+        UINT before = 0;
+        dxgi1->GetMaximumFrameLatency(&before);
+        const int wanted = g_max_latency.load(std::memory_order_relaxed);
+        if (wanted > 0 && static_cast<UINT>(wanted) != before) {
+            const HRESULT hr = dxgi1->SetMaximumFrameLatency(static_cast<UINT>(wanted));
+            log::info("render: GPU frame queue {} -> {}{}", before, wanted, SUCCEEDED(hr) ? "" : " (failed)");
+        } else {
+            log::info("render: GPU frame queue {} ([render] max_frame_latency {})", before, wanted);
+        }
+        dxgi1->Release();
     }
     log::info("render: swapchain 0x{:X} device 0x{:X}: {}x{} format {} buffers {} swap effect {} windowed {} flags 0x{:X}",
               reinterpret_cast<std::uintptr_t>(swapchain), reinterpret_cast<std::uintptr_t>(device),
@@ -101,6 +119,10 @@ void on_present(safetyhook::Context& ctx) {
 }
 
 } // namespace
+
+void configure(const Config& config) {
+    g_max_latency = static_cast<int>(std::clamp(config.get_int("render", "max_frame_latency", 1), 0LL, 16LL));
+}
 
 void install(const ModuleInfo& module) {
     g_module = module;

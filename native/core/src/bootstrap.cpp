@@ -512,6 +512,7 @@ int init(const wchar_t* root_dir) {
     views::set_split_index(static_cast<int>(g_config.get_int("views", "split_index", 0)));
     stereo::install(g_config, module);
     shadows::install(g_config, module);
+    render::configure(g_config);
     render::install(module);
     watchdog::start(module);
 #if BG3VR_HAVE_OPENXR

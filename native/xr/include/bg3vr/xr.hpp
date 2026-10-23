@@ -29,6 +29,8 @@ struct System {
     LUID adapter{};      // the GPU the runtime needs the session's device on
     D3D_FEATURE_LEVEL min_feature_level{};
     bool hand_tracking = false; // XR_EXT_hand_tracking enabled and the system supports it
+    // XR_KHR_win32_convert_performance_counter_time enabled: Session::now() gives the runtime's current time.
+    PFN_xrConvertWin32PerformanceCounterToTimeKHR convert_time = nullptr;
 };
 
 enum class Status { Ok, NoHeadset, Failed };
@@ -145,6 +147,8 @@ public:
     // The views at `time` (e.g. a display time further ahead than the current frame's) in LOCAL
     // space. False when orientation isn't tracked.
     bool locate(XrTime time, std::vector<XrView>& views);
+    // The runtime's time now (XR_KHR_win32_convert_performance_counter_time); 0 when the runtime lacks it.
+    XrTime now() const;
 
     // Motion controllers: one action set (grip and aim poses, trigger, squeeze, thumbstick and its click,
     // primary / secondary / menu buttons, haptics) with suggested bindings for Oculus Touch, Valve Index,
@@ -193,6 +197,7 @@ private:
 
     XrInstance instance_ = XR_NULL_HANDLE;
     XrSession session_ = XR_NULL_HANDLE;
+    PFN_xrConvertWin32PerformanceCounterToTimeKHR convert_time_ = nullptr;
     XrSpace space_ = XR_NULL_HANDLE;
     std::vector<Eye> eyes_;
     Eye quad_;

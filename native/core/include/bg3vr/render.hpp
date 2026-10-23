@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
 
 #include <dxgi.h>
@@ -13,6 +14,8 @@
 // the Script Extender already patches. At that point the back buffer holds the finished frame.
 namespace bg3vr::render {
 
+// [render] max_frame_latency (the GPU frame queue set on the game's device; 0 = DXGI's default). Before install.
+void configure(const Config& config);
 void install(const ModuleInfo& module);
 
 // The game's swapchain and device, once a frame has been presented (nullptr before). Not AddRef'd:

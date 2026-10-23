@@ -652,11 +652,30 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
         g_session->end_frame(frame, g_has_image[0] && g_has_image[1] ? g_rendered : kNone);
     }
 
-    // The view for the frame the game renders next, predicted for when that frame will be shown.
-    const int measured = g_measured_lag.load(std::memory_order_relaxed);
-    const int ahead = 1 + (lag >= 0 ? lag : (measured >= 0 ? measured : 1));
+    // The view for the frame the game renders next, predicted for when that frame will be shown: about one game
+    // frame from now (the game renders it and presents it next Present; agent W 4.1: the measured "lag" counts the
+    // ~5 camera updates per frame, not frames, so the old 1 + lag display periods predicted ~67 ms ahead at 90 Hz)
+    // plus one display period for the compositor. Without the runtime's clock, the old estimate with one frame.
+    static std::chrono::steady_clock::time_point last_present{};
+    static double frame_s = 1.0 / 30.0;
+    const auto present_now = std::chrono::steady_clock::now();
+    if (last_present.time_since_epoch().count() != 0) {
+        const double dt = std::chrono::duration<double>(present_now - last_present).count();
+        if (dt > 0.0 && dt < 0.25) {
+            frame_s += (dt - frame_s) * 0.1; // smoothed time between Presents
+        }
+    }
+    last_present = present_now;
     std::vector<XrView> views;
-    const XrTime when = frame.state.predictedDisplayTime + frame.state.predictedDisplayPeriod * ahead;
+    const XrTime xr_now = g_session->now();
+    const XrTime when = xr_now ? xr_now + static_cast<XrTime>(frame_s * 1e9) + frame.state.predictedDisplayPeriod
+                               : frame.state.predictedDisplayTime + frame.state.predictedDisplayPeriod;
+    if (static std::uint64_t predictions = 0; ++predictions == 120 || predictions % 3600 == 0) {
+        log::info("xr: head pose predicted {:.1f} ms ahead (game frame {:.1f} ms, display period {:.1f} ms, {})",
+                  xr_now ? static_cast<double>(when - xr_now) * 1e-6 : -1.0, frame_s * 1000.0,
+                  static_cast<double>(frame.state.predictedDisplayPeriod) * 1e-6,
+                  xr_now ? "from the runtime's clock" : "the runtime has no clock conversion: from the frame's display time");
+    }
     if (g_session->locate(when, views) && views.size() == 2) {
         if (g_recenter_request.exchange(false, std::memory_order_relaxed)) {
             camera::set_recenter(centre_view(views).pose);
