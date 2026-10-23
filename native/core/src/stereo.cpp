@@ -130,6 +130,52 @@ std::atomic<bool> g_keep_history{true};
 // adapted its own exposure, and in the 13:20 run everything exposure-scaled (sky, haze, clouds) was darker in the right
 // eye while lit surfaces matched. The right eye gets the left eye's record: its previous-frame buffer, which the left
 // eye's job doesn't write this frame (it writes the other one). [views] eye_exposure_from_left.
+// Agent AH (AH_surface_cells.md): blood pools and other surfaces are drawn only inside 16x16-pixel tiles that the view's
+// compute pass (stage 0x3D, job 0x18126A0, EoCSurfaceMeshGenerate) marks, rebuilding each pixel's ray from the
+// controller's projection (+0x110: the head's union field of view, centred). The draw places its tile grid with the
+// controller's inverse projection (+0x150), then the eye's off-centre projection scales and shifts it. On uneven ground
+// the two errors don't cancel and tiles drop out, differently in each eye (the square gaps in blood on rocks). Fixed
+// together (either half alone is worse): the pass's ray constants from the view's own eye projection (mid-hook at
+// 0x1812942), and each eye's proxy carries the eye projection and its inverse. [views] eye_surface_mesh.
+constexpr std::uintptr_t kSurfaceRaysRva = 0x1812942;
+constexpr std::size_t kControllerProjection = 0x110, kControllerInverseProjection = 0x150, kControllerOrthographic = 0x12;
+safetyhook::MidHook g_surface_hook;
+std::atomic<bool> g_surface_fix{true};
+std::atomic<std::uint64_t> g_surface_fixed{0};
+
+void on_surface_rays(safetyhook::Context& ctx) {
+    if (!g_surface_fix.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const std::uintptr_t view = ctx.rbx;
+    if (stereo::eye_of(view) < 0) {
+        return;
+    }
+    std::uintptr_t controller = 0;
+    std::uint8_t orthographic = 1;
+    std::int32_t size[2]{};
+    float p[16]{};
+    if (!mem::try_copy(&controller, view + layout::kReadStateController, sizeof(controller)) || !controller ||
+        !mem::try_copy(&orthographic, controller + kControllerOrthographic, 1) || orthographic ||
+        !mem::try_copy(size, ctx.rbp + 0x08, sizeof(size)) || size[0] <= 0 || size[1] <= 0 ||
+        !mem::try_copy(p, view + layout::kPerCamera0 + layout::kProjection, sizeof(p)) || p[0] == 0.0f || p[5] == 0.0f) {
+        return;
+    }
+    const float a = p[0], c = p[5], b = p[8], e = p[9];
+    const float constants[4] = {2.0f / (static_cast<float>(size[0]) * a), -2.0f / (static_cast<float>(size[1]) * c),
+                                (-1.0f - b) / a, (1.0f - e) / c};
+    float before[4]{};
+    mem::try_copy(before, ctx.rcx + 0x10, sizeof(before));
+    std::memcpy(reinterpret_cast<void*>(ctx.rcx + 0x10), constants, sizeof(constants));
+    const std::uint64_t n = g_surface_fixed.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 4 || n % 20000 == 0) {
+        log::info("stereo: surface tile rays of {} eye view 0x{:X} ({}x{}): ({:.6f}, {:.6f}, {:.4f}, {:.4f}) -> ({:.6f}, "
+                  "{:.6f}, {:.4f}, {:.4f}) ({} times)",
+                  stereo::eye_of(view) == 0 ? "left" : "right", view, size[0], size[1], before[0], before[1], before[2],
+                  before[3], constants[0], constants[1], constants[2], constants[3], n);
+    }
+}
+
 constexpr std::uintptr_t kExposureRva = 0x3CCCB20;
 safetyhook::InlineHook g_exposure_hook;
 std::atomic<bool> g_exposure_from_left{true};
@@ -757,6 +803,20 @@ void on_view_begin(safetyhook::Context& ctx) {
     proxy.translate[1] = position[1];
     proxy.translate[2] = position[2];
     proxy.fov = fov;
+    // The eye's own projection and its inverse in the proxy (agent AH fix 2; with the tile-ray hook).
+    if (g_surface_fix.load(std::memory_order_relaxed) && !proxy.object[kControllerOrthographic]) {
+        camera::Mat4 game{};
+        std::memcpy(game.data(), proxy.object + kControllerProjection, sizeof(game));
+        const camera::Mat4 p = eye_projection(game, fov, 0.0f, 0.0f);
+        // Column-major [a,0,0,0, 0,c,0,0, b,e,zs,1, 0,0,zo,0]: inverse [1/a,0,0,0, 0,1/c,0,0, 0,0,0,1/zo,
+        // -b/a,-e/c,1,-zs/zo]. Only that shape (a perspective projection as the game builds it).
+        if (p[11] == 1.0f && p[15] == 0.0f && p[0] != 0.0f && p[5] != 0.0f && p[14] != 0.0f) {
+            const camera::Mat4 inverse_p{1.0f / p[0], 0.0f, 0.0f, 0.0f,  0.0f, 1.0f / p[5], 0.0f, 0.0f,
+                                       0.0f, 0.0f, 0.0f, 1.0f / p[14], -p[8] / p[0], -p[9] / p[5], 1.0f, -p[10] / p[14]};
+            std::memcpy(proxy.object + kControllerProjection, p.data(), sizeof(p));
+            std::memcpy(proxy.object + kControllerInverseProjection, inverse_p.data(), sizeof(inverse_p));
+        }
+    }
     *reinterpret_cast<std::uintptr_t*>(view + layout::kReadStateController) = reinterpret_cast<std::uintptr_t>(&proxy);
     // Agent AE 3: begin-recording step 0x3CC6DC0 sets the view's "camera changed" flag (+0x2AED: fog history reset,
     // exposure jumps instead of adapting) whenever +0x21D8 differs from the controller it saw last (+0x2B00). The
@@ -848,6 +908,19 @@ void install(const Config& config, const ModuleInfo& module) {
                       real_transform);
         }
         g_exposure_from_left.store(config.get_bool("views", "eye_exposure_from_left", true), std::memory_order_relaxed);
+        g_surface_fix.store(config.get_bool("views", "eye_surface_mesh", true), std::memory_order_relaxed);
+        // mov [rcx+20h], edi ; mov edx, 57h
+        if (bytes_at(module.base + kSurfaceRaysRva, {0x89, 0x79, 0x20, 0xBA, 0x57, 0x00, 0x00, 0x00})) {
+            if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kSurfaceRaysRva), &on_surface_rays)) {
+                g_surface_hook = std::move(*h);
+                log::info("stereo: surface tiles (blood pools) use each eye's own projection (exe+0x{:X}){}", kSurfaceRaysRva,
+                          g_surface_fix.load() ? "" : " - off ([views] eye_surface_mesh)");
+            }
+        } else {
+            log::warn("stereo: the surface tile pass exe+0x{:X} doesn't match this build; blood pools may have gaps per eye",
+                      kSurfaceRaysRva);
+            g_surface_fix.store(false);
+        }
         if (bytes_at(module.base + kExposureRva, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0xB2, 0x21})) {
             if (auto e = safetyhook::InlineHook::create(reinterpret_cast<void*>(module.base + kExposureRva),
                                                         reinterpret_cast<void*>(&on_exposure))) {
