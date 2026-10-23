@@ -131,6 +131,9 @@ Menu::Menu() {
            {{"Game's own", "0", true}, {"60%", "60"}, {"70%", "70"}, {"80%", "80"}, {"90%", "90"}, {"100%", "100"},
             {"120%", "120"}},
            3);
+    choice("Upscaling in VR", "render.vr_upscaler",
+           {{"DLSS Balanced", "dlss_balanced"}, {"DLSS Performance", "dlss_performance"}, {"Game's setting", "game"}}, 0);
+    on_off("Depth of field in VR", "render.vr_depth_of_field", false);
     choice("Aiming beam", "pointer.style",
            {{"Off", "off", true}, {"Solid", "solid"}, {"Dashed", "dashed"}, {"Flowing dots", "dots"}, {"Pulse", "pulse"}}, 3);
     choice("Beam colour", "pointer.colour",

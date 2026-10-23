@@ -743,6 +743,11 @@ void clear() {
     log::info("stereo: off");
 }
 
+int eye_of(std::uintptr_t view) {
+    std::scoped_lock lock(g_mutex);
+    return !view ? -1 : view == g_views[0] ? 0 : view == g_views[1] ? 1 : -1;
+}
+
 bool active() {
     std::scoped_lock lock(g_mutex);
     return g_views[0] && g_views[1];

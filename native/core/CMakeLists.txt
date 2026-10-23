@@ -34,6 +34,7 @@ add_library(bg3vr_base STATIC
     src/hold.cpp
     src/holster.cpp
     src/ik.cpp
+    src/shadows.cpp
     src/stereo.cpp
     src/trace.cpp
     src/views.cpp

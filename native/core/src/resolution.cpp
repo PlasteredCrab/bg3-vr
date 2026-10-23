@@ -4,6 +4,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/pattern.hpp"
+#include "bg3vr/text.hpp"
 
 #include <safetyhook.hpp>
 
@@ -12,7 +13,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -55,6 +58,75 @@ std::atomic<bool> g_applied{false};           // the mod's size is in force
 std::atomic<std::int32_t> g_width{0}, g_height{0};
 std::atomic<std::uint64_t> g_resizes{0}, g_overridden{0};
 DWORD g_resize_thread = 0;
+
+// The VR graphics profile (agent X, re-local/ghidra/agents/X_pixel_cost.md 1-4), applied with the VR size and undone
+// when the game's own size comes back. In the settings object [0x604AA10]:
+//   +0x77 upscaler type (3 = DLSS), +0x78..+0x7B per-upscaler modes (+0x7A DLSS: 3 Balanced, 4 Performance),
+//   +0x7C sharpness, +0x80 AntiAliasing, +0x81 CAS: written exactly as the game's DLSS setter 0x406FC70 does;
+//   +0x50 DOF (int; 0 = off), +0x59 LensFlareEnabled. The prepares read them every frame; the upscaler change takes
+//   effect with the resize that follows on the same pump. The user's file had AntiAliasing 3 and no upscaler: DLAA,
+//   DLSS at full resolution for each eye.
+constexpr std::size_t kUpscalerBytes = 0x77; // .. +0x81
+constexpr std::size_t kUpscalerSize = 0x81 - 0x77 + 1;
+constexpr std::size_t kDof = 0x50;
+constexpr std::size_t kLensFlare = 0x59;
+struct GameSettings {
+    std::array<std::uint8_t, kUpscalerSize> upscaler{};
+    std::int32_t dof = 0;
+    std::uint8_t lens_flare = 0;
+};
+std::optional<GameSettings> g_saved;          // the user's values while the profile is applied (pump thread)
+std::atomic<int> g_dlss_mode{3};              // [render] vr_upscaler: 3 Balanced, 4 Performance, 0 = the game's setting
+std::atomic<bool> g_dof{false};               // [render] vr_depth_of_field
+std::atomic<bool> g_lens_flare{false};        // [render] vr_lens_flare
+
+void apply_profile(bool vr) {
+    const auto settings = mem::read<std::uintptr_t>(g_module.base + kRenderSettings);
+    if (!settings) {
+        return;
+    }
+    auto* s = reinterpret_cast<std::uint8_t*>(settings);
+    if (vr) {
+        if (!g_saved) {
+            GameSettings saved;
+            std::memcpy(saved.upscaler.data(), s + kUpscalerBytes, kUpscalerSize);
+            std::memcpy(&saved.dof, s + kDof, sizeof(saved.dof));
+            saved.lens_flare = s[kLensFlare];
+            g_saved = saved;
+        }
+        const int mode = g_dlss_mode.load(std::memory_order_relaxed);
+        if (mode > 0) {
+            const std::uint8_t previous = s[0x7A];
+            s[0x77] = 3;
+            s[0x78] = 4;
+            s[0x79] = 5;
+            s[0x7A] = static_cast<std::uint8_t>(mode);
+            s[0x7B] = 6;
+            s[0x80] = 0;
+            s[0x81] = 0;
+            if (previous != mode) {
+                const float sharpness = 0.35f;
+                std::memcpy(s + 0x7C, &sharpness, sizeof(sharpness));
+            }
+        } else {
+            std::memcpy(s + kUpscalerBytes, g_saved->upscaler.data(), kUpscalerSize);
+        }
+        const std::int32_t dof = g_dof.load(std::memory_order_relaxed) ? g_saved->dof : 0;
+        std::memcpy(s + kDof, &dof, sizeof(dof));
+        s[kLensFlare] = g_lens_flare.load(std::memory_order_relaxed) ? g_saved->lens_flare : 0;
+        log::info("resolution: VR graphics: {}, depth of field {}, lens flare {} (the game's own: upscaler {} mode {}, "
+                  "AntiAliasing {}, DOF {}, lens flare {}; put back when VR stops)",
+                  mode == 4 ? "DLSS Performance" : mode == 3 ? "DLSS Balanced" : "the game's upscaling",
+                  dof ? "on" : "off", s[kLensFlare] ? "on" : "off", g_saved->upscaler[0], g_saved->upscaler[0x7A - 0x77],
+                  g_saved->upscaler[0x80 - 0x77], g_saved->dof, g_saved->lens_flare);
+    } else if (g_saved) {
+        std::memcpy(s + kUpscalerBytes, g_saved->upscaler.data(), kUpscalerSize);
+        std::memcpy(s + kDof, &g_saved->dof, sizeof(g_saved->dof));
+        s[kLensFlare] = g_saved->lens_flare;
+        g_saved.reset();
+        log::info("resolution: the game's own graphics settings are back");
+    }
+}
 
 bool check(std::uintptr_t rva, const char* prologue, const char* name) {
     const auto pattern = parse_pattern(prologue);
@@ -121,7 +193,9 @@ std::uintptr_t on_pump(std::uintptr_t a, std::uintptr_t b, std::uintptr_t c, std
         if (r && window) {
             ResizeEvent event{window, 0, 0, 0, 0};
             std::int32_t width = 0, height = 0;
-            if (target(width, height)) {
+            const bool vr = target(width, height);
+            apply_profile(vr); // before the resize, which applies an upscaler change
+            if (vr) {
                 event.display_width = event.width = width;
                 event.display_height = event.height = height;
             } else {
@@ -171,6 +245,13 @@ void install(const Config& config, const ModuleInfo& module) {
 }
 
 void configure(const Config& config) {
+    const std::string upscaler = text::to_lower(config.get("render", "vr_upscaler", "dlss_balanced"));
+    const int mode = upscaler == "dlss_performance" ? 4 : upscaler == "game" ? 0 : 3;
+    const bool dof = config.get_bool("render", "vr_depth_of_field", false);
+    const bool flare = config.get_bool("render", "vr_lens_flare", false);
+    if (g_dlss_mode.exchange(mode) != mode || g_dof.exchange(dof) != dof || g_lens_flare.exchange(flare) != flare) {
+        g_pending = g_ready;
+    }
     const std::string v = config.get("render", "vr_resolution", "80");
     const int percent = std::clamp(static_cast<int>(std::strtol(v.c_str(), nullptr, 10)), 0, 200);
     if (g_percent.exchange(percent) != percent) {

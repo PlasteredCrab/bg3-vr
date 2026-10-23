@@ -105,6 +105,8 @@ void assign(std::uintptr_t view, int eye);
 // Forgets every assigned view.
 void clear();
 bool active();
+// 0 / 1 for the view drawing the left / right eye, -1 for any other view (any thread).
+int eye_of(std::uintptr_t view);
 
 // Logs the counters.
 void report();

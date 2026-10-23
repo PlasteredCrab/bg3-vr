@@ -972,6 +972,24 @@ void test_vrmenu_custom_values() {
     CHECK(menu.value_of("Snap angle") == "60°");
     CHECK(menu.value_of("Turning") == "Snap");
 
+    // Every page's rows fit above the button strip.
+    for (int page = 0; page < 7; ++page) {
+        menu.show_page(page);
+        int buttons_top = kHeight;
+        for (const auto& row : menu.snapshot().rows) {
+            if (row.kind == Snapshot::Row::Kind::Buttons) {
+                buttons_top = row.top;
+            }
+        }
+        for (const auto& row : menu.snapshot().rows) {
+            if (row.kind == Snapshot::Row::Kind::Choice && row.top + row.height > buttons_top) {
+                std::printf("  page %d: row %s ends at %d, below the buttons at %d\n", page, row.label.c_str(),
+                            row.top + row.height, buttons_top);
+                CHECK(false);
+            }
+        }
+    }
+
     // Every value the shipped bg3vr.ini sets is one of the menu's options.
     Config shipped;
     CHECK(shipped.load_file(std::filesystem::path(BG3VR_SOURCE_DIR) / "config" / "bg3vr.ini"));

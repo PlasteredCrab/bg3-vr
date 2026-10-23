@@ -32,6 +32,7 @@
 #include "bg3vr/picking.hpp"
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
+#include "bg3vr/shadows.hpp"
 #include "bg3vr/skeleton.hpp"
 #include "bg3vr/stereo.hpp"
 #include "bg3vr/text.hpp"
@@ -224,6 +225,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     }
     if (changed("bindings.") || changed("combos.")) {
         vrplay::configure_bindings(g_config);
+    }
+    if (changed("views.share_shadows")) {
+        shadows::configure(g_config);
     }
     if (changed("xr.") || changed("views.eye_origin")) {
         stereo::configure(g_config);
@@ -454,6 +458,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     skeleton::report();
     dialogue::report();
     eyefix::report();
+    shadows::report();
     picking::report();
     locomotion::report();
     vrplay::report();
@@ -506,6 +511,7 @@ int init(const wchar_t* root_dir) {
     views::set_full_setup(g_config.get_bool("views", "full_setup", true));
     views::set_split_index(static_cast<int>(g_config.get_int("views", "split_index", 0)));
     stereo::install(g_config, module);
+    shadows::install(g_config, module);
     render::install(module);
     watchdog::start(module);
 #if BG3VR_HAVE_OPENXR
