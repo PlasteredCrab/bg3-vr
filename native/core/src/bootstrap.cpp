@@ -23,6 +23,7 @@
 #include "bg3vr/signatures.hpp"
 #include "bg3vr/dialogue.hpp"
 #include "bg3vr/dolls.hpp"
+#include "bg3vr/fading.hpp"
 #include "bg3vr/gameui.hpp"
 #include "bg3vr/eyefix.hpp"
 #include "bg3vr/hold.hpp"
@@ -217,6 +218,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     const bool third = vrplay::third_person();
     if (changed("vr.")) {
         vrplay::configure(g_config);
+        fading::configure(g_config);
         if (changed("vr.eye_offset")) {
             vrplay::recalibrate(); // after the new offset is in
         }
@@ -478,6 +480,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     camera::report();
     cull::report();
     gameui::report();
+    fading::report();
     skeleton::report();
     dialogue::report();
     eyefix::report();
@@ -539,6 +542,7 @@ int init(const wchar_t* root_dir) {
     shadows::install(g_config, module);
     dolls::install(g_config, module);
     gameui::install(g_config, module);
+    fading::install(g_config, module);
     render::configure(g_config);
     render::install(module);
     watchdog::start(module);
