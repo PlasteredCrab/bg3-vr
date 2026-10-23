@@ -190,19 +190,6 @@ void update_follow() {
     }
     g_follow_last = {translate[0], translate[1], translate[2]};
     g_follow_has_last = true;
-    // The largest step the camera took between two updates (teleports excluded), logged now and then.
-    if (g_step_have_last) {
-        const float dx = g_pose->x - g_step_last[0], dy = g_pose->y - g_step_last[1], dz = g_pose->z - g_step_last[2];
-        const float step = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (step < kTeleportDistance) {
-            g_step_max = std::max(g_step_max, step);
-        }
-    }
-    if (++g_step_updates % 1500 == 0) {
-        log::info("camera: largest step between two updates over the last 1500: {:.3f} m (anchor {}, smoothing {:.2f} s)",
-                  g_step_max, eyes ? "eyes" : "body", g_head_smoothing.load());
-        g_step_max = 0.0f;
-    }
     if (eyes) {
         g_pose->x = (*eyes)[0];
         g_pose->y = (*eyes)[1] + g_eye_offset.load(std::memory_order_relaxed);
@@ -215,6 +202,19 @@ void update_follow() {
     }
     if (from_visual) {
         g_follow_from_visual.fetch_add(1, std::memory_order_relaxed);
+    }
+    // The largest step the anchor took between two updates (teleports excluded), logged now and then.
+    if (g_step_have_last) {
+        const float dx = g_pose->x - g_step_last[0], dy = g_pose->y - g_step_last[1], dz = g_pose->z - g_step_last[2];
+        const float step = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (step < kTeleportDistance) {
+            g_step_max = std::max(g_step_max, step);
+        }
+    }
+    if (++g_step_updates % 1500 == 0) {
+        log::info("camera: largest step between two updates over the last 1500: {:.3f} m (anchor {}, smoothing {:.2f} s)",
+                  g_step_max, eyes ? "eyes" : "body", g_head_smoothing.load());
+        g_step_max = 0.0f;
     }
     g_step_last = {g_pose->x, g_pose->y, g_pose->z};
     g_step_have_last = true;

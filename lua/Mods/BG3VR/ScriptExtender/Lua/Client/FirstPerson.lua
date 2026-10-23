@@ -40,7 +40,7 @@ local function ForEachVisual(root, fn)
 end
 
 local function RootVisual()
-    local character = _C()
+    local character = BG3VR.Controlled()
     local component = character and character.Visual
     return component and component.Visual
 end

@@ -1,6 +1,7 @@
 #include "bg3vr/skeleton.hpp"
 
 #include "bg3vr/bodyik.hpp"
+#include "bg3vr/camera.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
@@ -98,8 +99,20 @@ std::uintptr_t by_handle_raw(std::uintptr_t rva, std::uint64_t handle, std::uint
     }
 }
 
+// The client entity world as the gameplay camera's own code reads it (controller +0x320, next to its camera entity at
+// +0x318; agent U): the global at exe+0x6007F68 held a bad value on 2026-10-23 and the visual lookup faulted in it.
+std::uintptr_t camera_world() {
+    const std::uintptr_t controller = camera::controller();
+    std::uintptr_t world = 0;
+    if (controller) {
+        mem::try_copy(&world, controller + 0x320, sizeof(world));
+    }
+    return world;
+}
+
 std::uintptr_t visual_of(std::uint64_t entity) {
-    const std::uintptr_t component = by_handle_raw(kVisualComponentRva, entity);
+    const std::uintptr_t world = camera_world();
+    const std::uintptr_t component = world ? by_handle_raw(kVisualComponentRva, entity, world) : 0;
     std::uintptr_t visual = 0;
     if (component) {
         mem::try_copy(&visual, component, sizeof(visual));
@@ -532,7 +545,14 @@ void on_frame() {
     // The body actually shown for the controlled character, every frame (Lua's pointer is the fallback).
     if (g_native_ready && g_following.load(std::memory_order_relaxed)) {
         const std::uint64_t dummy = g_dummy.load(std::memory_order_relaxed);
-        const std::uint64_t entity = dummy ? dummy : controlled_raw();
+        const std::uint64_t controlled = controlled_raw();
+        static std::uint64_t last_controlled = 0;
+        if (controlled != last_controlled) {
+            log::info("skeleton: the player manager's controlled character is now 0x{:X} (was 0x{:X})", controlled,
+                      last_controlled);
+            last_controlled = controlled;
+        }
+        const std::uint64_t entity = dummy ? dummy : controlled;
         const std::uintptr_t visual = entity ? visual_of(entity) : 0;
         std::uintptr_t vtable = 0;
         std::uint64_t owner = 0;

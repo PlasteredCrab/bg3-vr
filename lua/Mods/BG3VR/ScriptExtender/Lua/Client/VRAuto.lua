@@ -23,7 +23,7 @@ local auto = {
 }
 
 local function CharacterKey()
-    local character = _C()
+    local character = BG3VR.Controlled()
     return character and tostring(character) or nil
 end
 

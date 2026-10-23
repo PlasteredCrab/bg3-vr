@@ -336,7 +336,7 @@ local function NativeFollowTick()
     if nativeFollow.ticks % 15 ~= 0 then
         return
     end
-    local character = _C()
+    local character = BG3VR.Controlled()
     local address = character and ProxyAddress(character.Transform)
     local lines = {}
     if address and address ~= nativeFollow.address then
@@ -383,7 +383,7 @@ end))
 function StartNativeFollow(height, extra)
     local _, controller = ActiveCamera()
     local address = controller and ProxyAddress(controller)
-    local t = _C().Transform
+    local t = BG3VR.Controlled().Transform
     local transform = ProxyAddress(t)
     if not address or not transform then
         BG3VR.Warn("no active camera controller or character transform (%s)", tostring(t))
