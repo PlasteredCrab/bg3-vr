@@ -338,10 +338,23 @@ local function NativeFollowTick()
     end
     local character = _C()
     local address = character and ProxyAddress(character.Transform)
+    local lines = {}
     if address and address ~= nativeFollow.address then
         nativeFollow.address = address
-        BG3VR.WriteBridge({ string.format("follow=%s %.2f", address, nativeFollow.height) })
-        BG3VR.Log("follow: character transform now at %s", address)
+        lines[#lines + 1] = string.format("follow=%s %.2f", address, nativeFollow.height)
+    end
+    -- The camera sits at the eyes of the root visual; a cutscene, shapeshift or equipment change can give the character
+    -- a new one, so the native side follows whichever visual the character has now.
+    local skeleton = SkeletonBridgeLine and SkeletonBridgeLine()
+    if skeleton and skeleton ~= nativeFollow.skeleton then
+        if nativeFollow.skeleton then
+            BG3VR.Log("follow: the character's root visual changed (%s -> %s)", nativeFollow.skeleton, skeleton)
+        end
+        nativeFollow.skeleton = skeleton
+        lines[#lines + 1] = skeleton
+    end
+    if #lines > 0 then
+        BG3VR.WriteBridge(lines)
     end
 end
 
@@ -352,6 +365,7 @@ Ext.RegisterConsoleCommand("vr_follow", Safely(function(_, a)
             nativeFollow.handle = nil
         end
         nativeFollow.address = nil
+        nativeFollow.skeleton = nil
         BG3VR.WriteBridge({ "follow=off" })
         BG3VR.Log("follow off (the camera stays where it is; !vr_cam_set off releases it)")
         return
@@ -379,6 +393,7 @@ function StartNativeFollow(height, extra)
     local yaw = YawOf(t.Transform.RotationQuat) + 180
     nativeFollow.height = height
     nativeFollow.address = transform
+    nativeFollow.skeleton = SkeletonBridgeLine and SkeletonBridgeLine() -- sent with VR start
     local lines = {
         "controller=" .. address,
         string.format("pose=%.4f %.4f %.4f %.2f 0", p[1], p[2] + height, p[3], yaw),

@@ -444,7 +444,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     // Every module's report, for requests from the Lua side and the console; not for the in-process / frequent ones
     // (menu settings, what is wielded, weapon set switches, the follow tick's new transform address: the 2026-10-22
     // run got a full report every 0.4 s from that alone).
-    const bool follow_tick = request.follow && !request.controller && !request.pose;
+    const bool follow_tick = (request.follow || request.skeleton) && !request.controller && !request.pose;
     if (!request.settings.empty() || request.wield || request.weapon_set || follow_tick) {
         return;
     }
