@@ -124,6 +124,36 @@ const Proxy* doll_proxy(std::uintptr_t controller) {
 std::array<std::uintptr_t, kProxyVtableSlots> g_proxy_vtable{};
 constexpr std::size_t kLastSeenController = 0x2B00; // the controller 0x3CC6DC0 compared +0x21D8 with last frame
 std::atomic<bool> g_keep_history{true};
+
+// Agent AE 2: the sky, the aerial perspective, the fog in-scatter, clouds and forward smoke are multiplied by the
+// exposure record 0x3CCCB20(view) returns (the view's own stage 0x21 exposure step); lit surfaces aren't. Each eye
+// adapted its own exposure, and in the 13:20 run everything exposure-scaled (sky, haze, clouds) was darker in the right
+// eye while lit surfaces matched. The right eye gets the left eye's record: its previous-frame buffer, which the left
+// eye's job doesn't write this frame (it writes the other one). [views] eye_exposure_from_left.
+constexpr std::uintptr_t kExposureRva = 0x3CCCB20;
+safetyhook::InlineHook g_exposure_hook;
+std::atomic<bool> g_exposure_from_left{true};
+std::atomic<std::uint64_t> g_exposure_redirects{0};
+
+std::uintptr_t on_exposure(std::uintptr_t view) {
+    std::uintptr_t main = 0;
+    if (g_exposure_from_left.load(std::memory_order_relaxed)) {
+        std::scoped_lock lock(g_mutex);
+        if (view && view == g_views[1]) {
+            main = g_views[0];
+        }
+    }
+    if (!main) {
+        return g_exposure_hook.call<std::uintptr_t>(view);
+    }
+    const std::uintptr_t own = g_exposure_hook.call<std::uintptr_t>(view);
+    const std::uintptr_t left = g_exposure_hook.call<std::uintptr_t>(main);
+    const std::uint64_t n = g_exposure_redirects.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 4 || n % 20000 == 0) {
+        log::info("stereo: right eye's exposure record 0x{:X} replaced by the left eye's 0x{:X} ({} times)", own, left, n);
+    }
+    return left ? left : own;
+}
 bool g_proxy_ready = false;
 safetyhook::MidHook g_begin_hook;
 std::array<std::atomic<std::uint64_t>, 2> g_proxied{};
@@ -816,6 +846,17 @@ void install(const Config& config, const ModuleInfo& module) {
         } else {
             log::warn("stereo: controller slot 11 isn't the expected Transform getter (0x{:X}); particles roll with the head",
                       real_transform);
+        }
+        g_exposure_from_left.store(config.get_bool("views", "eye_exposure_from_left", true), std::memory_order_relaxed);
+        if (bytes_at(module.base + kExposureRva, {0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0xB2, 0x21})) {
+            if (auto e = safetyhook::InlineHook::create(reinterpret_cast<void*>(module.base + kExposureRva),
+                                                        reinterpret_cast<void*>(&on_exposure))) {
+                g_exposure_hook = std::move(*e);
+                log::info("stereo: the right eye uses the left eye's exposure (exe+0x{:X}){}", kExposureRva,
+                          g_exposure_from_left.load() ? "" : " - off ([views] eye_exposure_from_left)");
+            }
+        } else {
+            log::warn("stereo: the exposure lookup exe+0x{:X} doesn't match this build; each eye adapts its own", kExposureRva);
         }
         if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(*begin), &on_view_begin)) {
             g_begin_hook = std::move(*h);

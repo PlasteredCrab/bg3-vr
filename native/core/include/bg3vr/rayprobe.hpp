@@ -74,4 +74,14 @@ inline constexpr std::uint64_t kNullEntity = 0xFFC0000000000000ull;
 std::optional<Hit> raycast(const vr::Vec3& from, const vr::Vec3& to, std::uint32_t query_flags = 0xF,
                            std::uint32_t group = 0x4CA20, std::uint32_t exclude = 0x210080);
 
+// The same, but passing through the controlled character's own body (up to 4 times): the laser, the gloves and the
+// picking ray look past your own arms and legs. `distance` stays measured from `from`.
+std::optional<Hit> raycast_past_self(const vr::Vec3& from, const vr::Vec3& to, std::uint32_t query_flags = 0xF,
+                                     std::uint32_t group = 0x4CA20, std::uint32_t exclude = 0x210080);
+
+// Game thread, from the aiming beam's pass: how far along the pointing hand's aim ray the controlled character's body
+// ends, when the body is the first thing the ray meets (0 otherwise). The picking ray starts there, so a click doesn't
+// pick your own character or stop on it.
+float self_skip();
+
 } // namespace bg3vr::rayprobe

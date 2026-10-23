@@ -547,9 +547,30 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
             feedback.toggle_panel = true;
             feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
         }
-        if (b.view && now[c] && !g_down[c]) {
-            feedback.toggle_view = true;
-            feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
+        // First / third person only on a held press (half a second) with no other face button: on 2026-10-23 13:26 the
+        // thumb pressing X (show the UI) pressed Y in the same millisecond again and again, and every one switched to
+        // third person and back (the game's resolution changed each time: the UI glitched and flickered).
+        if (b.view) {
+            static std::array<double, kControlCount> since{};
+            static std::array<bool, kControlCount> fired{}, spoiled{};
+            if (now[c] && !g_down[c]) {
+                since[c] = time_s;
+                fired[c] = false;
+                spoiled[c] = false;
+            }
+            if (now[c]) {
+                for (const int other : {LeftX, LeftY, RightA, RightB}) {
+                    spoiled[c] = spoiled[c] || (other != c && now[other]);
+                }
+                if (!fired[c] && !spoiled[c] && time_s - since[c] >= 0.5) {
+                    fired[c] = true;
+                    feedback.toggle_view = true;
+                    feedback.haptic[c < RightTrigger ? 0 : 1] = 0.3f;
+                }
+            } else if (g_down[c] && !fired[c]) {
+                log::info("vr: the view button was let go {} (hold it half a second, alone, to switch first / third person)",
+                          spoiled[c] ? "together with another button" : "too soon");
+            }
         }
         const bool holster_grip = grip && (c == LeftGrip ? l.grip_taken : r.grip_taken);
         if (now[c] != g_down[c] && b.bound && !b.recenter && !b.panel && !b.view && !b.menu &&

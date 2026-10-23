@@ -80,8 +80,11 @@ void* hooked_ray(std::uintptr_t camera, float u, float v, float* out_a, float* o
         return result;
     }
     const vr::Vec3 dir = vr::rotate(aim->orientation, {0.0f, 0.0f, 1.0f});
+    // Past the own body when it is the first thing on the ray (rayprobe's beam pass measures it): a click doesn't pick
+    // your own character or stop on your arm.
+    const float skip = rayprobe::self_skip();
     for (int i = 0; i < 3; ++i) {
-        out_a[i] = aim->position[static_cast<std::size_t>(i)];
+        out_a[i] = aim->position[static_cast<std::size_t>(i)] + dir[static_cast<std::size_t>(i)] * skip;
         out_b[i] = aim->position[static_cast<std::size_t>(i)] + dir[static_cast<std::size_t>(i)] * layout::kRayLength;
     }
     g_replaced.fetch_add(1, std::memory_order_relaxed);

@@ -47,6 +47,9 @@ public:
         int beam_style = 0;
         float beam_time = 0.0f;
         float beam_end = 0.0f;
+        // Up to four rectangles of the source (uv x0, y0, x1, y1) drawn opaque black: the flat UI character pictures
+        // under the 3D ones (headset.cpp). x1 <= x0: unused.
+        float fill[4][4] = {};
     };
 
     // Draws `rect` of `source` (same size and format as create()) over the whole `target` view of a

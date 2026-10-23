@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <tuple>
@@ -220,6 +221,8 @@ std::optional<Hit> raycast(const vr::Vec3& from, const vr::Vec3& to, std::uint32
 std::atomic<bool> g_beam{false};
 std::atomic<float> g_beam_range{12.0f};
 std::atomic<float> g_beam_distance{-1.0f};
+std::atomic<float> g_self_skip{0.0f};
+std::atomic<std::uint64_t> g_self_passes{0};
 
 std::uintptr_t main_scene() {
     return find_scene();
@@ -231,6 +234,37 @@ void set_beam(bool on, float range) {
     if (!on) {
         g_beam_distance.store(-1.0f, std::memory_order_relaxed);
     }
+}
+
+std::optional<Hit> raycast_past_self(const vr::Vec3& from, const vr::Vec3& to, std::uint32_t query_flags,
+                                     std::uint32_t group, std::uint32_t exclude) {
+    const std::uint64_t self = skeleton::controlled_character();
+    vr::Vec3 start = from;
+    float travelled = 0.0f;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        auto hit = raycast(start, to, query_flags, group, exclude);
+        if (!hit || !self || hit->entity != self || attempt == 4) {
+            if (hit) {
+                hit->distance += travelled;
+            }
+            return hit;
+        }
+        // Our own body: go on from just past where the ray met it.
+        const vr::Vec3 d{to[0] - start[0], to[1] - start[1], to[2] - start[2]};
+        const float l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (l < 1e-3f) {
+            return std::nullopt;
+        }
+        const float step = hit->distance + 0.04f;
+        travelled += step;
+        start = {start[0] + d[0] / l * step, start[1] + d[1] / l * step, start[2] + d[2] / l * step};
+        g_self_passes.fetch_add(1, std::memory_order_relaxed);
+    }
+    return std::nullopt;
+}
+
+float self_skip() {
+    return g_self_skip.load(std::memory_order_relaxed);
 }
 
 std::optional<float> beam_distance() {
@@ -253,17 +287,33 @@ void on_frame() {
                               aim->position[2] + dir[2] * range};
             for (const auto& [flags, group, exclude] : {std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>{5, 0x820, 0x194280},
                                                         {0xF, 0x4CA20, 0x210080}}) {
-                if (const auto hit = raycast(from, to, flags, group, exclude)) {
+                if (const auto hit = raycast_past_self(from, to, flags, group, exclude)) {
                     if (best < 0.0f || hit->distance + kSkip < best) {
                         best = hit->distance + kSkip;
                     }
                 }
             }
+            // Where the own body ends along the aim, from the hand itself (for the picking ray's start).
+            float skip = 0.0f;
+            const std::uint64_t self = skeleton::controlled_character();
+            const vr::Vec3 near_end{aim->position[0] + dir[0] * 2.0f, aim->position[1] + dir[1] * 2.0f,
+                                    aim->position[2] + dir[2] * 2.0f};
+            vr::Vec3 start = aim->position;
+            for (int attempt = 0; self && attempt < 4; ++attempt) {
+                const auto hit = raycast(start, near_end);
+                if (!hit || hit->entity != self) {
+                    break;
+                }
+                skip += hit->distance + 0.04f;
+                start = {aim->position[0] + dir[0] * skip, aim->position[1] + dir[1] * skip, aim->position[2] + dir[2] * skip};
+            }
+            g_self_skip.store(std::min(skip, 1.5f), std::memory_order_relaxed);
         }
         g_beam_distance.store(best, std::memory_order_relaxed);
     }
     if (g_report.exchange(false, std::memory_order_relaxed)) {
-        log::info("ray: {} casts, {} with a hit, {} failed", g_casts, g_hits, g_failures);
+        log::info("ray: {} casts, {} with a hit, {} failed; {} passes through the own body", g_casts, g_hits, g_failures,
+                  g_self_passes.load());
     }
     const Source source = g_source.load(std::memory_order_relaxed);
     if (source == Source::Off) {

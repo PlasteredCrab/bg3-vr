@@ -138,6 +138,7 @@ struct Flight {
     vr::Quat rotation{0.0f, 0.0f, 0.0f, 1.0f};
     double age = 0.0;
     int to_hand = -1; // a pull toward this hand (caught there), or -1 for a throw
+    bool missed = false; // a pull that reached the hand without the grip held: it flies on and falls
 };
 struct Target {
     std::uintptr_t item = 0;
@@ -537,7 +538,7 @@ std::optional<Highlight> aim_ray(const vr::RigidPose& aim, const vr::Vec3& local
     const vr::Vec3 from{aim.position[0] + dir[0] * kAimSkip, aim.position[1] + dir[1] * kAimSkip,
                         aim.position[2] + dir[2] * kAimSkip};
     const vr::Vec3 to{aim.position[0] + dir[0] * range, aim.position[1] + dir[1] * range, aim.position[2] + dir[2] * range};
-    const auto hit = rayprobe::raycast(from, to);
+    const auto hit = rayprobe::raycast_past_self(from, to);
     if (!hit) {
         return std::nullopt;
     }
@@ -569,7 +570,7 @@ std::optional<Highlight> touch_ray(std::size_t h, const vr::RigidPose& grip) {
     step[h] = (step[h] + 1) % static_cast<int>(kDirections.size());
     constexpr float kTouch = 0.22f;
     const vr::Vec3 to{grip.position[0] + dir[0] * kTouch, grip.position[1] + dir[1] * kTouch, grip.position[2] + dir[2] * kTouch};
-    const auto hit = rayprobe::raycast(grip.position, to);
+    const auto hit = rayprobe::raycast_past_self(grip.position, to);
     if (!hit) {
         return std::nullopt;
     }
@@ -669,7 +670,7 @@ void press(std::size_t h, const HandInput& input) {
     // Closing the hand on an item flying to it: caught.
     for (std::size_t i = 0; g_hold && i < g_flights.size(); ++i) {
         Flight& f = g_flights[i];
-        if (f.to_hand == static_cast<int>(h) && length(minus(f.position, input.grip_pose->position)) < g_catch_radius * 1.6f &&
+        if (f.to_hand == static_cast<int>(h) && !f.missed && length(minus(f.position, input.grip_pose->position)) < g_catch_radius * 1.3f &&
             still_item(f.item, f.entity)) {
             take(h, f.item, f.entity, {f.position, f.rotation}, *input.grip_pose, true);
             ++g_catches;
@@ -796,9 +797,11 @@ void pull_frame(std::size_t h, const HandInput& input) {
     fn<ItemFn>(kSuspend)(target.item);
     buzz(h, 0.6f, 0.06f);
     const vr::Vec3 hand = input.grip_pose->position;
-    const grab::Launch launch = grab::launch_velocity(pose->position, {hand[0], hand[1] + 0.1f, hand[2]}, kGravity, 0.3f);
-    g_flights.push_back({target.item, target.entity, pose->position, launch.velocity, pose->orientation, 0.0,
-                         static_cast<int>(h)});
+    // From a few centimetres above where it rests: the 13:25 run's pulls "landed" on their own surface in the first
+    // step, each a little lower (the clipping into the table).
+    const vr::Vec3 lifted{pose->position[0], pose->position[1] + 0.05f, pose->position[2]};
+    const grab::Launch launch = grab::launch_velocity(lifted, {hand[0], hand[1] + 0.1f, hand[2]}, kGravity, 0.3f);
+    g_flights.push_back({target.item, target.entity, lifted, launch.velocity, pose->orientation, 0.0, static_cast<int>(h)});
     g_pull_target[h].reset();
     ++g_pulls;
     log::info("grab: {} hand pulls item 0x{:X} (flight {:.2f} s)", hand_name(h), target.item, launch.time);
@@ -818,12 +821,20 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
         f.age += dt;
         // A pulled item steers into its hand over the last stretch (the hand moved since the launch), keeping its speed
         // (at least 3 m/s) so it arrives instead of hanging in front of the hand.
-        if (f.to_hand >= 0) {
+        if (f.to_hand >= 0 && !f.missed) {
             const HandInput& hand = input[static_cast<std::size_t>(f.to_hand)];
             if (hand.grip_pose) {
                 const vr::Vec3 to_hand = minus(hand.grip_pose->position, f.position);
                 const float d = length(to_hand);
-                if (d < kHomingRange && d > 1e-3f) {
+                // Arrived without the grip held (or it closed and opened again): no catch. It keeps its speed and
+                // direction and falls where that takes it.
+                if (d < g_catch_radius * 1.5f && !hand.grip) {
+                    f.missed = true;
+                    log::info("gloves: {} hand didn't close on item 0x{:X}: it flies on and falls",
+                              hand_name(static_cast<std::size_t>(f.to_hand)), f.item);
+                }
+                // Steering into the hand only while it is closed (ready to catch).
+                if (!f.missed && hand.grip && d < kHomingRange && d > 1e-3f) {
                     const float speed = std::max(3.0f, length(f.velocity));
                     const float blend = std::clamp(1.0f - d / kHomingRange, 0.25f, 0.9f);
                     for (std::size_t k = 0; k < 3; ++k) {
@@ -840,7 +851,7 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
         // Caught by the pulling hand (grip still held, item close).
         if (f.to_hand >= 0) {
             const HandInput& hand = input[static_cast<std::size_t>(f.to_hand)];
-            if (hand.grip && hand.grip_pose && !g_held[static_cast<std::size_t>(f.to_hand)] &&
+            if (!f.missed && hand.grip && hand.grip_pose && !g_held[static_cast<std::size_t>(f.to_hand)] &&
                 length(minus(to, hand.grip_pose->position)) < g_catch_radius) {
                 take(static_cast<std::size_t>(f.to_hand), f.item, f.entity, {to, f.rotation}, *hand.grip_pose, true);
                 ++g_catches;
@@ -854,10 +865,12 @@ void flights_frame(double dt, const std::array<HandInput, 2>& input) {
         // Landing: the first solid thing between here and the next position (skipping the item's own shape). A pulled
         // item near its hand doesn't land, so the player's own body can't stop it short of the catch.
         bool near_hand = false;
-        if (f.to_hand >= 0) {
+        if (f.to_hand >= 0 && !f.missed) {
             const HandInput& hand = input[static_cast<std::size_t>(f.to_hand)];
             near_hand = hand.grip_pose && length(minus(from, hand.grip_pose->position)) < 1.0f;
         }
+        // A pull just leaving its surface doesn't land on it.
+        near_hand = near_hand || (f.to_hand >= 0 && f.age < 0.2);
         vr::Vec3 start = from;
         for (int attempt = 0; attempt < 3 && !done && !near_hand; ++attempt) {
             // Exclude 0x8 only: the ragdoll group 0x4004 shares bit 0x4 with the old 0xC, which hid every corpse (agent Q).
@@ -902,7 +915,7 @@ void install(const Config& config, const ModuleInfo& module) {
         const std::string v = config.get("grab", key);
         return v.empty() ? fallback : std::clamp(std::strtof(v.c_str(), nullptr), lo, hi);
     };
-    g_reach = number("reach", 1.5f, 0.2f, 10.0f);
+    g_reach = number("reach", 0.45f, 0.2f, 10.0f);
     g_throw = config.get_bool("grab", "throw", true);
     g_throw_min_speed = number("throw_min_speed", 1.5f, 0.3f, 20.0f);
     g_pull = config.get_bool("grab", "pull", true);

@@ -502,7 +502,10 @@ struct PanelTarget {
     float height_m = 0.0f;
 };
 std::optional<PanelTarget> g_ui_target;   // the game UI panel (wrist or in front), while shown
-bool g_ui_laser_through = false;          // the laser is over a transparent part of the UI: it goes on into the world
+bool g_ui_laser_through = false;
+// The flat character pictures the 3D UI dolls replace (source uv x0, y0, x1, y1; x1 <= x0 for none): blanked on the
+// panel so only the 3D character shows there (the 3D one sits behind the panel surface, so the two never lined up).
+std::array<std::array<float, 4>, 2> g_doll_fill{};          // the laser is over a transparent part of the UI: it goes on into the world
 std::optional<PanelTarget> g_menu_target; // the VR menu, while open
 
 // A LOCAL-space point in an eye image's uv, for the pose and field of view the image was rendered with.
@@ -1805,6 +1808,11 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
             g_ui_cursor_on_panel = false;
         }
     }
+    for (std::size_t k = 0; k < g_doll_fill.size(); ++k) {
+        for (std::size_t j = 0; j < 4; ++j) {
+            overlay.fill[k][j] = g_doll_fill[k][j];
+        }
+    }
     if (frame.state.shouldRender) {
         const xr::EyeImage image = g_session->acquire_panel();
         g_ui_blitter.draw(ui, {}, image.view, g_ui_panel_width, g_ui_panel_height, g_ui_linearize, overlay);
@@ -2175,6 +2183,7 @@ void update_dolls(const xr::Frame& frame) {
         const dolls::Shown* d = assigned[k];
         if (!d) {
             hide_doll_slot(slot, k);
+            g_doll_fill[k] = {};
             continue;
         }
         if (slot.id && slot.id != d->id) {
@@ -2184,6 +2193,7 @@ void update_dolls(const xr::Frame& frame) {
         // The window: the picture's rectangle on the panel, a few millimetres in front of it.
         const float u0 = d->rect[0] / static_cast<float>(g_ui_texture_width), u1 = d->rect[2] / static_cast<float>(g_ui_texture_width);
         const float v0 = d->rect[1] / static_cast<float>(g_ui_texture_height), v1 = d->rect[3] / static_cast<float>(g_ui_texture_height);
+        g_doll_fill[k] = {u0, v0, u1, v1};
         const float width_m = (u1 - u0) * target.place.width_m;
         const float du = (u0 + u1) * 0.5f - 0.5f, dv = 0.5f - (v0 + v1) * 0.5f;
         const vr::Vec3 c{centre[0] + right[0] * du * target.place.width_m + up[0] * dv * target.height_m + normal[0] * 0.004f,

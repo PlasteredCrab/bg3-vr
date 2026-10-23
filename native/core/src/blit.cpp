@@ -18,6 +18,7 @@ cbuffer Params : register(b0) {
     float4 beam;     // the aiming beam: start xy, end zw (target uv)
     float4 beam_colour; // linear rgb, opacity
     float4 beam_style;  // x width (uv of height, 0 = none), y style, z time (s), w end ring radius
+    float4 fill[4];     // source-uv rectangles (x0, y0, x1, y1) drawn opaque black (x1 <= x0: unused)
 };
 Texture2D source : register(t0);
 SamplerState linear_clamp : register(s0);
@@ -51,6 +52,12 @@ float4 ps_main(Varyings i) : SV_Target {
         // the brightest channel of the source, premultiplied.
         a = saturate((max(max(s.r, s.g), s.b) - 0.012) / 0.05);
         c *= a;
+    }
+    [unroll] for (int k = 0; k < 4; ++k) {
+        if (fill[k].z > fill[k].x && all(i.uv >= fill[k].xy) && all(i.uv <= fill[k].zw)) {
+            c = 0.0;
+            a = 1.0;
+        }
     }
     if (options.z > 0.0) {
         // Comfort vignette: darken toward the edges of the image while moving or turning artificially.
@@ -133,6 +140,7 @@ struct Constants {
     float beam[4];
     float beam_colour[4];
     float beam_style[4];
+    float fill[4][4];
 };
 
 } // namespace
@@ -275,7 +283,11 @@ void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTarget
                               {overlay.beam_u0, overlay.beam_v0, overlay.beam_u1, overlay.beam_v1},
                               {overlay.beam_rgba[0], overlay.beam_rgba[1], overlay.beam_rgba[2], overlay.beam_rgba[3]},
                               {overlay.beam_style > 0 ? overlay.beam_width : 0.0f, static_cast<float>(overlay.beam_style),
-                               overlay.beam_time, overlay.beam_end}};
+                               overlay.beam_time, overlay.beam_end},
+                              {{overlay.fill[0][0], overlay.fill[0][1], overlay.fill[0][2], overlay.fill[0][3]},
+                               {overlay.fill[1][0], overlay.fill[1][1], overlay.fill[1][2], overlay.fill[1][3]},
+                               {overlay.fill[2][0], overlay.fill[2][1], overlay.fill[2][2], overlay.fill[2][3]},
+                               {overlay.fill[3][0], overlay.fill[3][1], overlay.fill[3][2], overlay.fill[3][3]}}};
     context_->UpdateSubresource(constants_, 0, nullptr, &constants, 0, 0);
 
     const D3D11_VIEWPORT viewport{0.0f, 0.0f, static_cast<float>(target_width), static_cast<float>(target_height),
