@@ -5,6 +5,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/signatures.hpp"
+#include "bg3vr/text.hpp"
 
 #include <safetyhook.hpp>
 
@@ -51,6 +52,75 @@ float g_ipd_override_m = 0.0f; // 0 = the runtime's IPD
 
 safetyhook::MidHook g_hook;
 ModuleInfo g_module;
+
+// Where each eye view's camera-relative origin is ([views] eye_origin; agent S, S_decals.md):
+//   Proxy: real stereo. Every draw places its vertices relative to the view's ReadState controller's
+//          GetWorldTranslate (vtable slot 9) and the vertex shaders use projection x view ROTATION only, so with the
+//          one shared controller both eyes rasterised from the head (no parallax at all), while decal / surface /
+//          lighting shaders add PerCamera +0xD0 (the eye position the rewrite put there) back: decals and pools at the
+//          wrong depth. Each eye view gets its own copy of the controller whose slot 9 returns that eye's position and
+//          whose view / inverse view are the eye's; the rewrite then only replaces the projection.
+//   Head:  no parallax, but consistent: the rewrite keeps the head position (Fix A).
+enum class Origin { Proxy, Head };
+std::atomic<Origin> g_origin{Origin::Proxy};
+
+// The gameplay controller class (agent G: vtable 0x58B6750, 0x330 bytes; slot 9 = GetWorldTranslate 0x3CF0740).
+constexpr std::uintptr_t kControllerVtableRva = 0x58B6750;
+constexpr std::size_t kControllerSize = 0x330;
+constexpr std::size_t kTranslateSlot = 9;
+constexpr std::size_t kProxyVtableSlots = 96;
+constexpr std::size_t kProxyRing = 8; // the render side may still read proxies from the last few frames
+struct alignas(16) Proxy {
+    std::uint8_t object[kControllerSize]; // first: `this` of a virtual call is the Proxy
+    alignas(16) float translate[4]{};
+    camera::EyeFov fov{};
+};
+struct ProxyRing {
+    std::array<Proxy, kProxyRing> slots{};
+    std::size_t next = 0;
+};
+std::array<ProxyRing, 2> g_proxies; // render thread only (begin-recording hook and the camera hook after it)
+std::array<std::uintptr_t, kProxyVtableSlots> g_proxy_vtable{};
+bool g_proxy_ready = false;
+safetyhook::MidHook g_begin_hook;
+std::array<std::atomic<std::uint64_t>, 2> g_proxied{};
+std::atomic<std::uint64_t> g_proxy_wrong_class{0};
+std::atomic<std::uint64_t> g_proxy_no_head{0};
+
+const float* proxy_translate(const Proxy* self) {
+    return self->translate;
+}
+
+// The eye's offset in the head and its field of view, for the head view `head` (or the latest located eyes when the
+// view isn't in the camera module's history). False if neither is known.
+bool eye_offset(int eye, const std::optional<camera::HeadView>& head, const std::optional<Eyes>& eyes, float scale,
+                float ipd_override, vr::RigidPose& offset, camera::EyeFov& fov) {
+    const std::array<vr::RigidPose, 2>* both = nullptr;
+    if (head) {
+        offset = eye_in_head(head->pose, head->eye_pose[eye], scale);
+        fov = head->eye_fov[eye];
+        both = &head->eye_pose;
+    } else if (eyes) {
+        offset = eye_in_head(eyes->centre_xr, eyes->eye_xr[eye], scale);
+        fov = eyes->fov[eye];
+        both = &eyes->eye_xr;
+    } else {
+        return false;
+    }
+    if (ipd_override > 0.0f && both) {
+        // A chosen IPD: the eye offset stretched so the eyes sit that far apart (the runtime's direction kept).
+        const auto& a = (*both)[0].position;
+        const auto& b = (*both)[1].position;
+        const float runtime = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+        if (runtime > 0.01f) {
+            const float factor = ipd_override / runtime;
+            for (float& axis : offset.position) {
+                axis *= factor;
+            }
+        }
+    }
+    return true;
+}
 
 std::array<std::atomic<std::uint64_t>, 2> g_rewrites{};
 std::atomic<std::uint64_t> g_without_eyes{0};
@@ -270,31 +340,26 @@ void on_camera_built(safetyhook::Context& ctx) {
     // found, of the latest located eyes).
     vr::RigidPose offset;
     camera::EyeFov fov;
-    const std::array<vr::RigidPose, 2>* both = nullptr;
-    if (head) {
-        offset = eye_in_head(head->pose, head->eye_pose[eye], scale);
-        fov = head->eye_fov[eye];
-        both = &head->eye_pose;
-    } else if (eyes) {
-        offset = eye_in_head(eyes->centre_xr, eyes->eye_xr[eye], scale);
-        fov = eyes->fov[eye];
-        both = &eyes->eye_xr;
-        g_unmatched.fetch_add(1, std::memory_order_relaxed);
+    const auto& ring = g_proxies[static_cast<std::size_t>(eye)].slots;
+    const auto proxy = std::find_if(ring.begin(), ring.end(), [&](const Proxy& p) {
+        return reinterpret_cast<std::uintptr_t>(&p) == controller;
+    });
+    if (proxy != ring.end()) {
+        // The view was built from this eye's proxy: the view and position are the eye's already; only the eye's
+        // projection goes in.
+        fov = proxy->fov;
+        g_proxied[static_cast<std::size_t>(eye)].fetch_add(1, std::memory_order_relaxed);
     } else {
-        g_without_eyes.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    if (ipd_override > 0.0f && both) {
-        // A chosen IPD: the eye offset stretched so the eyes sit that far apart (the runtime's direction kept).
-        const auto& a = (*both)[0].position;
-        const auto& b = (*both)[1].position;
-        const float runtime = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
-        if (runtime > 0.01f) {
-            const float factor = ipd_override / runtime;
-            for (float& axis : offset.position) {
-                axis *= factor;
-            }
+        if (!eye_offset(eye, head, eyes, scale, ipd_override, offset, fov)) {
+            g_without_eyes.fetch_add(1, std::memory_order_relaxed);
+            return;
         }
+        if (!head) {
+            g_unmatched.fetch_add(1, std::memory_order_relaxed);
+        }
+        // Without a proxy the draws are relative to the head: keep the head's position so the shaders that add
+        // +0xD0 back agree with the geometry (agent S Fix A); the eye's rotation and projection still go in.
+        offset.position = {0.0f, 0.0f, 0.0f};
     }
     rewrite_block(block0, offset, fov, false);
     rewrite_block(block1, offset, fov, true);
@@ -446,7 +511,120 @@ void rewrite_block(std::uint8_t* block, const vr::RigidPose& eye_in_head, const 
     std::memcpy(block + layout::kPosition, position.data(), sizeof(position));
 }
 
+// Inverse of a rigid view (world to camera): camera to world.
+camera::Mat4 rigid_inverse(const camera::Mat4& v) {
+    camera::Mat4 inverse{};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            inverse[c * 4 + r] = v[r * 4 + c];
+        }
+    }
+    const vr::Vec3 position = camera_position(v);
+    inverse[12] = position[0];
+    inverse[13] = position[1];
+    inverse[14] = position[2];
+    inverse[15] = 1.0f;
+    return inverse;
+}
+
+// GameRenderView begin-recording entry (0x17F21E0, render thread, per view; the frame sync 0x4072CB0 has just
+// copied the real controller into ReadState +0x21D8): an eye view gets its eye's proxy controller for this frame.
+void on_view_begin(safetyhook::Context& ctx) {
+    if (!g_proxy_ready || g_origin.load(std::memory_order_relaxed) != Origin::Proxy) {
+        return;
+    }
+    const std::uintptr_t view = ctx.rcx;
+    int eye = -1;
+    std::optional<Eyes> eyes;
+    float scale = 1.0f;
+    float ipd_override = 0.0f;
+    {
+        std::scoped_lock lock(g_mutex);
+        if (view == g_views[0]) {
+            eye = 0;
+        } else if (view == g_views[1]) {
+            eye = 1;
+        }
+        eyes = g_eyes;
+        scale = g_world_scale;
+        ipd_override = g_ipd_override_m;
+    }
+    if (eye < 0) {
+        return;
+    }
+    std::uintptr_t controller = 0;
+    if (!mem::try_copy(&controller, view + layout::kReadStateController, sizeof(controller)) || !controller) {
+        return;
+    }
+    std::uintptr_t vtable = 0;
+    mem::try_copy(&vtable, controller, sizeof(vtable));
+    if (vtable != g_module.base + kControllerVtableRva) {
+        // Not the gameplay controller class (or already a proxy): leave it.
+        if (vtable != reinterpret_cast<std::uintptr_t>(g_proxy_vtable.data()) &&
+            g_proxy_wrong_class.fetch_add(1, std::memory_order_relaxed) < 5) {
+            log::warn("stereo: eye view 0x{:X}'s controller 0x{:X} has vtable {}, not the gameplay controller's; no "
+                      "per-eye origin for it", view, controller, mem::describe(g_module, vtable));
+        }
+        return;
+    }
+    // The head view this frame was built from: the controller's view matrix, looked up in the camera module's history.
+    camera::Mat4 head_view{};
+    std::memcpy(head_view.data(), reinterpret_cast<const void*>(controller + camera::layout::kViewMatrix), sizeof(head_view));
+    std::optional<camera::HeadView> head;
+    {
+        std::array<camera::AppliedView, camera::kAppliedHistory> applied;
+        const std::size_t count = camera::applied_views(applied);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (matrix_matches(head_view.data(), applied[i].view_matrix)) {
+                head = applied[i].head;
+                break;
+            }
+        }
+    }
+    vr::RigidPose offset;
+    camera::EyeFov fov;
+    if (!eye_offset(eye, head, eyes, scale, ipd_override, offset, fov)) {
+        g_proxy_no_head.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const camera::Mat4 view_matrix = eye_view(head_view, offset);
+    const camera::Mat4 inverse = rigid_inverse(view_matrix);
+    const vr::Vec3 position = camera_position(view_matrix);
+    ProxyRing& ring = g_proxies[static_cast<std::size_t>(eye)];
+    Proxy& proxy = ring.slots[ring.next];
+    ring.next = (ring.next + 1) % kProxyRing;
+    std::memcpy(proxy.object, reinterpret_cast<const void*>(controller), kControllerSize);
+    const std::uintptr_t proxy_vtable = reinterpret_cast<std::uintptr_t>(g_proxy_vtable.data());
+    std::memcpy(proxy.object, &proxy_vtable, sizeof(proxy_vtable));
+    std::memcpy(proxy.object + camera::layout::kViewMatrix, view_matrix.data(), sizeof(view_matrix));
+    std::memcpy(proxy.object + camera::layout::kInvViewMatrix, inverse.data(), sizeof(inverse));
+    proxy.translate[0] = position[0];
+    proxy.translate[1] = position[1];
+    proxy.translate[2] = position[2];
+    proxy.fov = fov;
+    *reinterpret_cast<std::uintptr_t*>(view + layout::kReadStateController) = reinterpret_cast<std::uintptr_t>(&proxy);
+    const std::uint64_t n = g_proxied[static_cast<std::size_t>(eye)].load(std::memory_order_relaxed);
+    if (n < 4 || n % 600 == 0) {
+        // The real controller's origin (its slot 9) next to the eye's: they should differ by half the IPD along the
+        // head's right axis.
+        using TranslateFn = const float* (*)(std::uintptr_t);
+        std::uintptr_t real_slot = 0;
+        mem::try_copy(&real_slot, vtable + kTranslateSlot * sizeof(void*), sizeof(real_slot));
+        const float* real = real_slot ? reinterpret_cast<TranslateFn>(real_slot)(controller) : nullptr;
+        log::info("stereo: {} eye view 0x{:X}: proxy 0x{:X} for controller 0x{:X}; origin ({:.3f}, {:.3f}, {:.3f}), the "
+                  "controller's ({:.3f}, {:.3f}, {:.3f}); eye offset ({:.4f}, {:.4f}, {:.4f}){}",
+                  eye == 0 ? "left" : "right", view, reinterpret_cast<std::uintptr_t>(&proxy), controller, position[0],
+                  position[1], position[2], real ? real[0] : 0.0f, real ? real[1] : 0.0f, real ? real[2] : 0.0f,
+                  offset.position[0], offset.position[1], offset.position[2], head ? "" : " (latest eyes, view not matched)");
+    }
+}
+
 void configure(const Config& config) {
+    const std::string origin = text::to_lower(config.get("views", "eye_origin", "proxy"));
+    const Origin wanted = origin == "head" ? Origin::Head : Origin::Proxy;
+    if (g_origin.exchange(wanted) != wanted) {
+        log::info("stereo: eye origin {}", wanted == Origin::Proxy ? "per eye (stereo parallax)" : "the head (no parallax)");
+    }
     const std::string scale = config.get("xr", "world_scale");
     const std::string ipd = config.get("xr", "ipd_mm");
     std::scoped_lock lock(g_mutex);
@@ -476,6 +654,31 @@ void install(const Config& config, const ModuleInfo& module) {
     g_hook = std::move(*hook);
     health::set("same-frame stereo", health::State::Ready);
     log::info("stereo: hook render_view_camera_built installed at exe+0x{:X}", *site - module.base);
+
+    // Per-eye origins: the proxy controllers' vtable is the gameplay controller's with slot 9 replaced.
+    const auto begin = sig::lookup("render_view_begin");
+    const std::uintptr_t real_vtable = module.base + kControllerVtableRva;
+    std::uintptr_t real_translate = 0;
+    if (begin && *begin - module.base == 0x17F21E0 &&
+        mem::try_copy(g_proxy_vtable.data(), real_vtable, sizeof(g_proxy_vtable)) &&
+        mem::try_copy(&real_translate, real_vtable + kTranslateSlot * sizeof(void*), sizeof(real_translate)) &&
+        real_translate == module.base + 0x3CF0740) {
+        g_proxy_vtable[kTranslateSlot] = reinterpret_cast<std::uintptr_t>(&proxy_translate);
+        if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(*begin), &on_view_begin)) {
+            g_begin_hook = std::move(*h);
+            g_proxy_ready = true;
+            health::set("stereo parallax", g_origin.load() == Origin::Proxy ? health::State::Ready : health::State::Off,
+                        "[views] eye_origin");
+            log::info("stereo: per-eye origin ready (begin-recording exe+0x17F21E0; proxy controllers of class "
+                      "exe+0x{:X}, slot 9 exe+0x3CF0740 replaced); [views] eye_origin = {}",
+                      kControllerVtableRva, g_origin.load() == Origin::Proxy ? "proxy" : "head");
+        }
+    }
+    if (!g_proxy_ready) {
+        health::set("stereo parallax", health::State::Unavailable, "controller class / begin-recording didn't match");
+        log::warn("stereo: per-eye origin unavailable (begin-recording or the controller class doesn't match this build); "
+                  "both eyes render from the head");
+    }
 
     // The two stages that rebuild the camera from the controller after the hook (agent N 1.5 / 1.6), 4.1.1.7631656:
     // checked byte for byte before hooking.
@@ -565,6 +768,9 @@ void report() {
               "(room main {}, eye {})",
               g_room_calls[0].load(), g_room_false[0].load(), g_room_calls[1].load(), g_room_false[1].load(),
               g_room_copies.load(), g_room_main.load(), g_room_eye.load());
+    log::info("stereo: per-eye origin {}: proxied left {} right {}, wrong controller class {}, no head view {}",
+              !g_proxy_ready ? "unavailable" : g_origin.load() == Origin::Proxy ? "on" : "off (head)",
+              g_proxied[0].load(), g_proxied[1].load(), g_proxy_wrong_class.load(), g_proxy_no_head.load());
 }
 
 } // namespace bg3vr::stereo

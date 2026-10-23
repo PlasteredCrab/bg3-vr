@@ -181,6 +181,7 @@ Menu::Menu() {
            {{"Headset", "0"}, {"56 mm", "56"}, {"58 mm", "58"}, {"60 mm", "60"}, {"62 mm", "62"}, {"64 mm", "64"},
             {"66 mm", "66"}, {"68 mm", "68"}, {"70 mm", "70"}, {"72 mm", "72"}},
            0);
+    choice("3D depth", "views.eye_origin", {{"Each eye its own view", "proxy"}, {"Flat (both from the head)", "head", true}}, 0);
     choice("World scale", "xr.world_scale",
            {{"80%", "0.8"}, {"90%", "0.9"}, {"95%", "0.95"}, {"100% (true)", "1"}, {"105%", "1.05"}, {"110%", "1.1"},
             {"120%", "1.2"}},

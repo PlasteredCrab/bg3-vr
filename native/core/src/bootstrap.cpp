@@ -225,7 +225,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     if (changed("bindings.") || changed("combos.")) {
         vrplay::configure_bindings(g_config);
     }
-    if (changed("xr.")) {
+    if (changed("xr.") || changed("views.eye_origin")) {
         stereo::configure(g_config);
         const std::string scale = g_config.get("xr", "world_scale");
         camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));
