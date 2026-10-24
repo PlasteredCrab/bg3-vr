@@ -30,6 +30,7 @@ constexpr std::size_t kDrawIndexed = 12, kDraw = 13, kDrawIndexedInstanced = 20,
 
 safetyhook::InlineHook g_hooks[14];
 std::mutex g_mutex; // guards everything below; the hooks run on whichever thread uses the context
+// Read before g_mutex in every hooked call: unarmed (always, outside !vr_trace) no call takes the lock.
 std::atomic<bool> g_armed{false};
 std::uint64_t g_start_frame = 0;
 int g_frames = 0;
@@ -326,9 +327,11 @@ void note_targets(UINT count, ID3D11RenderTargetView* const* views) {
 // UI watch (separate from the trace; its own small lock).
 std::atomic<bool> g_watch_ui{false};
 std::mutex g_ui_mutex;
-std::uintptr_t g_ui_back_buffer = 0;     // under g_ui_mutex
-std::uintptr_t g_ui_target = 0;          // current RT0 resource (raw, not held)
-std::uintptr_t g_ui_slot1 = 0;           // current PS slot 1 view (raw, not held)
+// Atomics, not under g_ui_mutex: every draw and every target / slot change checks them, and only the composite draw
+// (RT0 the back buffer) goes on to take the lock.
+std::atomic<std::uintptr_t> g_ui_back_buffer{0};
+std::atomic<std::uintptr_t> g_ui_target{0}; // current RT0 resource (raw, not held)
+std::atomic<std::uintptr_t> g_ui_slot1{0};  // current PS slot 1 view (raw, not held)
 ID3D11Texture2D* g_ui_texture = nullptr; // the mod's own copy of the UI, made at every composite draw (held)
 std::uintptr_t g_ui_source = 0;          // the game texture it was last copied from (not held; logged on change)
 std::uint64_t g_ui_changes = 0;
@@ -353,25 +356,25 @@ void ui_note_targets(UINT count, ID3D11RenderTargetView* const* views) {
             resource->Release();
         }
     }
-    std::scoped_lock lock(g_ui_mutex);
-    g_ui_target = target;
+    g_ui_target.store(target, std::memory_order_relaxed);
 }
 
 void ui_note_views(UINT start, UINT count, ID3D11ShaderResourceView* const* views) {
     if (start > 1 || start + count <= 1) {
         return;
     }
-    std::scoped_lock lock(g_ui_mutex);
-    g_ui_slot1 = views ? reinterpret_cast<std::uintptr_t>(views[1 - start]) : 0;
+    g_ui_slot1.store(views ? reinterpret_cast<std::uintptr_t>(views[1 - start]) : 0, std::memory_order_relaxed);
 }
 
 // At a draw: when it is the composite (RT0 the back buffer, PS slot 1 a big texture), copy slot 1 into the mod's
 // texture. Returns the slot-1 view (AddRef'd) when the blank was bound in its place for this draw (restore it after).
 ID3D11ShaderResourceView* ui_on_draw(ID3D11DeviceContext* self) {
-    std::scoped_lock lock(g_ui_mutex);
-    if (!g_ui_back_buffer || g_ui_target != g_ui_back_buffer || !g_ui_slot1) {
+    const std::uintptr_t back_buffer = g_ui_back_buffer.load(std::memory_order_relaxed);
+    if (!back_buffer || g_ui_target.load(std::memory_order_relaxed) != back_buffer ||
+        !g_ui_slot1.load(std::memory_order_relaxed)) {
         return nullptr;
     }
+    std::scoped_lock lock(g_ui_mutex);
     ID3D11ShaderResourceView* view = nullptr;
     self->PSGetShaderResources(1, 1, &view);
     if (!view) {
@@ -469,8 +472,12 @@ void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT cou
         ui_note_targets(count, views);
     }
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             note_targets(count, views);
         }
     }
@@ -483,8 +490,12 @@ void STDMETHODCALLTYPE om_set_render_targets_uav(ID3D11DeviceContext* self, UINT
         ui_note_targets(count, views);
     }
     {
-        std::scoped_lock lock(g_mutex);
-        if (active() && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active() && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
             note_targets(count, views);
         }
     }
@@ -492,8 +503,12 @@ void STDMETHODCALLTYPE om_set_render_targets_uav(ID3D11DeviceContext* self, UINT
 }
 void STDMETHODCALLTYPE rs_set_viewports(ID3D11DeviceContext* self, UINT count, const D3D11_VIEWPORT* viewports) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active() && count && viewports) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active() && count && viewports) {
             g_viewport = viewports[0];
         }
     }
@@ -508,8 +523,12 @@ ID3D11ShaderResourceView* count_draw(ID3D11DeviceContext* self) {
             g_hooks[11].call<void>(self, 1u, 1u, &g_ui_blank);
         }
     }
-    std::scoped_lock lock(g_mutex);
-    if (active()) {
+    const bool armed = g_armed.load(std::memory_order_relaxed);
+    std::unique_lock lock(g_mutex, std::defer_lock);
+    if (armed) {
+        lock.lock();
+    }
+    if (armed && active()) {
         ++run(self, slots_text(g_ps_srv)).draws;
     }
     return restore;
@@ -543,8 +562,12 @@ void STDMETHODCALLTYPE draw_indexed_instanced(ID3D11DeviceContext* self, UINT in
 }
 void STDMETHODCALLTYPE dispatch(ID3D11DeviceContext* self, UINT x, UINT y, UINT z) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             ++run(self, " cs" + slots_text(g_cs_srv) + " uav" + slots_text(g_cs_uav)).dispatches;
         }
     }
@@ -552,8 +575,12 @@ void STDMETHODCALLTYPE dispatch(ID3D11DeviceContext* self, UINT x, UINT y, UINT 
 }
 void STDMETHODCALLTYPE clear_render_target_view(ID3D11DeviceContext* self, ID3D11RenderTargetView* view, const FLOAT color[4]) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active() && view) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active() && view) {
             close_run();
             ID3D11Resource* resource = nullptr;
             view->GetResource(&resource);
@@ -568,8 +595,12 @@ void STDMETHODCALLTYPE clear_render_target_view(ID3D11DeviceContext* self, ID3D1
 }
 void STDMETHODCALLTYPE copy_resource(ID3D11DeviceContext* self, ID3D11Resource* destination, ID3D11Resource* source) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             close_run();
             g_lines.push_back(std::format("  t{} copy {} -> {}", GetCurrentThreadId(), describe_texture(source),
                                           describe_texture(destination)));
@@ -580,8 +611,12 @@ void STDMETHODCALLTYPE copy_resource(ID3D11DeviceContext* self, ID3D11Resource* 
 void STDMETHODCALLTYPE copy_subresource_region(ID3D11DeviceContext* self, ID3D11Resource* destination, UINT dst_sub, UINT x,
                                                UINT y, UINT z, ID3D11Resource* source, UINT src_sub, const D3D11_BOX* box) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             close_run();
             g_lines.push_back(std::format("  t{} copy region {} -> {} at ({},{}){}", GetCurrentThreadId(),
                                           describe_texture(source), describe_texture(destination), x, y,
@@ -598,8 +633,12 @@ void STDMETHODCALLTYPE ps_set_shader_resources(ID3D11DeviceContext* self, UINT s
         ui_note_views(start, count, views);
     }
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             note_views(g_ps_srv, start, count, views);
         }
     }
@@ -608,8 +647,12 @@ void STDMETHODCALLTYPE ps_set_shader_resources(ID3D11DeviceContext* self, UINT s
 void STDMETHODCALLTYPE cs_set_shader_resources(ID3D11DeviceContext* self, UINT start, UINT count,
                                                ID3D11ShaderResourceView* const* views) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             note_views(g_cs_srv, start, count, views);
         }
     }
@@ -618,8 +661,12 @@ void STDMETHODCALLTYPE cs_set_shader_resources(ID3D11DeviceContext* self, UINT s
 void STDMETHODCALLTYPE cs_set_unordered_access_views(ID3D11DeviceContext* self, UINT start, UINT count,
                                                      ID3D11UnorderedAccessView* const* views, const UINT* initial) {
     {
-        std::scoped_lock lock(g_mutex);
-        if (active()) {
+        const bool armed = g_armed.load(std::memory_order_relaxed);
+        std::unique_lock lock(g_mutex, std::defer_lock);
+        if (armed) {
+            lock.lock();
+        }
+        if (armed && active()) {
             note_views(g_cs_uav, start, count, views);
         }
     }
@@ -704,7 +751,7 @@ void watch_ui(bool on) {
 
 void set_back_buffer(std::uintptr_t resource) {
     std::scoped_lock lock(g_ui_mutex);
-    g_ui_back_buffer = resource;
+    g_ui_back_buffer.store(resource, std::memory_order_relaxed);
 }
 
 void set_ui_hidden(bool hidden) {
@@ -724,8 +771,12 @@ ID3D11Texture2D* ui_texture() {
 }
 
 void marker(const std::string& text) {
-    std::scoped_lock lock(g_mutex);
-    if (active()) {
+    const bool armed = g_armed.load(std::memory_order_relaxed);
+    std::unique_lock lock(g_mutex, std::defer_lock);
+    if (armed) {
+        lock.lock();
+    }
+    if (armed && active()) {
         close_run();
         g_lines.push_back(std::format("-- t{} {}", GetCurrentThreadId(), text));
     }

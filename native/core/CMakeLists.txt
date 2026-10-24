@@ -39,6 +39,7 @@ add_library(bg3vr_base STATIC
     src/holster.cpp
     src/ik.cpp
     src/shadows.cpp
+    src/stage_timing.cpp
     src/stereo.cpp
     src/trace.cpp
     src/views.cpp
