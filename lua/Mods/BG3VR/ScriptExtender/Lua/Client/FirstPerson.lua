@@ -39,8 +39,8 @@ local function ForEachVisual(root, fn)
     end
 end
 
-local function RootVisual()
-    local character = BG3VR.Controlled()
+local function RootVisual(entity)
+    local character = entity or BG3VR.Controlled()
     local component = character and character.Visual
     return component and component.Visual
 end
@@ -73,9 +73,10 @@ local function Dump()
 end
 
 -- The "hide=" bridge line for the controlled character's head parts (or those matching `match`), and their names;
--- nil when there is no visual or nothing matches.
-function HeadHideBridgeLine(match)
-    local root = RootVisual()
+-- nil when there is no visual or nothing matches. `entity`: another body instead (a scene's stand-in for the
+-- character, whose head the camera then sits in).
+function HeadHideBridgeLine(match, entity)
+    local root = RootVisual(entity)
     if not root then
         return nil, {}
     end

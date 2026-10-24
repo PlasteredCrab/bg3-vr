@@ -1,5 +1,7 @@
 #include "bg3vr/skeleton.hpp"
 
+#include "bg3vr/bridge.hpp"
+
 #include "bg3vr/bodyik.hpp"
 #include "bg3vr/camera.hpp"
 #include "bg3vr/gameui.hpp"
@@ -11,6 +13,7 @@
 #include <safetyhook.hpp>
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <initializer_list>
 #include <cctype>
@@ -65,6 +68,12 @@ std::atomic<bool> g_following{false};          // VR play wants the body followe
 std::atomic<std::uint64_t> g_dummy{0};          // the dummy being followed instead of the character (0: none)
 std::atomic<std::uint64_t> g_swap_calls{0};
 std::uint64_t g_followed_entity = 0;            // game thread: the entity whose visual is attached
+// Stand-ins the primary player's scenes currently show (agent AV F4): added on show, removed on hide; the followed one
+// is checked every frame and re-picked from these when it stops standing for the controlled character.
+std::mutex g_shown_mutex;
+std::vector<std::uint64_t> g_shown_dummies;
+vr::Vec3 g_last_head_model{};     // the last Head_M model position read (for a body without one, agent AV F3)
+bool g_have_head_model = false;
 std::uint64_t g_native_switches = 0;
 safetyhook::InlineHook g_swap_hook;
 
@@ -96,6 +105,16 @@ std::uint64_t player_manager_character() {
         return handle == *reinterpret_cast<std::uint64_t*>(g_module.base + kNullHandle) ? 0 : handle;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
+    }
+}
+
+// The primary (local) player's index, -1 if unknown.
+int primary_player() {
+    __try {
+        const auto manager = *reinterpret_cast<std::uintptr_t*>(g_module.base + kPlayerManager);
+        return manager ? static_cast<int>(reinterpret_cast<PrimaryPlayerFn>(g_module.base + kPrimaryPlayerRva)(manager)) : -1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
     }
 }
 
@@ -143,6 +162,17 @@ std::uintptr_t on_set_actor_visible(std::uintptr_t system, std::uintptr_t ctx, s
     std::uint64_t handle = 0;
     mem::try_copy(&handle, handle_ptr, sizeof(handle));
     const bool show = (show_arg & 0xFF) != 0;
+    // Only the primary player's calls (agent AV F5): the mod's eye view is player 2, and player 0 recurses over all.
+    const int player = static_cast<std::int16_t>(player_arg & 0xFFFF);
+    const int primary = primary_player();
+    if (player != primary) {
+        const std::uint64_t n = g_swap_calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 40) {
+            log::info("skeleton: scene {} entity 0x{:X} for player {} (not the primary player {}): ignored", show ? "shows" : "hides",
+                      handle, player, primary);
+        }
+        return g_swap_hook.call<std::uintptr_t>(system, ctx, handle_ptr, timeline, show_arg, player_arg);
+    }
     std::uintptr_t world = 0;
     mem::try_copy(&world, ctx, sizeof(world));
     const std::uintptr_t dummy = by_handle_raw(kPreviewDummyRva, handle, world);
@@ -151,6 +181,15 @@ std::uintptr_t on_set_actor_visible(std::uintptr_t system, std::uintptr_t ctx, s
         mem::try_copy(&stands_for, dummy + kDummyStandsFor, sizeof(stands_for));
     }
     const std::uint64_t controlled = controlled_now;
+    if (dummy) {
+        std::scoped_lock lock(g_shown_mutex);
+        const auto it = std::find(g_shown_dummies.begin(), g_shown_dummies.end(), handle);
+        if (show && it == g_shown_dummies.end()) {
+            g_shown_dummies.push_back(handle);
+        } else if (!show && it != g_shown_dummies.end()) {
+            g_shown_dummies.erase(it);
+        }
+    }
     const std::uint64_t followed = g_dummy.load(std::memory_order_relaxed);
     const char* change = nullptr;
     if (dummy && show && controlled && stands_for == controlled) {
@@ -536,6 +575,15 @@ void init(const ModuleInfo& module) {
 }
 
 void attach_visual(std::uintptr_t visual) {
+    // With the native follow ready, Lua's skeleton= line only turns following on (agent AV F7: re-attaching its
+    // character visual put the camera on the hidden real body for a frame during a stand-in scene); on_frame picks the
+    // body. Off still detaches.
+    if (g_native_ready && visual) {
+        if (!g_following.exchange(true)) {
+            log::info("skeleton: following on (the body is picked natively; Lua's visual 0x{:X} not attached)", visual);
+        }
+        return;
+    }
     std::scoped_lock lock(g_mutex);
     g_request = visual;
     g_following = visual != 0;
@@ -555,8 +603,43 @@ void on_frame() {
     }
     // The body actually shown for the controlled character, every frame (Lua's pointer is the fallback).
     if (g_native_ready && g_following.load(std::memory_order_relaxed)) {
-        const std::uint64_t dummy = g_dummy.load(std::memory_order_relaxed);
         const std::uint64_t controlled = controlled_raw();
+        // The followed stand-in must still exist and stand for the controlled character (agent AV F4); otherwise
+        // another shown stand-in that does, else the character itself.
+        const auto stands_for_controlled = [&](std::uint64_t d) {
+            const std::uintptr_t object = d ? by_handle_raw(kPreviewDummyRva, d, camera_world()) : 0;
+            std::uint64_t stands_for = 0;
+            return object && mem::try_copy(&stands_for, object + kDummyStandsFor, sizeof(stands_for)) && controlled &&
+                   stands_for == controlled;
+        };
+        if (const std::uint64_t d = g_dummy.load(std::memory_order_relaxed); d && !stands_for_controlled(d)) {
+            std::uint64_t replacement = 0;
+            {
+                std::scoped_lock lock(g_shown_mutex);
+                g_shown_dummies.erase(std::remove_if(g_shown_dummies.begin(), g_shown_dummies.end(),
+                                                     [&](std::uint64_t x) {
+                                                         return !by_handle_raw(kPreviewDummyRva, x, camera_world());
+                                                     }),
+                                      g_shown_dummies.end());
+                for (const std::uint64_t x : g_shown_dummies) {
+                    if (x != d && stands_for_controlled(x)) {
+                        replacement = x;
+                        break;
+                    }
+                }
+            }
+            g_dummy = replacement;
+            log::info("skeleton: the followed stand-in 0x{:X} no longer stands for the controlled character 0x{:X}: {}", d,
+                      controlled, replacement ? std::format("following the stand-in 0x{:X}", replacement)
+                                              : std::string("following the character"));
+        }
+        const std::uint64_t dummy = g_dummy.load(std::memory_order_relaxed);
+        // Lua hides the followed body's head parts: the stand-in's own while one is followed (agent AV F8).
+        static std::uint64_t published = ~0ull;
+        if (dummy != published) {
+            published = dummy;
+            bridge::set_status("followed", dummy ? std::format("0x{:016X}", dummy) : std::string());
+        }
         static std::uint64_t last_controlled = 0;
         if (controlled != last_controlled) {
             log::info("skeleton: the player manager's controlled character is now 0x{:X} (was 0x{:X})", controlled,
@@ -604,6 +687,26 @@ void on_frame() {
         }
     }
     if (g_head_bone < 0) {
+        // No Head_M (e.g. a shapeshifted stand-in, agent AV F3): the body's own transform with the last head offset
+        // read, so the camera stays with this body instead of falling back to the character's.
+        std::array<float, 10> t{};
+        std::uint32_t now = 0;
+        copy(now, rva(layout::kFrameCounter));
+        if (g_have_head_model && mem::try_copy(t.data(), g_visual + layout::kVisualWorldTransform, sizeof(t))) {
+            Head h;
+            h.model = g_last_head_model;
+            h.visual_position = {t[4], t[5], t[6]};
+            h.visual_rotation = {t[0], t[1], t[2], t[3]};
+            h.visual_scale = t[7] != 0.0f ? t[7] : 1.0f;
+            const vr::Vec3 o = vr::rotate(h.visual_rotation, {h.model[0] * h.visual_scale, h.model[1] * h.visual_scale,
+                                                              h.model[2] * h.visual_scale});
+            h.world = {t[4] + o[0], t[5] + o[1], t[6] + o[2]};
+            h.world_rotation = h.visual_rotation;
+            h.frame = now;
+            h.fresh = true;
+            std::scoped_lock lock(g_mutex);
+            g_head = h;
+        }
         return;
     }
 
@@ -632,6 +735,8 @@ void on_frame() {
     }
     Head head;
     head.model = {matrix[12], matrix[13], matrix[14]};
+    g_last_head_model = head.model;
+    g_have_head_model = true;
     const vr::Quat visual_rotation{transform[0], transform[1], transform[2], transform[3]};
     const vr::Vec3 scaled{head.model[0] * transform[7], head.model[1] * transform[8], head.model[2] * transform[9]};
     const vr::Vec3 offset = vr::rotate(visual_rotation, scaled);

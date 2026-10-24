@@ -184,6 +184,24 @@ local function Tick(dt)
     auto.checkIn = 0.25
     local status = BG3VR.ReadStatus()
     BG3VR.ActingHex = status.acting ~= "" and status.acting or nil -- the hotbar's character (Controlled.lua)
+    -- The body the camera follows changed between the character and a scene's stand-in for it: hide that body's head.
+    local followed = status.followed ~= nil and status.followed ~= "" and status.followed or nil
+    if auto.started and followed ~= auto.followed then
+        auto.followed = followed
+        if not auto.third and not auto.chase and not auto.free and HeadHideBridgeLine then
+            local entity = nil
+            if followed then
+                local ok, found = pcall(function()
+                    return Ext.Entity.Get(Ext.Utils.IntegerToHandle(math.tointeger(tonumber(followed))))
+                end)
+                entity = ok and found or nil
+            end
+            local hide, names = HeadHideBridgeLine(nil, entity)
+            BG3VR.WriteBridge({ hide or "hide=off" })
+            BG3VR.Log("VR: following %s; hiding %d head part(s): %s", followed and ("the stand-in " .. followed) or "the character",
+                #names, table.concat(names, ", "))
+        end
+    end
     HandleRequest(status)
     local ready = status.xr == "ready" and status.mode ~= "screen"
     if status.xr ~= auto.lastXr then

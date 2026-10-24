@@ -30,6 +30,7 @@ namespace {
 // State shared between the bridge thread and the game's camera update.
 std::mutex g_mutex;
 std::uintptr_t g_controller = 0;
+ModuleInfo g_module;
 std::optional<Pose> g_pose;
 std::atomic<FrameCallback> g_frame_callback{nullptr};
 
@@ -132,7 +133,12 @@ void update_follow() {
     float q[4]{};
     std::optional<vr::Vec3> eyes;
     bool from_visual = false;
-    if (const auto head = skeleton::head(); head && head->fresh) {
+    // Read this frame or the last, whether or not its pose is current (agent AV F2: a scene's stand-in can stop
+    // animating; its bones are then its last pose and its transform is still current. The character's transform from
+    // Lua would put the camera at the hidden real body).
+    std::uint32_t frame_now = 0;
+    std::memcpy(&frame_now, reinterpret_cast<const void*>(g_module.base + skeleton::layout::kFrameCounter), sizeof(frame_now));
+    if (const auto head = skeleton::head(); head && frame_now - head->frame <= 2) {
         translate[0] = head->visual_position[0];
         translate[1] = head->visual_position[1];
         translate[2] = head->visual_position[2];
@@ -261,7 +267,6 @@ safetyhook::MidHook g_view_update_hook;
 safetyhook::MidHook g_set_view_hook;
 safetyhook::MidHook g_set_projection_hook;
 
-ModuleInfo g_module;
 
 // Every controller that passes through the view setter, with call counts (fixed table, no locks).
 constexpr std::size_t kTrackedControllers = 16;
@@ -301,11 +306,76 @@ void update_mouselook(Pose& pose) {
     g_last_cursor = cursor;
 }
 
-// Entry of the view update: rcx = controller. Write the pose into the camera's Transform.
-void on_view_update(safetyhook::Context& ctx) {
-    if (const FrameCallback callback = g_frame_callback.load(std::memory_order_acquire)) {
+// The per-frame callback (agent AV F1): 0x4085150 has 39 callers, among them the cull frustum, picking and
+// render-side stage code on the render thread and workers, so the callback ran several times a frame on several
+// threads. It now runs once per game frame ([exe+0x614FB88]) on the game thread, learned from the calls that update the
+// driven controller; if no call on that thread came for 30 frames (a scene camera has the view), any thread may.
+std::atomic<std::uint32_t> g_game_thread{0};
+std::uint32_t g_callback_frame = 0xFFFFFFFFu; // the frame the callback last ran in (only touched by the callback's caller)
+std::mutex g_callback_mutex;
+std::atomic<std::uint64_t> g_callback_runs{0}, g_callback_skips{0}, g_callback_fallbacks{0};
+std::atomic<int> g_logged_calls{0};
+struct ThreadCalls {
+    std::uint32_t thread = 0;
+    std::uint64_t calls = 0, driven = 0;
+};
+std::array<ThreadCalls, 8> g_thread_calls{}; // under g_callback_mutex
+
+void run_frame_callback(const safetyhook::Context& ctx, bool driven) {
+    const FrameCallback callback = g_frame_callback.load(std::memory_order_acquire);
+    std::uint32_t frame = 0;
+    std::memcpy(&frame, reinterpret_cast<const void*>(g_module.base + skeleton::layout::kFrameCounter), sizeof(frame));
+    const std::uint32_t thread = GetCurrentThreadId();
+    if (driven) {
+        g_game_thread.store(thread, std::memory_order_relaxed);
+    }
+    if (g_logged_calls.load(std::memory_order_relaxed) < 200 && g_logged_calls.fetch_add(1, std::memory_order_relaxed) < 200) {
+        std::uintptr_t ret = 0;
+        mem::try_copy(&ret, ctx.rsp, sizeof(ret));
+        log::info("camera: view update f{} t{} from exe+0x{:X} controller 0x{:X}{}", frame, thread, ret - g_module.base, ctx.rcx,
+                  driven ? " (the driven camera)" : "");
+    }
+    bool run = false;
+    {
+        std::scoped_lock lock(g_callback_mutex);
+        for (ThreadCalls& t : g_thread_calls) {
+            if (t.thread == thread || t.thread == 0) {
+                t.thread = thread;
+                ++t.calls;
+                t.driven += driven ? 1 : 0;
+                break;
+            }
+        }
+        if (frame != g_callback_frame) {
+            const std::uint32_t game = g_game_thread.load(std::memory_order_relaxed);
+            const bool stalled = g_callback_frame != 0xFFFFFFFFu && frame - g_callback_frame > 30;
+            run = game == 0 || thread == game || stalled;
+            if (run) {
+                if (stalled && game != 0 && thread != game) {
+                    g_callback_fallbacks.fetch_add(1, std::memory_order_relaxed);
+                }
+                g_callback_frame = frame;
+            }
+        }
+    }
+    if (!run) {
+        g_callback_skips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_callback_runs.fetch_add(1, std::memory_order_relaxed);
+    if (callback) {
         callback();
     }
+}
+
+// Entry of the view update: rcx = controller. Write the pose into the camera's Transform.
+void on_view_update(safetyhook::Context& ctx) {
+    bool driven = false;
+    {
+        std::scoped_lock lock(g_mutex);
+        driven = ctx.rcx == g_controller && g_controller != 0;
+    }
+    run_frame_callback(ctx, driven);
     std::optional<Pose> pose;
     std::optional<HeadView> head;
     {
@@ -766,6 +836,18 @@ void set_frame_callback(FrameCallback callback) {
 }
 
 void report() {
+    {
+        std::string threads;
+        std::scoped_lock lock(g_callback_mutex);
+        for (const ThreadCalls& t : g_thread_calls) {
+            if (t.thread) {
+                threads += std::format(" t{} {} calls ({} driven);", t.thread, t.calls, t.driven);
+            }
+        }
+        log::info("camera: frame callback ran {} times, {} view updates skipped (other threads / same frame), {} fallbacks off "
+                  "the game thread t{};{}",
+                  g_callback_runs.load(), g_callback_skips.load(), g_callback_fallbacks.load(), g_game_thread.load(), threads);
+    }
     const std::uint64_t calls = g_view_calls.load(std::memory_order_relaxed);
     log::info("camera: view set {} times since the last report; transform written {} times; built view checked {} "
               "times, max error {:.6f}{}; projection overridden {} times",
