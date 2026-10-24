@@ -28,6 +28,7 @@ add_library(bg3vr_base STATIC
     src/resolution.cpp
     src/skeleton.cpp
     src/dialogue.cpp
+    src/dice.cpp
     src/dolls.cpp
     src/fading.cpp
     src/gameui.cpp
