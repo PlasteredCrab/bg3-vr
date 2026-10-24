@@ -227,6 +227,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         return std::any_of(settings.begin(), settings.end(), [&](const auto& s) { return s.first.rfind(prefix, 0) == 0; });
     };
     const bool third = vrplay::third_person();
+    if (changed("dice.")) {
+        dice::configure(g_config);
+    }
     if (changed("vr.")) {
         vrplay::configure(g_config);
         fading::configure(g_config);
@@ -381,6 +384,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
 #endif
             cull::forget();
             hold::forget();
+            dice::forget();
         }
     }
     if (request.ik) {

@@ -1,5 +1,6 @@
 #include "bg3vr/paperdoll.hpp"
 
+#include "bg3vr/dice.hpp"
 #include "bg3vr/dolls.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
@@ -138,6 +139,7 @@ std::uintptr_t on_update(std::uintptr_t pm, std::uintptr_t a, float dt) {
     const std::uintptr_t result = g_update_hook.call<std::uintptr_t>(pm, a, dt);
     g_updates.fetch_add(1, std::memory_order_relaxed);
     dolls::on_manager_update(pm); // the 3D versions (game thread, after the game's own update)
+    dice::on_manager_update();    // the physical die (made, moved and removed here, as the game does its clones)
     if (g_mode.load(std::memory_order_relaxed) == Mode::Normal || !pm) {
         return result;
     }

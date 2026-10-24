@@ -8,6 +8,7 @@
 #include "bg3vr/combat.hpp"
 #include "bg3vr/dolls.hpp"
 #include "bg3vr/corpse.hpp"
+#include "bg3vr/dice.hpp"
 #include "bg3vr/gpu_trace.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/holster.hpp"
@@ -994,7 +995,13 @@ void update_input(const xr::Frame& frame) {
             const holster::Zone zone = holster::zone_of(centre_view(frame.views).pose, now[h].grip.position);
             in_pack = zone == holster::Zone::ShoulderRight || zone == holster::Zone::ShoulderLeft || zone == holster::Zone::Back;
         }
-        hold::set_hand(h, grab && !corpse::holding(h),
+        // The physical die (dice.cpp) is in the pointing hand while a roll waits: that grip throws it, not the gloves.
+        const bool die_hand = h == pointer_hand();
+        if (die_hand) {
+            dice::set_hand(grab, now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt,
+                           static_cast<double>(frame.state.predictedDisplayTime) * 1e-9);
+        }
+        hold::set_hand(h, grab && !corpse::holding(h) && !(die_hand && dice::wants_grip()),
                        now[h].world_valid ? std::optional<vr::RigidPose>(now[h].world_grip) : std::nullopt, aim_world,
                        static_cast<double>(frame.state.predictedDisplayTime) * 1e-9, in_pack);
         if (const auto buzz = hold::take_haptic(h)) {
@@ -1721,8 +1728,10 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
     const bool combat = g_ui_combat.load(std::memory_order_relaxed);
     // A game window (inventory, map, trade, loot, game menu, ...) open brings it up too (gameui.cpp, agent AB).
     const bool window = gameui::window_open();
-    const bool visible = !g_ui_on_demand.load(std::memory_order_relaxed) || g_ui_revealed.load(std::memory_order_relaxed) ||
-                         combat || conversation || window;
+    // While the physical die tumbles, the game's own roll animation stays out of the way (dice.cpp).
+    const bool visible = (!g_ui_on_demand.load(std::memory_order_relaxed) || g_ui_revealed.load(std::memory_order_relaxed) ||
+                          combat || conversation || window) &&
+                         !dice::hide_ui();
     // The laser on the panel (last frame): otherwise the invisible screen UI under the cursor mustn't eat world clicks.
     gameui::set_pointer(vrplay::active() && !vrplay::third_person(), visible && g_ui_cursor_on_panel);
     if (!visible) {

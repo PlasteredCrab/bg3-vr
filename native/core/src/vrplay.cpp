@@ -1,6 +1,7 @@
 #include "bg3vr/vrplay.hpp"
 
 #include "bg3vr/camera.hpp"
+#include "bg3vr/dice.hpp"
 #include "bg3vr/hold.hpp"
 #include "bg3vr/health.hpp"
 #include "bg3vr/log.hpp"
@@ -423,7 +424,9 @@ Feedback on_controllers(const Hand (&hands)[2], double time_s) {
     for (int h = 0; h < 2; ++h) {
         const int c = h == 0 ? LeftGrip : RightGrip;
         if (now[c] && !g_down[c]) {
-            s_grip_to_gloves[h] = hold::enabled() && (!hold::hold_on() || hold::wants_grip(static_cast<std::size_t>(h)));
+            // The physical die in hand takes the grip too (no right-click while you throw it).
+            s_grip_to_gloves[h] = (hold::enabled() && (!hold::hold_on() || hold::wants_grip(static_cast<std::size_t>(h)))) ||
+                                  dice::wants_grip();
         } else if (!now[c]) {
             s_grip_to_gloves[h] = false;
         }

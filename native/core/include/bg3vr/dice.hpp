@@ -2,6 +2,7 @@
 
 #include "bg3vr/config.hpp"
 #include "bg3vr/module_info.hpp"
+#include "bg3vr/vr_math.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -39,6 +40,22 @@ std::optional<Roll> current();
 // Taken by the next view-model update; ignored when the screen isn't in the matching phase.
 void request_roll();
 void request_skip();
+
+// ---- The physical die (agent AR, AR_dice_visual.md): a client-only clone of the game's UI d20 model
+// (a61032d1-98f3-6d0b-55f0-75e62b623f26) in the level scene, created, moved and removed after the paperdoll-manager
+// update (where the game builds its own clones); its tumble is the mod's own (gravity, bounces on the game's raycast,
+// then it rolls onto the face the game rolled). No physics component: the laser and the game's picking don't see it.
+
+// Presenting thread: the pointing hand's grip and its world pose (game convention), for holding and throwing the die.
+void set_hand(bool grip, std::optional<vr::RigidPose> grip_pose, double time_s);
+// The grip belongs to the die (it is in the hand or was just thrown): no gloves, no right-click.
+bool wants_grip();
+// The game's own roll animation should stay hidden: the physical die is showing the roll.
+bool hide_ui();
+// Game thread, after the paperdoll-manager update.
+void on_manager_update();
+// Drop the die without touching it (a level is unloading).
+void forget();
 
 void report();
 
