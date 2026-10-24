@@ -26,4 +26,13 @@ ID3D11Texture2D* ui_texture();
 // Keep the UI out of the eye images: a blank image stands in for it at the composite draw (the UI is still copied).
 void set_ui_hidden(bool hidden);
 
+// Foveation (foveation.cpp): told of every render-target bind (before it reaches D3D11) and every viewport change
+// (after), on the calling context. Installs the context hooks if they aren't yet (needs the game's device).
+struct BindListener {
+    void (*targets)(ID3D11DeviceContext* context, UINT count, ID3D11RenderTargetView* const* views,
+                    ID3D11DepthStencilView* depth) = nullptr;
+    void (*viewports)(ID3D11DeviceContext* context, UINT count, const D3D11_VIEWPORT* viewports) = nullptr;
+};
+bool set_bind_listener(const BindListener& listener);
+
 } // namespace bg3vr::gpu_trace

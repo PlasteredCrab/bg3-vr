@@ -1086,6 +1086,11 @@ void set_eyes(std::optional<Eyes> eyes) {
     g_eyes = eyes;
 }
 
+std::optional<Eyes> eyes() {
+    std::scoped_lock lock(g_mutex);
+    return g_eyes;
+}
+
 void assign(std::uintptr_t view, int eye) {
     std::scoped_lock lock(g_mutex);
     for (std::uintptr_t& assigned : g_views) {

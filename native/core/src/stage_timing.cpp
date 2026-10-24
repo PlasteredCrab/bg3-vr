@@ -148,10 +148,6 @@ using StageWaitFn = void (*)(std::uintptr_t stage);
 
 // The game's 0x3CC7010, step for step, with a window around each part.
 void on_view_execute(std::uintptr_t view) {
-    if (!g_enabled.load(std::memory_order_relaxed)) {
-        g_view_hook.call<void>(view);
-        return;
-    }
     const int slot = view_slot(view);
     const int saved_slot = t_view_slot, saved_stage = t_stage;
     t_view_slot = slot;
@@ -182,6 +178,9 @@ void on_view_execute(std::uintptr_t view) {
     const double view_ms = static_cast<double>(qpc() - view_start) * g_qpc_ms;
     t_view_slot = saved_slot;
     t_stage = saved_stage;
+    if (!g_enabled.load(std::memory_order_relaxed)) {
+        return;
+    }
     std::scoped_lock lock(g_acc);
     for (int i = 0; i < window_count; ++i) {
         Totals& t = g_totals[static_cast<std::size_t>(slot * kStageKeys + windows[static_cast<std::size_t>(i)].first)];
@@ -407,6 +406,10 @@ void install(const Config& config, const ModuleInfo& module) {
     health::set("Stage timing", g_enabled.load() ? health::State::Ready : health::State::Off, "[perf] stage_timing");
     log::info("perf: stage timing hooked (view executor exe+0x{:X}, command executor exe+0x{:X}); a report every {} frames",
               kViewExecuteRva, kCommandExecuteRva, g_report_frames.load());
+}
+
+Window window() {
+    return {t_view_slot <= 1 ? t_view_slot : -1, t_stage == kNoStage ? -1 : t_stage};
 }
 
 void report() {

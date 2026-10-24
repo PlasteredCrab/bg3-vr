@@ -31,6 +31,7 @@ add_library(bg3vr_base STATIC
     src/dice.cpp
     src/dolls.cpp
     src/fading.cpp
+    src/foveation.cpp
     src/gameui.cpp
     src/eyefix.cpp
     src/grab_math.cpp

@@ -99,6 +99,8 @@ struct Eyes {
     std::array<camera::EyeFov, 2> fov;
 };
 void set_eyes(std::optional<Eyes> eyes);
+// The eyes last set (any thread).
+std::optional<Eyes> eyes();
 
 // Which render view (its address) draws which eye; eye -1 removes the view.
 void assign(std::uintptr_t view, int eye);

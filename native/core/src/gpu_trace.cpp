@@ -466,8 +466,14 @@ ID3D11ShaderResourceView* ui_on_draw(ID3D11DeviceContext* self) {
     return restore;
 }
 
+std::atomic<void (*)(ID3D11DeviceContext*, UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*)> g_on_targets{nullptr};
+std::atomic<void (*)(ID3D11DeviceContext*, UINT, const D3D11_VIEWPORT*)> g_on_viewports{nullptr};
+
 void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
                                               ID3D11DepthStencilView* depth) {
+    if (const auto listener = g_on_targets.load(std::memory_order_relaxed)) {
+        listener(self, count, views, depth);
+    }
     if (g_watch_ui.load(std::memory_order_relaxed)) {
         ui_note_targets(count, views);
     }
@@ -486,6 +492,10 @@ void STDMETHODCALLTYPE om_set_render_targets(ID3D11DeviceContext* self, UINT cou
 void STDMETHODCALLTYPE om_set_render_targets_uav(ID3D11DeviceContext* self, UINT count, ID3D11RenderTargetView* const* views,
                                                  ID3D11DepthStencilView* depth, UINT uav_start, UINT uav_count,
                                                  ID3D11UnorderedAccessView* const* uavs, const UINT* initial) {
+    if (const auto listener = g_on_targets.load(std::memory_order_relaxed);
+        listener && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
+        listener(self, count, views, depth);
+    }
     if (g_watch_ui.load(std::memory_order_relaxed) && count != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL) {
         ui_note_targets(count, views);
     }
@@ -513,6 +523,9 @@ void STDMETHODCALLTYPE rs_set_viewports(ID3D11DeviceContext* self, UINT count, c
         }
     }
     g_hooks[2].call<void>(self, count, viewports);
+    if (const auto listener = g_on_viewports.load(std::memory_order_relaxed)) {
+        listener(self, count, viewports);
+    }
 }
 // Returns the slot-1 view to put back after the draw (the UI's, while a blank stands in for it), or null.
 ID3D11ShaderResourceView* count_draw(ID3D11DeviceContext* self) {
@@ -747,6 +760,16 @@ void watch_ui(bool on) {
     if (g_watch_ui.exchange(on) != on) {
         log::info("gpu: UI texture watch {}", on ? "on" : "off");
     }
+}
+
+bool set_bind_listener(const BindListener& listener) {
+    std::call_once(g_install_once, [] { g_installed = install(); });
+    if (!g_installed) {
+        return false;
+    }
+    g_on_targets.store(listener.targets);
+    g_on_viewports.store(listener.viewports);
+    return true;
 }
 
 void set_back_buffer(std::uintptr_t resource) {

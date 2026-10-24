@@ -18,6 +18,15 @@
 namespace bg3vr::stage_timing {
 
 void install(const Config& config, const ModuleInfo& module);
+
+// The render window the calling thread is in (set by the view executor whether or not timing is on): eye 0 / 1 for
+// the left / right eye view, -1 any other view or none; stage the stage id (0..0xFF), 0x100 the view's own buffer,
+// -1 none. Foveation gates its shading rates on it.
+struct Window {
+    int eye = -1;
+    int stage = -1;
+};
+Window window();
 void configure(const Config& config);
 void report();
 

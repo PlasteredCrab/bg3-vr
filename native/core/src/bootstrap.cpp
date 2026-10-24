@@ -25,6 +25,7 @@
 #include "bg3vr/dolls.hpp"
 #include "bg3vr/dice.hpp"
 #include "bg3vr/fading.hpp"
+#include "bg3vr/foveation.hpp"
 #include "bg3vr/gameui.hpp"
 #include "bg3vr/eyefix.hpp"
 #include "bg3vr/hold.hpp"
@@ -262,6 +263,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     }
     if (changed("render.")) {
         resolution::configure(g_config);
+        foveation::configure(g_config);
     }
 #if BG3VR_HAVE_OPENXR
     if (changed("ui.") || changed("pointer.") || changed("vr.dominant_hand")) {
@@ -513,6 +515,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     fading::report();
     dice::report();
     stage_timing::report();
+    foveation::report();
     skeleton::report();
     dialogue::report();
     eyefix::report();
@@ -577,6 +580,7 @@ int init(const wchar_t* root_dir) {
     fading::install(g_config, module);
     dice::install(g_config, module);
     stage_timing::install(g_config, module);
+    foveation::install(g_config, module);
     render::configure(g_config);
     render::install(module);
     watchdog::start(module);
