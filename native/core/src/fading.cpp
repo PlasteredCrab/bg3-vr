@@ -53,8 +53,10 @@ std::atomic<bool> g_enabled{true};
 std::atomic<std::uint64_t> g_suppressed{0}, g_holes_closed{0};
 std::atomic<bool> g_logged_on{false};
 
+// First person and the free camera (the camera is where the headset is, among the rooms); not third person (chase),
+// where the camera is outside again and the game's own fading and black-out apply.
 bool in_first_person() {
-    return vrplay::active() && !vrplay::third_person() && !camera::chase();
+    return vrplay::active() && !vrplay::third_person() && (camera::free_camera() || !camera::chase());
 }
 
 bool first_person() {
@@ -75,7 +77,9 @@ void on_room_count(safetyhook::Context& ctx) {
         std::uintptr_t view = 0;
         mem::try_copy(&view, ctx.rsi - 0x18, sizeof(view));
         log::info("fading: room black-out: {} room volume(s) in view of 0x{:X} (eye {}){}", rooms, view, stereo::eye_of(view),
-                  skip ? ": skipped in first person, rooms stay lit" : "");
+                  skip ? (camera::free_camera() ? ": skipped in the free camera, rooms stay lit"
+                                                : ": skipped in first person, rooms stay lit")
+                       : "");
     }
 }
 
