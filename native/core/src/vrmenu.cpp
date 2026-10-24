@@ -200,8 +200,14 @@ Menu::Menu() {
             {"+15 cm", "0.15"}, {"+20 cm", "0.2"}},
            2);
     on_off("Ceilings stay in first person", "vr.first_person_no_fading", true);
+    on_off("Rooms you're not in stay lit", "vr.first_person_rooms_visible", true);
     on_off("Physical dice (throw your rolls)", "dice.physical", true);
     choice("Dice size", "dice.size_cm", {{"8 cm", "8"}, {"12 cm", "12"}, {"16 cm", "16"}, {"24 cm", "24"}}, 1);
+    for (Item& item : items_) {
+        if (item.page == page()) {
+            item.compact = true; // 11 rows on this page
+        }
+    }
     section("Buttons");
     std::vector<Option> actions;
     for (const ActionName& a : kActions) {
