@@ -505,6 +505,14 @@ void report() {
     if (!text.empty()) {
         log::info("perf: right / left GPU ms per stage:{}", text);
     }
+    // Agent AT 2.4: both eyes' skinning keys its per-mesh offsets by [view+0x226C]; equal values would race.
+    if (const auto eyes = views::eye_views()) {
+        std::int32_t sides[2] = {-1, -1};
+        mem::try_copy(&sides[0], (*eyes)[0] + 0x226C, sizeof(sides[0]));
+        mem::try_copy(&sides[1], (*eyes)[1] + 0x226C, sizeof(sides[1]));
+        log::info("perf: skinning slots [view+0x226C]: left {}, right {}{}", sides[0], sides[1],
+                  sides[0] == sides[1] ? " (THE SAME: both eyes write one slot)" : "");
+    }
 }
 
 } // namespace bg3vr::stage_timing

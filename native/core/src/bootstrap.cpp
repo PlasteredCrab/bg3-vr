@@ -38,6 +38,7 @@
 #include "bg3vr/quality.hpp"
 #include "bg3vr/rayprobe.hpp"
 #include "bg3vr/shadows.hpp"
+#include "bg3vr/sharing.hpp"
 #include "bg3vr/skeleton.hpp"
 #include "bg3vr/stage_timing.hpp"
 #include "bg3vr/stereo.hpp"
@@ -257,6 +258,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         stereo::configure(g_config);
         const std::string scale = g_config.get("xr", "world_scale");
         camera::set_world_scale(scale.empty() ? 1.0f : std::strtof(scale.c_str(), nullptr));
+    }
+    if (changed("views.share") || changed("views.skip_eye_cull")) {
+        sharing::configure(g_config);
     }
     if (changed("perf.")) {
         stage_timing::configure(g_config);
@@ -515,6 +519,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     fading::report();
     dice::report();
     stage_timing::report();
+    sharing::report();
     foveation::report();
     skeleton::report();
     dialogue::report();
@@ -580,6 +585,7 @@ int init(const wchar_t* root_dir) {
     fading::install(g_config, module);
     dice::install(g_config, module);
     stage_timing::install(g_config, module);
+    sharing::install(g_config, module);
     foveation::install(g_config, module);
     render::configure(g_config);
     render::install(module);
