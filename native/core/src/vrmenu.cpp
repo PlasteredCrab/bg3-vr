@@ -208,6 +208,7 @@ Menu::Menu() {
            2);
     on_off("Ceilings stay in first person", "vr.first_person_no_fading", true);
     on_off("Rooms you're not in stay lit", "vr.first_person_rooms_visible", true);
+    on_off("Hide arms (hands only)", "ik.hide_arms", false);
     on_off("Physical dice (throw your rolls)", "dice.physical", true);
     choice("Dice size", "dice.size_cm", {{"8 cm", "8"}, {"12 cm", "12"}, {"16 cm", "16"}, {"24 cm", "24"}}, 1);
     for (Item& item : items_) {

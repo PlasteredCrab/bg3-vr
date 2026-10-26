@@ -42,6 +42,7 @@ struct Side {
     // Finger chains for the curl, root (segment 1) to tip (end bone): index, middle, ring, pinky, thumb.
     std::array<std::vector<short>, 5> fingers;
     std::vector<std::pair<short, int>> followers; // bone, chain slot (0 upper, 1 lower, 2 hand)
+    std::vector<short> arm_skin; // the upper arm's and forearm's own deforming bones (twist / roll; no Dummy_*)
     bool ok() const { return upper >= 0 && lower >= 0 && hand >= 0; }
 };
 struct Rig {
@@ -95,6 +96,11 @@ std::atomic<bool> g_shoulder{true};    // [ik] shoulder: the shoulder girdle tur
 std::atomic<bool> g_weapon_drawn{false};
 std::atomic<float> g_stretch{1.25f};    // [ik] stretch: how much longer an arm may get to reach the hand
 std::atomic<bool> g_elbow_behind{true}; // [ik] elbow_behind: the elbow never ends up in front of the hand
+// [ik] hide_arms (Half-Life: Alyx style): the upper arm, forearm and their twist bones are collapsed to a point at the
+// wrist (their world-pose matrices scaled to 0.001 there), so only the hands show; the hand and fingers keep their own
+// matrices. Dummy_* bones (attachment points) are left alone.
+std::atomic<bool> g_hide_arms{false};
+std::atomic<std::uint64_t> g_arms_hidden{0};
 std::atomic<std::uint64_t> g_elbows_pulled_back{0};
 std::atomic<bool> g_elbow_model{true};  // [ik] elbow = natural (Parger et al. 2018) | down
 std::atomic<bool> g_elbow_wrist{true};  // [ik] elbow_wrist: the wrist's roll moves the elbow
@@ -182,6 +188,9 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
             const int slot = a == side.hand ? 2 : a == side.lower ? 1 : a == side.upper ? 0 : -1;
             if (slot >= 0) {
                 side.followers.emplace_back(static_cast<short>(b), slot);
+                if (slot < 2 && text::to_lower(bones[static_cast<std::size_t>(b)].name).rfind("dummy", 0) != 0) {
+                    side.arm_skin.push_back(static_cast<short>(b));
+                }
                 break;
             }
         }
@@ -189,6 +198,13 @@ Side resolve(const std::vector<Bone>& bones, const char* dummy, const std::strin
     log::info("ik: {} arm: upper {} '{}', forearm {} '{}', hand {} '{}' (from {} bone {}), {} bones follow", label,
               side.upper, bones[side.upper].name, side.lower, bones[side.lower].name, side.hand, bones[side.hand].name,
               dummy, dummy_bone, side.followers.size());
+    {
+        std::string names;
+        for (const short b : side.arm_skin) {
+            names += std::format(" {}", bones[static_cast<std::size_t>(b)].name);
+        }
+        log::info("ik: {} arm: hidden with the arm when [ik] hide_arms is on:{}", label, names.empty() ? " (no extra bones)" : names);
+    }
     log::info("ik: {} hand frame from knuckles: index {} middle {} pinky {}{}", label, side.index, side.middle, side.pinky,
               side.index >= 0 && side.middle >= 0 && side.pinky >= 0 ? "" : " (MISSING: weapon hands fall back to the animated hand)");
     return side;
@@ -311,6 +327,7 @@ void configure_hands(const Config& config) {
         g_stretch = v.empty() ? 1.25f : std::clamp(std::strtof(v.c_str(), nullptr), 1.0f, 1.5f);
         const std::string elbow = text::to_lower(config.get("ik", "elbow", "natural"));
         g_elbow_behind = elbow != "free" && config.get_bool("ik", "elbow_behind", true);
+        g_hide_arms = config.get_bool("ik", "hide_arms", false);
         g_elbow_model = elbow != "down";
         g_elbow_wrist = config.get_bool("ik", "elbow_wrist", true);
         g_fingers = config.get_bool("ik", "fingers", true);
@@ -819,6 +836,26 @@ void apply(std::uintptr_t skeleton) {
         to_matrix(new_lower, ml);
         to_matrix(new_hand, mh);
         curl_fingers(side, s, get, pose, new_hand);
+        if (g_hide_arms.load(std::memory_order_relaxed)) {
+            // Last, after everything that reads the arm: its skin shrinks into the wrist, under the hand.
+            Rigid collapsed = new_hand;
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 3; ++j) {
+                    collapsed.R[i][j] = new_hand.R[i][j] * 0.001f;
+                }
+            }
+            to_matrix(collapsed, mu);
+            to_matrix(collapsed, ml);
+            for (const short b : side.arm_skin) {
+                if (float* m = get(pose, b)) {
+                    to_matrix(collapsed, m);
+                }
+            }
+            if (g_arms_hidden.fetch_add(1, std::memory_order_relaxed) == 0) {
+                log::info("ik: arms hidden (hands only): upper arm, forearm and {} twist bone(s) collapsed into the wrist",
+                          side.arm_skin.size());
+            }
+        }
         if (g_logged.load(std::memory_order_relaxed) < 4) {
             g_logged.fetch_add(1, std::memory_order_relaxed);
             log::info("ik: {} arm: shoulder ({:.3f}, {:.3f}, {:.3f}) elbow ({:.3f}, {:.3f}, {:.3f}) wrist ({:.3f}, {:.3f}, "
