@@ -27,6 +27,7 @@
 #include "bg3vr/views.hpp"
 #include "bg3vr/vrmenu.hpp"
 #include "bg3vr/vrplay.hpp"
+#include "bg3vr/watchdog.hpp"
 #include "bg3vr/win_util.hpp"
 #include "bg3vr/xr.hpp"
 
@@ -2398,6 +2399,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
             return;
         }
     }
+    watchdog::mark("headset: xrPollEvent");
     if (!g_session->poll()) {
         log::info("xr: the runtime ended the session");
         publish_status(false);
@@ -2410,6 +2412,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         return;
     }
     xr::Frame frame;
+    watchdog::mark("headset: begin_frame (xrWaitFrame / xrBeginFrame in the VR runtime)");
     if (!g_session->running() || !g_session->begin_frame(frame)) {
         g_skipped.fetch_add(1, std::memory_order_relaxed);
         publish_status(false);
@@ -2433,6 +2436,7 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
             logged_ipd = ipd;
         }
     }
+    watchdog::mark("headset: controller input (xrSyncActions)");
     update_input(frame);
     {
         static XrTime last = 0;
@@ -2441,16 +2445,22 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
         g_frame_vignette = comfort_vignette_now(std::clamp(dt, 0.0, 0.1));
         g_beam_time += static_cast<float>(std::clamp(dt, 0.0, 0.1));
     }
+    watchdog::mark("headset: VR menu");
     update_menu(frame);
+    watchdog::mark("headset: UI panel");
     update_ui_panel(swapchain, frame);
+    watchdog::mark("headset: 3D UI characters");
     update_dolls(frame);
     g_mirror_ready = false;
+    watchdog::mark("headset: submit (eye copies, xrEndFrame in the VR runtime)");
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
     } else {
         submit_tracked(swapchain, render_frame, frame);
     }
+    watchdog::mark("headset: desktop view");
     show_left_eye_on_desktop(swapchain);
+    watchdog::mark("headset: done");
     g_submitted.fetch_add(1, std::memory_order_relaxed);
 }
 

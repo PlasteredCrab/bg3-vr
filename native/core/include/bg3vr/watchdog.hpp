@@ -10,4 +10,8 @@ namespace bg3vr::watchdog {
 
 void start(const ModuleInfo& module);
 
+// Breadcrumbs on the presenting thread (a static string: where it is now). A stall logs the last one, how long ago it
+// was set, and that thread's whole stack (also when no game frame is on it, e.g. inside the VR runtime).
+void mark(const char* where);
+
 } // namespace bg3vr::watchdog

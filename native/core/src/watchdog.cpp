@@ -53,12 +53,15 @@ bool safe_unwind(DWORD64 image_base, PRUNTIME_FUNCTION function, CONTEXT* contex
     }
 }
 
+std::atomic<const char*> g_mark{nullptr};
+std::atomic<std::int64_t> g_mark_ticks{0};
+
 // Walks the stack; for the first few frames in the exe, records their registers (and what the
 // registers point at, one level) as hints for the job dump.
 std::string unwind(CONTEXT context, DWORD thread, std::vector<std::string>& frames, std::vector<views::Hint>& hints) {
     std::string text;
     int exe_frames = 0;
-    for (int depth = 0; depth < 24 && context.Rip; ++depth) {
+    for (int depth = 0; depth < 64 && context.Rip; ++depth) {
         text += " " + mem::describe(g_module, context.Rip);
         if (in_exe(context.Rip) && exe_frames < 6) {
             ++exe_frames;
@@ -133,9 +136,12 @@ void dump_threads() {
                 std::vector<std::string> frames;
                 std::vector<views::Hint> thread_hints;
                 const std::string stack = unwind(context, entry.th32ThreadID, frames, thread_hints);
-                // Only threads that are in the game exe somewhere are interesting.
-                if (stack.find("exe+") != std::string::npos) {
-                    log::info("watchdog: thread {} (cpu {} ms):{}", entry.th32ThreadID, cpu_ms, stack);
+                // Threads in the game exe or in this DLL somewhere, and always the presenting thread (it can be deep
+                // inside the VR runtime or the driver with no game frame within reach).
+                const bool presenting = entry.th32ThreadID == render::presenting_thread();
+                if (presenting || stack.find("exe+") != std::string::npos || stack.find("bg3vr_core") != std::string::npos) {
+                    log::info("watchdog: thread {}{} (cpu {} ms):{}", entry.th32ThreadID, presenting ? " [PRESENTING]" : "",
+                              cpu_ms, stack);
                     for (const std::string& frame : frames) {
                         log::info("watchdog:   {}", frame);
                     }
@@ -237,6 +243,11 @@ void watch() {
             continue;
         }
         if (!dumped && now_frames > 0 && now - last_change > kStall) {
+            if (const char* where = g_mark.load(std::memory_order_relaxed)) {
+                const auto then = std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(g_mark_ticks.load()));
+                log::warn("watchdog: the presenting thread {} was last at '{}', {:.1f} s ago", render::presenting_thread(), where,
+                          std::chrono::duration<double>(now - then).count());
+            }
             log::warn("watchdog: no frame presented for {} s after {} frames; logging thread stacks",
                       std::chrono::duration_cast<std::chrono::seconds>(now - last_change).count(), now_frames);
             dump_threads();
@@ -246,6 +257,11 @@ void watch() {
 }
 
 } // namespace
+
+void mark(const char* where) {
+    g_mark.store(where, std::memory_order_relaxed);
+    g_mark_ticks.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+}
 
 void start(const ModuleInfo& module) {
     g_module = module;

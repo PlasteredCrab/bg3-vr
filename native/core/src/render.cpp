@@ -1,5 +1,7 @@
 #include "bg3vr/render.hpp"
 
+#include "bg3vr/watchdog.hpp"
+
 #include "bg3vr/config.hpp"
 #include "bg3vr/log.hpp"
 #include "bg3vr/signatures.hpp"
@@ -82,11 +84,15 @@ void describe_swapchain(IDXGISwapChain* swapchain) {
 }
 
 // Just before the game's Present call: rcx = the IDXGISwapChain*, rdi = the RenderFrame.
+std::atomic<std::uint32_t> g_presenting_thread{0};
+
 void on_present(safetyhook::Context& ctx) {
     auto* swapchain = reinterpret_cast<IDXGISwapChain*>(ctx.rcx);
     if (!swapchain) {
         return;
     }
+    g_presenting_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    watchdog::mark("render: present hook entered");
     g_frames.fetch_add(1, std::memory_order_relaxed);
     g_render_frame.store(ctx.rdi, std::memory_order_release);
     g_game_sync_interval.store(static_cast<std::uint32_t>(ctx.rdx), std::memory_order_relaxed);
@@ -101,13 +107,16 @@ void on_present(safetyhook::Context& ctx) {
             tasks.swap(g_tasks);
             g_have_tasks.store(false, std::memory_order_release);
         }
+        watchdog::mark("render: tasks queued for the render thread");
         for (auto& task : tasks) {
             task();
         }
     }
     if (const PresentCallback callback = g_callback.load(std::memory_order_acquire)) {
+        watchdog::mark("render: present callback (headset)");
         callback(swapchain, ctx.rdi);
     }
+    watchdog::mark("render: back in the game's Present call (DXGI Present, then the game's next frame)");
     // Present(SyncInterval = edx, Flags = r8d). The tearing flag is only valid with interval 0 and the
     // game sets it itself when it may, so only the interval is replaced.
     if (const int interval = g_sync_override.load(std::memory_order_relaxed); interval >= 0) {
@@ -139,6 +148,10 @@ void install(const ModuleInfo& module) {
     }
     g_present_hook = std::move(*hook);
     log::info("render: present hook installed at exe+0x{:X}", *site - module.base);
+}
+
+std::uint32_t presenting_thread() {
+    return g_presenting_thread.load(std::memory_order_relaxed);
 }
 
 std::uint64_t frame_count() {

@@ -26,6 +26,8 @@ IDXGISwapChain* swapchain();
 std::uintptr_t render_frame();
 // Frames presented so far.
 std::uint64_t frame_count();
+// The thread that last presented (0 before the first frame).
+std::uint32_t presenting_thread();
 ID3D11Device* device();
 
 // Called on the presenting thread just before every Present, with the swapchain about to present
