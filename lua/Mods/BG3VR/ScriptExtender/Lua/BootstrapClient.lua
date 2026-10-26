@@ -7,6 +7,7 @@ Ext.Require("Client/Idles.lua")
 Ext.Require("Client/VRAuto.lua")
 Ext.Require("Client/Combat.lua")
 Ext.Require("Client/Holster.lua")
+Ext.Require("Client/Testing.lua")
 
 -- The client context will host the native bridge (camera, UI, input).
 Ext.Events.SessionLoaded:Subscribe(function()

@@ -216,6 +216,7 @@ Menu::Menu() {
     on_off("Ceilings stay in first person", "vr.first_person_no_fading", true);
     on_off("Rooms you're not in stay lit", "vr.first_person_rooms_visible", true);
     on_off("Hide arms (hands only)", "ik.hide_arms", false);
+    live("Testing: all waypoints + map", Item::Live::UnlockTravel, {{"Press to unlock", "unlock"}, {"Press to unlock", "unlock"}});
     on_off("No idle animations in first person", "vr.first_person_no_idles", false);
     on_off("Physical dice (throw your rolls)", "dice.physical", true);
     choice("Dice size", "dice.size_cm", {{"8 cm", "8"}, {"12 cm", "12"}, {"16 cm", "16"}, {"24 cm", "24"}}, 1);
@@ -400,6 +401,8 @@ int Menu::current_index(const Item& item) const {
         return live_.third_person ? 1 : 0;
     case Item::Live::Ui:
         return live_.ui_wrist ? 1 : 0;
+    case Item::Live::UnlockTravel:
+        return 0;
     default:
         return item.current;
     }
@@ -664,6 +667,11 @@ void Menu::step(int index, int direction, Actions& actions) {
     }
     if (item.live == Item::Live::Ui) {
         actions.toggle_ui = true;
+        return;
+    }
+    if (item.live == Item::Live::UnlockTravel) {
+        actions.unlock_travel = true;
+        actions.haptic = 0.6f;
         return;
     }
     const int count = static_cast<int>(item.options.size());

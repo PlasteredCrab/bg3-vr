@@ -2174,6 +2174,10 @@ void update_menu(const xr::Frame& frame) {
     if (actions.toggle_view) {
         request_view_toggle();
     }
+    if (actions.unlock_travel) {
+        bridge::push_request("unlock_travel");
+        log::info("menu: testing: unlock every waypoint and the map (Lua: Server/Testing.lua)");
+    }
     if (actions.toggle_ui) {
         bridge::post(std::format("set=ui.placement {}\n", toggle_ui_wrist() ? "wrist" : "world"));
     }

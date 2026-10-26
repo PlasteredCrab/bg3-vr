@@ -38,6 +38,7 @@ struct Actions {
     std::vector<std::pair<std::string, std::string>> settings; // "section.key", value
     bool toggle_view = false;
     bool toggle_ui = false;
+    bool unlock_travel = false; // testing: unlock every waypoint and the map in the loaded game (Lua, Server/Testing.lua)
     bool recenter = false;
     bool recalibrate = false;
     bool close = false;
@@ -126,7 +127,7 @@ private:
         Snapshot::Row::Kind kind = Snapshot::Row::Kind::Choice;
         std::string label;
         std::string setting;            // "section.key"; empty for live rows and buttons
-        enum class Live { None, View, Ui } live = Live::None;
+        enum class Live { None, View, Ui, UnlockTravel } live = Live::None;
         int control = -1;               // Controls page: which controller input (labels follow the controller)
         std::vector<Option> options;
         int current = 0;

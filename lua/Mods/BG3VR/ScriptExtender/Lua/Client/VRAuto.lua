@@ -107,6 +107,12 @@ local function HandleOne(what)
         end
         return
     end
+    if what == "unlock_travel" then
+        if BG3VR.UnlockTravel then
+            BG3VR.UnlockTravel()
+        end
+        return
+    end
     if what == "view_free" then
         -- Free camera: as third person in VR, but the core stops following and the sticks fly the view.
         auto.third = false
