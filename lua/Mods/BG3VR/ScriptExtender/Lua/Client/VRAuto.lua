@@ -47,6 +47,7 @@ function VRStart(height, reason)
     -- In third person (VR) the whole character is seen: no head hiding.
     local hide = (not auto.chase and not auto.free) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
     extra[#extra + 1] = hide or "hide=off"
+    auto.hideLine = hide or "hide=off"
     if not StartNativeFollow(height or 1.7, extra) then
         return false
     end
@@ -76,6 +77,7 @@ local function OnCharacterChanged()
     -- Third person shows the whole character: no head hiding there.
     local hide = (not auto.third and not auto.chase and not auto.free) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
     lines[#lines + 1] = hide or "hide=off"
+    auto.hideLine = hide or "hide=off"
     BG3VR.WriteBridge(lines)
     auto.character = CharacterKey()
     BG3VR.Log("VR: now playing %s", tostring(auto.character))
@@ -187,11 +189,18 @@ local function Tick(dt)
     if BG3VR.UpdateIdles then
         BG3VR.UpdateIdles(status) -- idle animations off in first person (Idles.lua)
     end
-    -- The body the camera follows changed between the character and a scene's stand-in for it: hide that body's head.
+    -- The head parts of the body the camera is in (the character, or a scene's stand-in for it), hidden. Rebuilt
+    -- once a second in first person and sent when it changed: a stand-in gets its head, hair and equipment copied
+    -- from the character after it is shown, and helmets come and go, so a list built once at the switch went stale
+    -- (2026-10-26: the head showed in cutscenes although two stand-in parts were hidden).
     local followed = status.followed ~= nil and status.followed ~= "" and status.followed or nil
-    if auto.started and followed ~= auto.followed then
-        auto.followed = followed
-        if not auto.third and not auto.chase and not auto.free and HeadHideBridgeLine then
+    local firstPerson = auto.started and not auto.third and not auto.chase and not auto.free
+    local switched = auto.started and followed ~= auto.followed
+    auto.hideCheck = (auto.hideCheck or 0) - 1
+    if switched or (firstPerson and auto.hideCheck <= 0) then
+        auto.followed = auto.started and followed or nil
+        auto.hideCheck = 4
+        if firstPerson and HeadHideBridgeLine then
             local entity = nil
             if followed then
                 local ok, found = pcall(function()
@@ -200,9 +209,13 @@ local function Tick(dt)
                 entity = ok and found or nil
             end
             local hide, names = HeadHideBridgeLine(nil, entity)
-            BG3VR.WriteBridge({ hide or "hide=off" })
-            BG3VR.Log("VR: following %s; hiding %d head part(s): %s", followed and ("the stand-in " .. followed) or "the character",
-                #names, table.concat(names, ", "))
+            local line = hide or "hide=off"
+            if switched or line ~= auto.hideLine then
+                auto.hideLine = line
+                BG3VR.WriteBridge({ line })
+                BG3VR.Log("VR: %s %s; hiding %d head part(s): %s", switched and "following" or "the head parts changed on",
+                    followed and ("the stand-in " .. followed) or "the character", #names, table.concat(names, ", "))
+            end
         end
     end
     HandleRequest(status)
