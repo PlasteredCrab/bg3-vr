@@ -78,15 +78,11 @@ local function OnCharacterChanged()
     if skeleton then
         lines[#lines + 1] = skeleton
     end
-    -- Third person shows the whole character: no head hiding there.
-    local hide, names = nil, {}
-    if not auto.third and not auto.chase and not auto.free and HeadHideBridgeLine then
-        hide, names = HeadHideBridgeLine()
+    -- The head hiding follows the camera's body (the status check below), not this: force a refresh.
+    auto.hideCheck = 0
+    if #lines > 0 then
+        BG3VR.WriteBridge(lines)
     end
-    lines[#lines + 1] = hide or "hide=off"
-    auto.hideLine = hide or "hide=off"
-    BG3VR.Log("VR: character changed; hiding %d head part(s): %s", #names, table.concat(names, ", "))
-    BG3VR.WriteBridge(lines)
     auto.character = CharacterKey()
     BG3VR.Log("VR: now playing %s", tostring(auto.character))
 end
@@ -207,18 +203,21 @@ local function Tick(dt)
     -- once a second in first person and sent when it changed: a stand-in gets its head, hair and equipment copied
     -- from the character after it is shown, and helmets come and go, so a list built once at the switch went stale
     -- (2026-10-26: the head showed in cutscenes although two stand-in parts were hidden).
+    -- The body is the one the core's camera is in ("body" status: the character, a party member the game handed control
+    -- to, or a scene's stand-in), so the hidden head is always that body's.
     local followed = status.followed ~= nil and status.followed ~= "" and status.followed or nil
+    local body = status.body ~= nil and status.body ~= "" and status.body or followed
     local firstPerson = auto.started and not auto.third and not auto.chase and not auto.free
-    local switched = auto.started and followed ~= auto.followed
+    local switched = auto.started and body ~= auto.followed
     auto.hideCheck = (auto.hideCheck or 0) - 1
     if switched or (firstPerson and auto.hideCheck <= 0) then
-        auto.followed = auto.started and followed or nil
+        auto.followed = auto.started and body or nil
         auto.hideCheck = 4
         if firstPerson and HeadHideBridgeLine then
             local entity = nil
-            if followed then
+            if body then
                 local ok, found = pcall(function()
-                    return Ext.Entity.Get(Ext.Utils.IntegerToHandle(math.tointeger(tonumber(followed))))
+                    return Ext.Entity.Get(Ext.Utils.IntegerToHandle(math.tointeger(tonumber(body))))
                 end)
                 entity = ok and found or nil
             end
@@ -228,7 +227,7 @@ local function Tick(dt)
                 auto.hideLine = line
                 BG3VR.WriteBridge({ line })
                 BG3VR.Log("VR: %s %s; hiding %d head part(s): %s", switched and "following" or "the head parts changed on",
-                    followed and ("the stand-in " .. followed) or "the character", #names, table.concat(names, ", "))
+                    followed and ("the stand-in " .. followed) or ("the body " .. tostring(body)), #names, table.concat(names, ", "))
             end
         end
     end

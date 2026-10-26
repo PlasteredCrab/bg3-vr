@@ -663,6 +663,10 @@ void on_frame() {
                 log::info("skeleton: the stand-in's head isn't hidden by the mod (only the character's is)");
             }
             g_followed_entity = entity;
+            // The body the camera is in, for Lua's head hiding (the character, a party member the game handed control
+            // to, or a scene's stand-in): Lua used to pick the character itself and in combat it lagged the camera by
+            // tens of seconds, so the camera sat in a body whose head was showing ("two heads", 2026-10-26).
+            bridge::set_status("body", std::format("0x{:016X}", entity));
             if (visual != g_visual) {
                 attach_now(visual);
             }
