@@ -94,6 +94,10 @@ bool chase();
 // head looks, level) at up to 4 m/s, `up` (-1..1) at up to 2.5 m/s.
 void set_free(bool on);
 bool free_camera();
+// A scene holds the character (bootstrap, every frame) and whether the camera then takes its height from the
+// eyes ([vr] scene_eye_height): sitting, kneeling or lying in a scene, the standing height was up to ~1.5 m off.
+void set_scene(bool in_scene);
+void set_scene_eye_height(bool on);
 void move_free(float right, float forward, float up, float seconds);
 void set_anchor(bool head, float eye_offset, float smoothing_s);
 // [xr] world_scale (game units per real metre of head and hand movement); live from the VR menu.

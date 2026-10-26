@@ -794,6 +794,10 @@ std::uintptr_t current() {
     return g_skeleton;
 }
 
+std::uint64_t followed_stand_in() {
+    return g_dummy.load(std::memory_order_relaxed);
+}
+
 std::optional<Head> head() {
     std::scoped_lock lock(g_mutex);
     return g_head;

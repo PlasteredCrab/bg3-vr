@@ -67,6 +67,9 @@ void set_menu_open(bool open);
 // instead of their bindings. [vr] dialogue_buttons = false keeps the bindings.
 void set_dialogue(bool on);
 bool dialogue();
+// A scene holds the character: a conversation or cutscene view (the game's cinematic flag) or the camera is in
+// a scene's stand-in. Grabbing is off and the camera takes its height from the eyes ([vr] scene_eye_height).
+bool in_scene();
 
 // The left mouse button from elsewhere on the presenting thread (touching the UI panel with the controller tip).
 void mouse_left(bool down);

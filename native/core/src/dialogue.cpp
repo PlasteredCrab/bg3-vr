@@ -24,6 +24,13 @@ ModuleInfo g_module;
 safetyhook::MidHook g_hook;
 safetyhook::MidHook g_switch_hook;
 safetyhook::MidHook g_lighting_hook;
+// AV v20: TimelineDummyAnimationThrottleSystem 0x1F1B2C0 marks each scene stand-in active (animates) or not;
+// with GlobalSwitches+0x132E zero every stand-in is active, otherwise it can be throttled by tests against the
+// scene's shot, which in VR has nothing to do with where you look. The byte is the game's setting: it is zero
+// only for the duration of the call, only while VR drives the camera ([dialogue] animate_all_actors).
+safetyhook::InlineHook g_throttle_hook;
+std::atomic<bool> g_animate_all{true};
+std::atomic<std::uint64_t> g_throttle_calls{0}, g_throttle_overridden{0};
 std::atomic<bool> g_uniform_lighting{true}; // [dialogue] scene_lighting = uniform | shots
 std::atomic<std::uint64_t> g_lighting_cleared{0};
 bool g_keep_view_in_vr = true;            // [dialogue] keep_view_in_vr
@@ -107,6 +114,26 @@ constexpr std::uintptr_t kCameraSwitchRva = 0x2007570;
 constexpr std::uintptr_t kLightingStoredRva = 0x200779A;
 constexpr std::size_t kLightingCamera = 0x500, kUpdateCustomLighting = 0x510, kUpdateAutoLighting = 0x513;
 
+void on_dummy_throttle(std::uintptr_t system, std::uintptr_t ctx) {
+    std::uintptr_t switches = 0;
+    g_throttle_calls.fetch_add(1, std::memory_order_relaxed);
+    const bool driven = camera::controller() != 0 && camera::pose_held();
+    if (!g_animate_all.load(std::memory_order_relaxed) || !driven ||
+        !mem::try_copy(&switches, g_module.base + 0x604B1B8, sizeof(switches)) || !switches) {
+        g_throttle_hook.call<void>(system, ctx);
+        return;
+    }
+    auto* flag = reinterpret_cast<std::uint8_t*>(switches + 0x132E);
+    const std::uint8_t saved = *flag;
+    *flag = 0;
+    g_throttle_hook.call<void>(system, ctx);
+    *flag = saved;
+    if (saved != 0 && g_throttle_overridden.fetch_add(1, std::memory_order_relaxed) == 0) {
+        log::info("dialogue: scene stand-ins all animate while VR drives the camera (the game's throttle switch "
+                  "GlobalSwitches+0x132E was {}, zero during the throttle update only)", saved);
+    }
+}
+
 void on_lighting_camera_stored(safetyhook::Context& ctx) {
     const std::uintptr_t timeline = ctx.r13;
     if (!timeline || !g_uniform_lighting.load(std::memory_order_relaxed) || !g_keep_view_in_vr ||
@@ -162,6 +189,16 @@ void install(const Config& config, const ModuleInfo& module) {
                 g_lighting_hook = std::move(*h);
             }
         }
+        std::array<std::uint8_t, 8> throttle{};
+        constexpr std::array<std::uint8_t, 8> throttle_expected{0x40, 0x55, 0x56, 0x57, 0x41, 0x55, 0x48, 0x8D};
+        if (mem::try_copy(throttle.data(), module.base + 0x1F1B2C0, throttle.size()) && throttle == throttle_expected) {
+            if (auto h = safetyhook::InlineHook::create(reinterpret_cast<void*>(module.base + 0x1F1B2C0),
+                                                        reinterpret_cast<void*>(&on_dummy_throttle))) {
+                g_throttle_hook = std::move(*h);
+            }
+        }
+        log::info("dialogue: scene stand-in animation throttle exe+0x1F1B2C0 {}{}", g_throttle_hook ? "hooked" : "NOT hooked",
+                  g_animate_all.load() ? "; every stand-in animates while VR drives the camera" : "");
         log::info("dialogue: scene lighting camera {} (exe+0x{:X}); {}",
                   g_lighting_hook ? "hooked" : "NOT hooked (bytes differ)", kLightingStoredRva,
                   g_uniform_lighting.load() ? "in VR every shot lights the scene the same way" : "the game's shot lighting");
@@ -198,6 +235,7 @@ void install(const Config& config, const ModuleInfo& module) {
 }
 
 void configure(const Config& config) {
+    g_animate_all.store(config.get_bool("dialogue", "animate_all_actors", true));
     const bool uniform = text::to_lower(config.get("dialogue", "scene_lighting", "uniform")) != "shots";
     if (g_uniform_lighting.exchange(uniform) != uniform) {
         log::info("dialogue: scene lighting {}", uniform ? "the same every shot" : "the game's per-shot lighting");
@@ -208,6 +246,7 @@ void report() {
     log::info("dialogue: {} timeline joins, {} kept in first person; {} scene camera switches, {} kept off the view",
               g_joins.load(std::memory_order_relaxed), g_kept.load(std::memory_order_relaxed), g_switches.load(),
               g_switches_kept.load());
+    log::info("dialogue: stand-in throttle updates {}, overridden {}", g_throttle_calls.load(), g_throttle_overridden.load());
 }
 
 } // namespace bg3vr::dialogue

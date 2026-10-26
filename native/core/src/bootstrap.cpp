@@ -153,6 +153,7 @@ void update_conversation() {
         on = mem::try_copy(&flag, (*eyes)[0] + stereo::layout::kOutlineGate, sizeof(flag)) && flag != 0;
     }
     vrplay::set_dialogue(on);
+    camera::set_scene(vrplay::in_scene());
 #if BG3VR_HAVE_OPENXR
     headset::set_dialogue(on);
 #endif

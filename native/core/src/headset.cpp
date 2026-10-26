@@ -1003,7 +1003,8 @@ void update_input(const xr::Frame& frame) {
         holster::Hand body_hands[2];
         for (std::size_t h = 0; h < 2; ++h) {
             body_hands[h] = {now[h].tracked, now[h].grip.position,
-                             (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f && !hold::holding(h)};
+                             (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f && !hold::holding(h) &&
+                             !vrplay::in_scene()};
         }
         holsters = holster::on_frame(centre_view(frame.views).pose, body_hands);
         for (std::size_t h = 0; h < 2; ++h) {
@@ -1021,8 +1022,14 @@ void update_input(const xr::Frame& frame) {
         if (now[h].aim_valid) {
             aim_world = camera::tracked_to_world(now[h].aim);
         }
+        // No grabbing, pulling or body dragging while a scene holds the character (a squeeze mid-conversation took
+        // items off tables); the physical die still works (dice.cpp, its own grip).
+        const bool scene = vrplay::in_scene();
+        if (scene) {
+            aim_world.reset(); // no glove highlight either
+        }
         const bool grab = (now[h].active || now[h].hand_tracked) && now[h].squeeze > 0.5f &&
-                          !g_menu_is_open.load(std::memory_order_relaxed) && !holsters.grip_taken[h];
+                          !g_menu_is_open.load(std::memory_order_relaxed) && !holsters.grip_taken[h] && !scene;
         // Bodies (corpse.cpp): the hand's velocity in the world for throws.
         std::optional<vr::Vec3> world_velocity;
         if (now[h].world_valid && now[h].velocity_valid) {

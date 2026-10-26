@@ -106,6 +106,13 @@ std::atomic<std::uint64_t> g_follow_teleports{0};
 constexpr float kTeleportDistance = 2.0f;
 constexpr float kWorldLimit = 100000.0f; // beyond this a read is garbage, not a position
 bool g_teleport_turn = false;            // [vr] teleport_turn: face where the body faces after a teleport (off: only the head turns the view)
+// Scenes (body anchor): the height from the eye bones, eased in and out over ~0.25 s; only the height, so the view
+// still moves only with the head sideways. g_scene_height: the smoothed offset above the visual root.
+std::atomic<bool> g_in_scene{false};
+std::atomic<bool> g_scene_eye_height{true};
+float g_scene_height = -1.0f;
+std::chrono::steady_clock::time_point g_scene_height_at{};
+std::uint64_t g_scene_height_logs = 0;
 std::atomic<bool> g_anchor_head{false};  // [vr] camera_anchor = head / head_exact (default body: the view moves only with the head)
 std::atomic<float> g_head_smoothing{0.15f}; // seconds: how slowly the animation's head bob and sway reach the camera
 vr::Vec3 g_eyes_smoothed{};               // under g_mutex: the eyes' offset from the body (model space), smoothed
@@ -220,7 +227,38 @@ void update_follow() {
         g_follow_from_eyes.fetch_add(1, std::memory_order_relaxed);
     } else {
         g_pose->x = translate[0];
-        g_pose->y = translate[1] + g_follow->height;
+        // In a scene, the eyes' height above the body (from the bones) instead of the standing height.
+        float target = g_follow->height;
+        if (from_visual && g_in_scene.load(std::memory_order_relaxed) && g_scene_eye_height.load(std::memory_order_relaxed) &&
+            !g_chase.load(std::memory_order_relaxed)) {
+            if (const auto head = skeleton::head()) {
+                std::optional<vr::Vec3> model = bodyik::animated_eyes(skeleton::current());
+                if (!model && head->has_eyes) {
+                    model = head->eyes_model;
+                }
+                if (!model || std::abs((*model)[1] - head->model[1]) > 0.3f) {
+                    model = vr::Vec3{head->model[0], head->model[1] + 0.10f, head->model[2]};
+                }
+                const float s = head->visual_scale;
+                const vr::Vec3 offset = vr::rotate(head->visual_rotation, {(*model)[0] * s, (*model)[1] * s, (*model)[2] * s});
+                if (offset[1] > 0.05f && offset[1] < 3.0f) {
+                    target = offset[1] + g_eye_offset.load(std::memory_order_relaxed);
+                }
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (g_scene_height < 0.0f) {
+            g_scene_height = target;
+        } else {
+            const float dt = std::clamp(std::chrono::duration<float>(now - g_scene_height_at).count(), 0.0f, 0.1f);
+            g_scene_height += (target - g_scene_height) * (1.0f - std::exp(-dt / 0.25f));
+        }
+        g_scene_height_at = now;
+        if (std::abs(target - g_follow->height) > 0.15f && g_scene_height_logs++ % 600 == 0) {
+            log::info("camera: in a scene the eyes are {:.2f} m above the body (standing height {:.2f} m): the view's height "
+                      "follows them", target, g_follow->height);
+        }
+        g_pose->y = translate[1] + g_scene_height;
         g_pose->z = translate[2];
     }
     if (g_chase.load(std::memory_order_relaxed)) {
@@ -706,6 +744,16 @@ void set_free(bool on) {
                                                  g_pose ? g_pose->y : 0.0f, g_pose ? g_pose->z : 0.0f)
                                    : std::string("free camera off: following the character again"));
     }
+}
+
+void set_scene(bool in_scene) {
+    if (g_in_scene.exchange(in_scene) != in_scene) {
+        log::info("camera: {}", in_scene ? "a scene holds the character" : "the scene let go of the character");
+    }
+}
+
+void set_scene_eye_height(bool on) {
+    g_scene_eye_height.store(on);
 }
 
 bool free_camera() {

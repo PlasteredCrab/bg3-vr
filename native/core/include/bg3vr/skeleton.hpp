@@ -75,6 +75,8 @@ struct Head {
     float visual_scale = 1.0f;
 };
 std::optional<Head> head();
+// The scene stand-in the camera follows instead of the controlled character (0: none). Any thread.
+std::uint64_t followed_stand_in();
 
 // Increases every time a skeleton is (re)attached; 0 = none yet. Lets consumers redo per-skeleton calibration.
 std::uint64_t generation();

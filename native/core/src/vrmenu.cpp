@@ -165,6 +165,7 @@ Menu::Menu() {
     on_off("Answers in front of you", "ui.dialogue_in_front", true);
     on_off("Sticks and A / B in conversations", "vr.dialogue_buttons", true);
     choice("Scene lighting", "dialogue.scene_lighting", {{"Same every shot", "uniform"}, {"Game's shot lighting", "shots"}}, 0);
+    on_off("Eye height from your character in scenes", "vr.scene_eye_height", true);
     for (Item& item : items_) {
         if (item.page == page()) {
             item.compact = true; // 12 rows on this page

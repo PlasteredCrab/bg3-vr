@@ -311,6 +311,7 @@ void configure(const Config& config) {
     g_vignette = number("comfort_vignette", 0.5f, 0.0f, 1.0f);
     g_auto_eye_height = config.get_bool("vr", "auto_eye_height", true);
     g_eye_offset = number("eye_offset", 0.0f, -0.5f, 0.5f);
+    camera::set_scene_eye_height(config.get_bool("vr", "scene_eye_height", true));
     const std::string anchor = text::to_lower(config.get("vr", "camera_anchor", "body"));
     const std::string smoothing = config.get("vr", "head_smoothing");
     camera::set_anchor(anchor != "body", g_eye_offset.load(),
@@ -356,6 +357,10 @@ void set_menu_open(bool open) {
     if (g_menu_open.exchange(open) != open) {
         log::info("vr: menu {}", open ? "open (the controllers drive it)" : "closed");
     }
+}
+
+bool in_scene() {
+    return g_dialogue.load(std::memory_order_relaxed) || skeleton::followed_stand_in() != 0;
 }
 
 void set_dialogue(bool on) {
