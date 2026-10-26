@@ -166,7 +166,22 @@ void grab_main_thread_task() {
     hold::on_frame();
 }
 
+// [vr] first_person_no_idles (agent AX): Lua sends the character's blueprint IdleTurnOff while this says "off".
+std::atomic<bool> g_no_idles{false};
+
+void publish_idles() {
+    static int published = -1;
+    const bool off = g_no_idles.load(std::memory_order_relaxed) && vrplay::active() && !vrplay::third_person() &&
+                     !camera::chase() && !camera::free_camera();
+    if (static_cast<int>(off) != published) {
+        published = off ? 1 : 0;
+        bridge::set_status("idles", off ? "off" : "on");
+        log::info("idles: {}", off ? "off for the controlled character (first person)" : "the game's own (not first person, or the setting is off)");
+    }
+}
+
 void on_game_frame() {
+    publish_idles();
     cull::on_frame();
     views::on_frame();
     update_conversation();
@@ -234,6 +249,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         dice::configure(g_config);
     }
     if (changed("vr.")) {
+        g_no_idles.store(g_config.get_bool("vr", "first_person_no_idles", false));
         vrplay::configure(g_config);
         fading::configure(g_config);
         dice::configure(g_config);
@@ -584,6 +600,7 @@ int init(const wchar_t* root_dir) {
     gameui::install(g_config, module);
     fading::install(g_config, module);
     dice::install(g_config, module);
+    g_no_idles.store(g_config.get_bool("vr", "first_person_no_idles", false));
     stage_timing::install(g_config, module);
     sharing::install(g_config, module);
     foveation::install(g_config, module);

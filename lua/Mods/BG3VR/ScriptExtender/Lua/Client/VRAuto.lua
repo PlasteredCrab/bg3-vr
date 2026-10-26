@@ -184,6 +184,9 @@ local function Tick(dt)
     auto.checkIn = 0.25
     local status = BG3VR.ReadStatus()
     BG3VR.ActingHex = status.acting ~= "" and status.acting or nil -- the hotbar's character (Controlled.lua)
+    if BG3VR.UpdateIdles then
+        BG3VR.UpdateIdles(status) -- idle animations off in first person (Idles.lua)
+    end
     -- The body the camera follows changed between the character and a scene's stand-in for it: hide that body's head.
     local followed = status.followed ~= nil and status.followed ~= "" and status.followed or nil
     if auto.started and followed ~= auto.followed then
