@@ -166,6 +166,22 @@ void arm(const ModuleInfo& module, int frames, std::size_t max_events) {
     log::info("events: logging the next {} frame(s), at most {} events", frames, max_events);
 }
 
+std::atomic<bool> g_auto{false};
+
+void set_auto(bool on) {
+    g_auto.store(on);
+}
+
+bool auto_on() {
+    return g_auto.load();
+}
+
+void arm_auto(const ModuleInfo& module, int frames, std::size_t max_events) {
+    if (g_auto.load()) {
+        arm(module, frames, max_events);
+    }
+}
+
 void disarm() {
     g_armed.store(false);
 }

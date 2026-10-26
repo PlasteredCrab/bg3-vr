@@ -299,6 +299,8 @@ Request parse(std::string_view content) {
             }
         } else if (key == "wield") {
             request.wield = text::to_lower(value);
+        } else if (key == "lua") {
+            request.lua_lines.emplace_back(value);
         } else if (key == "incombat") {
             const std::string v = text::to_lower(value);
             if (v == "on" || v == "off") {

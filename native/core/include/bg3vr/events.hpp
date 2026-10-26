@@ -14,4 +14,10 @@ namespace bg3vr::events {
 void arm(const ModuleInfo& module, int frames, std::size_t max_events);
 void disarm();
 
+// The automatic event logs (stereo on, view create / build) only when [dev] trace_on_stereo is set: each one logs
+// thousands of lines on the render thread (a visible hitch at every view switch, 2026-10-26).
+void set_auto(bool on);
+bool auto_on();
+void arm_auto(const ModuleInfo& module, int frames, std::size_t max_events);
+
 } // namespace bg3vr::events

@@ -500,6 +500,36 @@ bool self_test(ID3D11Device* device, ID3D11DeviceContext* context) {
             break;
         }
         context1->SwapDeviceContextState(own, &game);
+        // Control: the same draw with no shading-rate state, to tell "the driver applied no rates" from "the test
+        // draw itself drew nothing" (the 2026-10-26 run read nothing in any column).
+        {
+            const float clear0[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+            const D3D11_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(kW), static_cast<float>(kH), 0.0f, 1.0f};
+            context1->ClearRenderTargetView(rtvs[0], clear0);
+            context1->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context1->VSSetShader(vs, nullptr, 0);
+            context1->PSSetShader(ps, nullptr, 0);
+            context1->OMSetRenderTargets(1, &rtvs[0], nullptr);
+            context1->RSSetViewports(1, &vp);
+            context1->Draw(3, 0);
+            context1->CopyResource(staging[0], targets[0]);
+            D3D11_MAPPED_SUBRESOURCE m{};
+            int written = 0;
+            float first[2] = {-1.0f, -1.0f};
+            if (SUCCEEDED(context1->Map(staging[0], 0, D3D11_MAP_READ, 0, &m))) {
+                for (UINT y = 0; y < kH; ++y) {
+                    const auto* row = reinterpret_cast<const float*>(static_cast<const std::uint8_t*>(m.pData) + y * m.RowPitch);
+                    for (UINT x = 0; x < kW; ++x) {
+                        written += row[x * 2] >= 0.0f ? 1 : 0;
+                    }
+                }
+                first[0] = static_cast<const float*>(m.pData)[0];
+                first[1] = static_cast<const float*>(m.pData)[1];
+                context1->Unmap(staging[0], 0);
+            }
+            log::info("foveation: self-test control (no shading rates): {} of {} pixels drawn, pixel (0,0) = ({:.1f}, {:.1f})",
+                      written, kW * kH, first[0], first[1]);
+        }
         ViewportRates rates{};
         rates.enable = 1;
         for (std::uint32_t i = 0; i < 16; ++i) {

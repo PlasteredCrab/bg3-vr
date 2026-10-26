@@ -1217,7 +1217,7 @@ void create(const ModuleInfo& module, std::uintptr_t controller) {
                   "addresses; not creating");
         return;
     }
-    events::arm(g_module, 3, 6000);
+    events::arm_auto(g_module, 3, 6000);
     render::run_on_render_thread([base, create_fn = *creator, frame_fn = *main_frame, setup_fn = *setup,
                                   driven = g_controller] {
         std::uintptr_t pipeline = 0, manager = 0, main_view = 0, special_view = 0;
@@ -1295,7 +1295,7 @@ void create(const ModuleInfo& module, std::uintptr_t controller) {
             return;
         }
         eyefix::link_eyes(main_view, view); // before its first frame: stage 0x47 after the main view's recording
-        events::arm(g_module, 10, 20000);
+        events::arm_auto(g_module, 10, 20000);
         std::scoped_lock lock(g_mutex);
         if (driven) {
             g_pending_camera_view = view;
@@ -1435,7 +1435,7 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
             return;
         }
         // A baseline of the renderer's events before the build runs; the build re-arms it for the frames after.
-        events::arm(g_module, 3, 6000);
+        events::arm_auto(g_module, 3, 6000);
         render::run_on_render_thread([pipeline, target, main_view, special_view, compositing, build = *build_stages,
                                       choose = choose_stages.value_or(0), setup, driven = g_controller] {
             log_stages("before: main   ", main_view);
@@ -1634,7 +1634,7 @@ void build(const ModuleInfo& module, std::uintptr_t controller_in, std::size_t i
             log_stages("after:  special", special_view);
             log_stages("after:  target ", target);
             dump_jobs("after build");
-            events::arm(g_module, 10, 20000); // every event of the next frames, up to a hang
+            events::arm_auto(g_module, 10, 20000); // every event of the next frames, up to a hang
             // A view needs a camera: without one the begin-recording camera builder (0x3CC7490) skips the
             // PerCamera blocks. Give it ours, the game's way, on the game thread (apply_pending_camera).
             // Until 2026-10-14 both states' pointers were written directly, which skipped the

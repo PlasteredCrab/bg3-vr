@@ -199,7 +199,14 @@ void validate(std::uintptr_t stage, std::uintptr_t view) {
             worst = static_cast<int>(i);
         }
     }
+    // Only the slots in use (agent T 2.1): +0x2470 holds count + 1 cascade boundaries (the resolve reads [count]),
+    // +0x2490 / +0x24A0 one value per cascade. The rest is never written or read: the 2026-10-26 run refused every
+    // check on boundary slot 5, uninitialised in the right eye's stage (-1.6e13) and 0 in the left's.
     for (std::size_t i = 0; i < std::size(splits); ++i) {
+        const bool in_use = i < 8 ? i <= used : (i % 4) < used;
+        if (!in_use) {
+            continue;
+        }
         const float e = std::abs(splits[i] - g_main.splits[i]) / std::max(1.0f, std::abs(splits[i]));
         if (e > error) {
             error = e;

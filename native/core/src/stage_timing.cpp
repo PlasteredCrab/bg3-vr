@@ -95,6 +95,7 @@ double g_gpu_span_ms = 0.0; // first timestamp to last, per collected frame
 int g_max_executes = 0;
 std::set<DWORD> g_exec_threads, g_view_threads;
 std::uint64_t g_report_at = 0;
+std::atomic<std::uint64_t> g_last_report_frame{0};
 std::atomic<bool> g_report_due{false};
 
 // Which window the current thread is in.
@@ -193,36 +194,43 @@ void on_view_execute(std::uintptr_t view) {
     }
 }
 
+HRESULT g_query_error = S_OK;
+int g_queries_made = 0;
+
 ID3D11Query* make_query(ID3D11Device* device, D3D11_QUERY type) {
     D3D11_QUERY_DESC desc{type, 0};
     ID3D11Query* q = nullptr;
-    if (FAILED(device->CreateQuery(&desc, &q))) {
+    const HRESULT hr = device->CreateQuery(&desc, &q);
+    if (FAILED(hr)) {
+        g_query_error = hr;
         return nullptr;
     }
+    ++g_queries_made;
     return q;
 }
 
-bool make_queries() {
+// 1: made; 0: no device yet (the executor runs while loading, before the first Present): try again later; -1: failed.
+int make_queries() {
     ID3D11Device* device = render::device();
     if (!device) {
-        return false;
+        return 0;
     }
     device->GetImmediateContext(&g_context);
     for (FrameQueries& f : g_ring) {
         f.disjoint = make_query(device, D3D11_QUERY_TIMESTAMP_DISJOINT);
         if (!f.disjoint) {
-            return false;
+            return -1;
         }
         for (Pair& p : f.pairs) {
             p.begin = make_query(device, D3D11_QUERY_TIMESTAMP);
             p.end = make_query(device, D3D11_QUERY_TIMESTAMP);
             if (!p.begin || !p.end) {
-                return false;
+                return -1;
             }
         }
     }
     log::info("perf: stage timing made {} x {} timestamp pairs on the game's device", kRing, kPairs);
-    return true;
+    return 1;
 }
 
 // Reads a finished frame's queries (no flush, no wait: not ready means dropped).
@@ -306,9 +314,12 @@ void on_command_execute(std::uintptr_t cmd, std::uintptr_t a, std::uintptr_t b) 
     ++t_exec_depth;
     Pair* pair = nullptr;
     if (!g_queries_failed) {
-        if (!g_context && !make_queries()) {
-            g_queries_failed = true;
-            log::warn("perf: stage timing can't make its GPU queries; CPU times only");
+        if (!g_context) {
+            if (const int made = make_queries(); made < 0) {
+                g_queries_failed = true;
+                log::warn("perf: stage timing can't make its GPU queries (CreateQuery 0x{:08X} after {} made); CPU times only",
+                          static_cast<std::uint32_t>(g_query_error), g_queries_made);
+            }
         }
         if (g_context && !g_context_checked) {
             g_context_checked = true;
@@ -449,7 +460,9 @@ void report() {
         g_view_threads.clear();
     }
     // CPU numbers are per frame of the report window; GPU numbers per collected frame.
-    const double frames = static_cast<double>(std::max(1, g_report_frames.load()));
+    const std::uint64_t frame_now = render::frame_count();
+    const std::uint64_t since = frame_now - g_last_report_frame.exchange(frame_now);
+    const double frames = static_cast<double>(std::max<std::uint64_t>(1, since));
     const double gpu_frames = static_cast<double>(std::max<std::uint64_t>(1, collected));
     std::array<double, kViewSlots> gpu{}, exec{};
     for (int s = 0; s < kViewSlots; ++s) {

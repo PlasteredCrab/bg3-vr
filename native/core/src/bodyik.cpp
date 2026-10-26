@@ -741,6 +741,14 @@ void apply(std::uintptr_t skeleton) {
                     phi += ik::wrist_roll_correction(roll);
                 }
             }
+            // The swivel is an angle on a circle (0 elbow up, 90 out, +-180 down): the relaxed-direction blend near the
+            // shoulder returns it from atan2 (-180..180). It used to be clamped to 0..180, which turned -176 (down,
+            // slightly in) into 0 (straight up): the elbow flipped between down and up (2026-10-26).
+            const auto wrap = [](float a) {
+                a = std::fmod(a + 180.0f, 360.0f);
+                return (a < 0.0f ? a + 360.0f : a) - 180.0f;
+            };
+            phi = wrap(phi);
             // The elbow stays behind the hand ([ik] elbow_behind): with the hands near the chest or face the swivel
             // could put the elbow out in front of you. Turn it toward "down" (180 deg, which on this circle is the
             // backmost side whenever the hand is below or level with the shoulder) until the elbow is at least 6 cm
@@ -750,7 +758,7 @@ void apply(std::uintptr_t skeleton) {
                     return (p[0] - S[0]) * frame.forward[0] + (p[1] - S[1]) * frame.forward[1] + (p[2] - S[2]) * frame.forward[2];
                 };
                 const auto elbow_at = [&](float angle) {
-                    const vr::Vec3 d = ik::swivel_direction(S, wrist_goal, frame, std::clamp(angle, 0.0f, 180.0f));
+                    const vr::Vec3 d = ik::swivel_direction(S, wrist_goal, frame, angle);
                     return ik::solve_two_bone(S, E_s, W_s, wrist_goal,
                                               {(S[0] + wrist_goal[0]) * 0.5f + d[0] * 0.4f, (S[1] + wrist_goal[1]) * 0.5f + d[1] * 0.4f,
                                                (S[2] + wrist_goal[2]) * 0.5f + d[2] * 0.4f});
@@ -758,15 +766,22 @@ void apply(std::uintptr_t skeleton) {
                 const ik::TwoBone now = elbow_at(phi);
                 const float allowed = std::max(0.08f, forward_of(now.wrist) - 0.06f);
                 if (forward_of(now.elbow) > allowed) {
+                    // The nearest swivel either way round that puts the elbow far enough back, else the backmost.
                     float best = phi, best_forward = forward_of(now.elbow);
-                    for (float a = std::clamp(phi, 0.0f, 180.0f) + 5.0f; a <= 180.0f; a += 5.0f) {
-                        const float f = forward_of(elbow_at(a).elbow);
-                        if (f < best_forward) {
-                            best = a;
-                            best_forward = f;
-                        }
-                        if (f <= allowed) {
-                            break;
+                    bool found = false;
+                    for (int step = 1; step <= 36 && !found; ++step) {
+                        for (const float a : {wrap(phi + 5.0f * static_cast<float>(step)), wrap(phi - 5.0f * static_cast<float>(step))}) {
+                            const float f = forward_of(elbow_at(a).elbow);
+                            if (f <= allowed) {
+                                best = a;
+                                best_forward = f;
+                                found = true;
+                                break;
+                            }
+                            if (f < best_forward) {
+                                best = a;
+                                best_forward = f;
+                            }
                         }
                     }
                     if (best != phi) {
@@ -788,12 +803,12 @@ void apply(std::uintptr_t skeleton) {
                 ElbowState& st = g_elbow_state[static_cast<std::size_t>(s)];
                 const float dt = st.valid ? std::chrono::duration<float>(now - st.when).count() : 1.0f;
                 const float k = std::clamp(dt / 0.1f, 0.0f, 1.0f);
-                st.phi = st.valid ? st.phi + (phi - st.phi) * k : phi;
+                st.phi = st.valid ? wrap(st.phi + wrap(phi - st.phi) * k) : phi; // the short way round
                 st.when = now;
                 st.valid = true;
                 phi = st.phi;
             }
-            const vr::Vec3 dir = ik::swivel_direction(S, wrist_goal, frame, std::clamp(phi, 0.0f, 180.0f));
+            const vr::Vec3 dir = ik::swivel_direction(S, wrist_goal, frame, phi);
             pole = {(S[0] + wrist_goal[0]) * 0.5f + dir[0] * 0.4f, (S[1] + wrist_goal[1]) * 0.5f + dir[1] * 0.4f,
                     (S[2] + wrist_goal[2]) * 0.5f + dir[2] * 0.4f};
             if (g_logged_elbow.load(std::memory_order_relaxed) < 12 && (g_applied.load(std::memory_order_relaxed) % 450) < 2) {

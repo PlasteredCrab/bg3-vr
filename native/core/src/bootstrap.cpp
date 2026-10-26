@@ -313,6 +313,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
 
 // Runs on the bridge thread for every new version of the bridge file; only keys present act.
 void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
+    for (const std::string& line : request.lua_lines) {
+        log::info("lua: {}", line);
+    }
     if (!request.settings.empty()) {
         apply_settings(request.settings);
     }
@@ -364,9 +367,12 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
                 stereo::assign((*eyes)[0], 0);
                 stereo::assign((*eyes)[1], 1);
                 views::set_stereo_layout(true);
-                // Where each view's draws land, and the renderer's events, for the first frames of the layout.
-                events::arm(module, 3, 6000);
-                gpu_trace::arm(3);
+                // Where each view's draws land, and the renderer's events, for the first frames of the layout
+                // ([dev] trace_on_stereo only).
+                if (events::auto_on()) {
+                    events::arm(module, 3, 6000);
+                    gpu_trace::arm(3);
+                }
                 views::diff_eye_views("stereo on");
 #if BG3VR_HAVE_OPENXR
                 headset::set_stereo(true);
@@ -525,7 +531,8 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
     // (menu settings, what is wielded, weapon set switches, the follow tick's new transform address: the 2026-10-22
     // run got a full report every 0.4 s from that alone).
     const bool follow_tick = (request.follow || request.skeleton) && !request.controller && !request.pose;
-    if (!request.settings.empty() || request.wield || request.weapon_set || request.in_combat || follow_tick) {
+    if (!request.settings.empty() || request.wield || request.weapon_set || request.in_combat || follow_tick ||
+        !request.lua_lines.empty()) {
         return;
     }
     health::log_summary("report");
@@ -563,6 +570,7 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
 int init(const wchar_t* root_dir) {
     g_root = root_dir;
     const bool have_config = g_config.load_file(g_root / "bg3vr.ini");
+    events::set_auto(g_config.get_bool("dev", "trace_on_stereo", false));
     log::init(g_root / "bg3vr.log", g_config.get_bool("dev", "console", false),
               parse_level(g_config.get("dev", "log_level", "info")));
 

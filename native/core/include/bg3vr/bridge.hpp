@@ -63,6 +63,7 @@ struct Request {
     std::optional<std::pair<std::uint64_t, std::uint8_t>> weapon_set; // weaponset=<hex server entity> melee|ranged
     std::optional<std::string> wield;                          // wield=melee|bow|crossbow|none (what is in hand)
     std::optional<bool> in_combat;                             // incombat=on|off
+    std::vector<std::string> lua_lines;                        // lua=<text>: the Lua side's log lines (SE keeps no log file)
 };
 
 // Parses the bridge file:
