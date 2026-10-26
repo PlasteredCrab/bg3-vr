@@ -735,12 +735,18 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
             for (int eye = 0; eye < 2; ++eye) {
                 const blit::Blitter::Rect rect{eye == 0 ? 0u : half, 0u, eye == 0 ? half : g_image_width - half,
                                                g_image_height};
+                // Breadcrumbs per call (the slow presents of 2026-10-26 16:15 spent ~17 ms in "submit", about the GPU's
+                // frame time: which call waits?).
+                watchdog::mark(eye == 0 ? "headset: xrAcquireSwapchainImage + xrWaitSwapchainImage (left)"
+                                        : "headset: xrAcquireSwapchainImage + xrWaitSwapchainImage (right)");
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
                 const blit::Blitter::Overlay overlay = beam_overlay(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
                 if (eye == 0) {
                     g_left_beam = overlay;
                 }
+                watchdog::mark(eye == 0 ? "headset: eye copy (left)" : "headset: eye copy (right)");
                 copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect, &overlay, eye == 1);
+                watchdog::mark(eye == 0 ? "headset: xrReleaseSwapchainImage (left)" : "headset: xrReleaseSwapchainImage (right)");
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
                 g_has_image[eye] = true;
@@ -760,7 +766,9 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
             }
         }
         static const std::vector<XrView> kNone;
+        watchdog::mark("headset: xrEndFrame");
         g_session->end_frame(frame, g_has_image[0] && g_has_image[1] ? g_rendered : kNone);
+        watchdog::mark("headset: after xrEndFrame (next head pose)");
     }
 
     // The view for the frame the game renders next, predicted for when that frame will be shown: about one game

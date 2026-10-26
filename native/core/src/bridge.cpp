@@ -6,7 +6,9 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
@@ -48,18 +50,58 @@ std::mutex g_status_mutex;
 std::filesystem::path g_status_path;                // under g_status_mutex
 std::map<std::string, std::string, std::less<>> g_status; // under g_status_mutex
 
+// The file is written on its own thread: create / write / close / rename took 15-99 ms on the game thread when the
+// virus scanner looked at it (the skeleton's body switch, 2026-10-26 run), a visible hitch every time. Callers only
+// update the map and wake the writer; the writer always writes the latest map, so a burst of changes is one write.
+std::condition_variable g_status_wake;
+bool g_status_dirty = false;   // under g_status_mutex
+bool g_writer_started = false; // under g_status_mutex
+
+void write_file(const std::filesystem::path& path, const std::string& content);
+
+DWORD WINAPI status_writer(void*) {
+    std::uint64_t writes = 0;
+    for (;;) {
+        std::filesystem::path path;
+        std::string content;
+        {
+            std::unique_lock lock(g_status_mutex);
+            g_status_wake.wait(lock, [] { return g_status_dirty; });
+            g_status_dirty = false;
+            path = g_status_path;
+            for (const auto& [key, value] : g_status) {
+                content += key + "=" + value + "\n";
+            }
+        }
+        const auto start = std::chrono::steady_clock::now();
+        write_file(path, content);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (++writes <= 3 || ms > 20.0) {
+            log::info("bridge: status file write {} took {:.1f} ms (on the writer thread)", writes, ms);
+        }
+    }
+}
+
 // Under g_status_mutex.
 void write_status_file() {
     if (g_status_path.empty()) {
         return;
     }
-    std::string content;
-    for (const auto& [key, value] : g_status) {
-        content += key + "=" + value + "\n";
+    g_status_dirty = true;
+    if (!g_writer_started) {
+        g_writer_started = true;
+        if (HANDLE thread = CreateThread(nullptr, 0, &status_writer, nullptr, 0, nullptr)) {
+            SetThreadDescription(thread, L"bg3vr status writer");
+            CloseHandle(thread);
+        }
     }
+    g_status_wake.notify_one();
+}
+
+void write_file(const std::filesystem::path& path, const std::string& content) {
     std::error_code ignored;
-    std::filesystem::create_directories(g_status_path.parent_path(), ignored);
-    const std::filesystem::path temp = std::filesystem::path(g_status_path).concat(L".tmp");
+    std::filesystem::create_directories(path.parent_path(), ignored);
+    const std::filesystem::path temp = std::filesystem::path(path).concat(L".tmp");
     HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         return;
@@ -67,7 +109,7 @@ void write_status_file() {
     DWORD written = 0;
     WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
     CloseHandle(file);
-    MoveFileExW(temp.c_str(), g_status_path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 
 std::mutex g_posted_mutex;
