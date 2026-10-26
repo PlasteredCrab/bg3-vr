@@ -92,6 +92,7 @@ constexpr ComboDefault kComboDefaults[] = {
     {LeftGrip, RightTrigger, "key:space"}, // end turn
     {LeftGrip, RightStickClick, "key:c"}, // sneak
     {LeftGrip, LeftStickClick, "key:m"},  // map
+    {LeftGrip, LeftTrigger, "key:f5"},    // quick save
 };
 std::vector<Combo> g_combos;
 std::array<bool, kControlCount> g_swallow{};    // pressed as a combo's button: ignore until released

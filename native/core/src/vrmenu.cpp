@@ -70,6 +70,7 @@ constexpr ActionName kActions[] = {
     {"key:k", "Spellbook"},            {"key:n", "Character sheet"},            {"key:lalt", "Show item labels"},
     {"key:space", "End turn / skip"},  {"key:c", "Sneak"},                      {"key:z", "Jump"},
     {"key:v", "Shove"},                {"key:f", "Switch weapon set"},          {"key:u", "Draw / sheathe"},
+    {"key:f5", "Quick save"},          {"key:f8", "Quick load"},
     {"key:tab", "Party view"},         {"key:o", "Tactical camera"},            {"view", "First / third person"},
     {"panel", "Wrist UI ↔ in front"}, {"vrmenu", "VR menu"},               {"recenter", "Recentre (hold)"},
     {"none", "Nothing"},
@@ -264,7 +265,7 @@ Menu::Menu() {
             const char* fallback;
         };
         constexpr ComboRow kCombos[] = {{1, 8, "key:n"}, {1, 9, "key:j"}, {1, 2, "key:k"}, {1, 3, "key:tab"},
-                                        {1, 6, "key:space"}, {1, 10, "key:c"}, {1, 5, "vrmenu"}};
+                                        {1, 6, "key:space"}, {1, 10, "key:c"}, {1, 5, "vrmenu"}, {1, 0, "key:f5"}};
         Item heading;
         heading.kind = Kind::Section;
         heading.page = page();
