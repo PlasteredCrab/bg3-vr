@@ -93,7 +93,9 @@ std::array<std::atomic<float>, 2> g_curl_index{}, g_curl_others{};
 std::atomic<bool> g_fingers{true};     // [ik] fingers
 std::atomic<bool> g_shoulder{true};    // [ik] shoulder: the shoulder girdle turns toward far reaches
 std::atomic<bool> g_weapon_drawn{false};
-std::atomic<float> g_stretch{1.15f};    // [ik] stretch: how much longer an arm may get to reach the hand
+std::atomic<float> g_stretch{1.25f};    // [ik] stretch: how much longer an arm may get to reach the hand
+std::atomic<bool> g_elbow_behind{true}; // [ik] elbow_behind: the elbow never ends up in front of the hand
+std::atomic<std::uint64_t> g_elbows_pulled_back{0};
 std::atomic<bool> g_elbow_model{true};  // [ik] elbow = natural (Parger et al. 2018) | down
 std::atomic<bool> g_elbow_wrist{true};  // [ik] elbow_wrist: the wrist's roll moves the elbow
 struct ElbowState {
@@ -306,8 +308,10 @@ void configure_hands(const Config& config) {
     hands->weapon = text::to_lower(config.get("ik", "hands", "weapon")) != "relative";
     {
         const std::string v = config.get("ik", "stretch");
-        g_stretch = v.empty() ? 1.15f : std::clamp(std::strtof(v.c_str(), nullptr), 1.0f, 1.5f);
-        g_elbow_model = text::to_lower(config.get("ik", "elbow", "natural")) != "down";
+        g_stretch = v.empty() ? 1.25f : std::clamp(std::strtof(v.c_str(), nullptr), 1.0f, 1.5f);
+        const std::string elbow = text::to_lower(config.get("ik", "elbow", "natural"));
+        g_elbow_behind = elbow != "free" && config.get_bool("ik", "elbow_behind", true);
+        g_elbow_model = elbow != "down";
         g_elbow_wrist = config.get_bool("ik", "elbow_wrist", true);
         g_fingers = config.get_bool("ik", "fingers", true);
         g_shoulder = config.get_bool("ik", "shoulder", true);
@@ -718,6 +722,46 @@ void apply(std::uintptr_t skeleton) {
                     }
                     roll = angle;
                     phi += ik::wrist_roll_correction(roll);
+                }
+            }
+            // The elbow stays behind the hand ([ik] elbow_behind): with the hands near the chest or face the swivel
+            // could put the elbow out in front of you. Turn it toward "down" (180 deg, which on this circle is the
+            // backmost side whenever the hand is below or level with the shoulder) until the elbow is at least 6 cm
+            // behind the hand, or 8 cm in front of the shoulder at most when the hand is close in.
+            if (g_elbow_behind.load(std::memory_order_relaxed)) {
+                const auto forward_of = [&](const vr::Vec3& p) {
+                    return (p[0] - S[0]) * frame.forward[0] + (p[1] - S[1]) * frame.forward[1] + (p[2] - S[2]) * frame.forward[2];
+                };
+                const auto elbow_at = [&](float angle) {
+                    const vr::Vec3 d = ik::swivel_direction(S, wrist_goal, frame, std::clamp(angle, 0.0f, 180.0f));
+                    return ik::solve_two_bone(S, E_s, W_s, wrist_goal,
+                                              {(S[0] + wrist_goal[0]) * 0.5f + d[0] * 0.4f, (S[1] + wrist_goal[1]) * 0.5f + d[1] * 0.4f,
+                                               (S[2] + wrist_goal[2]) * 0.5f + d[2] * 0.4f});
+                };
+                const ik::TwoBone now = elbow_at(phi);
+                const float allowed = std::max(0.08f, forward_of(now.wrist) - 0.06f);
+                if (forward_of(now.elbow) > allowed) {
+                    float best = phi, best_forward = forward_of(now.elbow);
+                    for (float a = std::clamp(phi, 0.0f, 180.0f) + 5.0f; a <= 180.0f; a += 5.0f) {
+                        const float f = forward_of(elbow_at(a).elbow);
+                        if (f < best_forward) {
+                            best = a;
+                            best_forward = f;
+                        }
+                        if (f <= allowed) {
+                            break;
+                        }
+                    }
+                    if (best != phi) {
+                        const std::uint64_t n = g_elbows_pulled_back.fetch_add(1, std::memory_order_relaxed);
+                        if (n < 10 || n % 2000 == 0) {
+                            log::info("ik: {} elbow was {:.2f} m in front of the shoulder (hand {:.2f} m, allowed {:.2f}): swivel "
+                                      "{:.0f} -> {:.0f} deg puts it at {:.2f} m ({} times)",
+                                      s ? "right" : "left", forward_of(now.elbow), forward_of(now.wrist), allowed, phi, best,
+                                      best_forward, n + 1);
+                        }
+                        phi = best;
+                    }
                 }
             }
             // Smoothed over about 0.1 s so the elbow glides.

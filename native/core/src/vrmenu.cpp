@@ -172,8 +172,9 @@ Menu::Menu() {
     choice("Swing attacks", "combat.swing",
            {{"Off", "off", true}, {"At who you look at", "gaze"}, {"Blade contact", "hit"}}, 1);
     choice("Bow", "combat.bow", {{"Nock, draw, release", "draw"}, {"Point and click", "off"}}, 0);
-    choice("Arm stretch", "ik.stretch", {{"Off", "1", true}, {"10%", "1.1"}, {"15%", "1.15"}, {"25%", "1.25"}}, 2);
-    choice("Elbows", "ik.elbow", {{"Natural", "natural"}, {"Always down", "down"}}, 0);
+    choice("Arm stretch", "ik.stretch",
+           {{"Off", "1", true}, {"10%", "1.1"}, {"15%", "1.15"}, {"25%", "1.25"}, {"35%", "1.35"}, {"50%", "1.5"}}, 3);
+    choice("Elbows", "ik.elbow", {{"Natural", "natural"}, {"Natural, may go in front", "free"}, {"Always down", "down"}}, 0);
     on_off("Shoulders follow reach", "ik.shoulder", true);
     on_off("Body faces your hands", "ik.body_yaw", true);
     on_off("Fingers follow buttons", "ik.fingers", true);
