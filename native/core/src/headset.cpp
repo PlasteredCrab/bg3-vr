@@ -1885,8 +1885,13 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
         if (g_laser_through_transparent) {
             probe_alpha(ui, ui_desc, aimed);
         }
-        // Over a transparent part the laser goes on into the world (no cursor on the panel, the beam isn't stopped).
-        g_ui_laser_through = g_laser_through_transparent && !g_alpha.unsupported && aimed && !touch && !g_alpha.opaque;
+        // Over a transparent part the laser goes on into the world (no cursor on the panel, the beam isn't stopped). Not
+        // while a game window is open (game menu, inventory, map, trade...): the window is what you point at, and the
+        // game menu's text on a faint background read as see-through, so its clicks went to the (paused) world
+        // (2026-10-26: "clicks didn't register on the menu").
+        const bool window_open = gameui::window_open();
+        g_ui_laser_through = g_laser_through_transparent && !g_alpha.unsupported && aimed && !touch && !g_alpha.opaque &&
+                             !window_open;
         if (g_ui_laser_through) {
             ++g_alpha.through;
         }
@@ -1904,6 +1909,20 @@ void update_ui_panel(IDXGISwapChain* swapchain, const xr::Frame& frame) {
                 pinned = true;
                 pinned_uv = *uv;
                 down_at = now_time;
+            }
+            // Every press while a game window is open: where it lands (the next run tells a missed panel from a click
+            // the game ignored).
+            if (down && !was_down && window_open) {
+                static std::uint64_t window_clicks = 0;
+                if (window_clicks++ < 60) {
+                    POINT cursor{};
+                    GetCursorPos(&cursor);
+                    log::info("ui: trigger with a window open: laser {} (aimed {}, alpha {}), game window {}, cursor at ({}, {})",
+                              uv ? std::format("on the panel at ({:.3f}, {:.3f})", (*uv)[0], (*uv)[1]) : std::string("OFF the panel"),
+                              aimed ? "yes" : "no", g_alpha.alpha ? std::format("{:.2f}", *g_alpha.alpha) : std::string("-"),
+                              g_window && GetForegroundWindow() == g_window ? "in front" : "NOT in front (the cursor isn't moved)",
+                              cursor.x, cursor.y);
+                }
             }
             if (!down || !uv || touch) {
                 pinned = false;
