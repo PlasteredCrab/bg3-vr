@@ -45,9 +45,13 @@ function VRStart(height, reason)
         extra[#extra + 1] = skeleton
     end
     -- In third person (VR) the whole character is seen: no head hiding.
-    local hide = (not auto.chase and not auto.free) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
+    local hide, names = nil, {}
+    if not auto.chase and not auto.free and HeadHideBridgeLine then
+        hide, names = HeadHideBridgeLine()
+    end
     extra[#extra + 1] = hide or "hide=off"
     auto.hideLine = hide or "hide=off"
+    BG3VR.Log("VR start: hiding %d head part(s): %s", #names, table.concat(names, ", "))
     if not StartNativeFollow(height or 1.7, extra) then
         return false
     end
@@ -75,9 +79,13 @@ local function OnCharacterChanged()
         lines[#lines + 1] = skeleton
     end
     -- Third person shows the whole character: no head hiding there.
-    local hide = (not auto.third and not auto.chase and not auto.free) and HeadHideBridgeLine and HeadHideBridgeLine() or nil
+    local hide, names = nil, {}
+    if not auto.third and not auto.chase and not auto.free and HeadHideBridgeLine then
+        hide, names = HeadHideBridgeLine()
+    end
     lines[#lines + 1] = hide or "hide=off"
     auto.hideLine = hide or "hide=off"
+    BG3VR.Log("VR: character changed; hiding %d head part(s): %s", #names, table.concat(names, ", "))
     BG3VR.WriteBridge(lines)
     auto.character = CharacterKey()
     BG3VR.Log("VR: now playing %s", tostring(auto.character))

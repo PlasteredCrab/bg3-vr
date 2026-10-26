@@ -591,6 +591,8 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, UIN
 // the eyes were taken from (no extra copy, nothing re-rendered), just before the game's Present.
 std::atomic<bool> g_desktop_left_eye{true}; // the VR menu changes it live (configure_ui)
 bool g_mirror_ready = false; // this Present's eyes came from the back buffer's halves (the blitter's copy is current)
+// The left eye's aiming beam (eye-image uv), drawn into the desktop view too, for recordings and spectators.
+std::optional<blit::Blitter::Overlay> g_left_beam;
 std::uint64_t g_mirror_frames = 0;
 
 void show_left_eye_on_desktop(IDXGISwapChain* swapchain) {
@@ -626,7 +628,30 @@ void show_left_eye_on_desktop(IDXGISwapChain* swapchain) {
             rect.width = static_cast<UINT>(height * window);
             rect.x = (desc.Width / 2 - rect.width) / 2;
         }
-        g_blitter.draw(back_buffer, rect, target, desc.Width, desc.Height, false, {}, g_mirror_ready);
+        // The left eye's beam, moved from eye-image uv into this crop: x = u * half, y = v * height in back-buffer
+        // pixels; widths are fractions of the image height, so they scale by height / crop height.
+        blit::Blitter::Overlay overlay;
+        if (g_left_beam && g_left_beam->beam_style > 0) {
+            const float hw = static_cast<float>(desc.Width / 2), h = static_cast<float>(desc.Height);
+            const auto mx = [&](float u) { return (u * hw - static_cast<float>(rect.x)) / static_cast<float>(rect.width); };
+            const auto my = [&](float v) { return (v * h - static_cast<float>(rect.y)) / static_cast<float>(rect.height); };
+            const float scale = h / static_cast<float>(rect.height);
+            overlay.beam_u0 = mx(g_left_beam->beam_u0);
+            overlay.beam_v0 = my(g_left_beam->beam_v0);
+            overlay.beam_u1 = mx(g_left_beam->beam_u1);
+            overlay.beam_v1 = my(g_left_beam->beam_v1);
+            std::copy(std::begin(g_left_beam->beam_rgba), std::end(g_left_beam->beam_rgba), std::begin(overlay.beam_rgba));
+            overlay.beam_width = g_left_beam->beam_width * scale;
+            overlay.beam_style = g_left_beam->beam_style;
+            overlay.beam_time = g_left_beam->beam_time;
+            overlay.beam_end = g_left_beam->beam_end * scale;
+            if (g_left_beam->cursor_radius > 0.0f) {
+                overlay.cursor_u = mx(g_left_beam->cursor_u);
+                overlay.cursor_v = my(g_left_beam->cursor_v);
+                overlay.cursor_radius = g_left_beam->cursor_radius * scale;
+            }
+        }
+        g_blitter.draw(back_buffer, rect, target, desc.Width, desc.Height, false, overlay, g_mirror_ready);
         target->Release();
         static std::uint64_t fresh_copies = 0;
         fresh_copies += g_mirror_ready ? 0 : 1;
@@ -712,6 +737,9 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
                                                g_image_height};
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
                 const blit::Blitter::Overlay overlay = beam_overlay(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
+                if (eye == 0) {
+                    g_left_beam = overlay;
+                }
                 copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect, &overlay, eye == 1);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
