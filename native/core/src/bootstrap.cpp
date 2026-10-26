@@ -181,22 +181,91 @@ void publish_idles() {
     }
 }
 
+// The mod's own per-frame work on the game thread, timed per module: averages and maxima every 600 frames, and a line
+// for any frame where it took over 4 ms (twice a second at most), to tell the mod's cost from the game's.
+struct FrameCost {
+    const char* name;
+    double total_ms = 0.0, max_ms = 0.0;
+};
+std::array<FrameCost, 14> g_frame_costs{{{"idles"}, {"cull"}, {"views"}, {"conversation"}, {"skeleton"}, {"rayprobe"},
+                                          {"quality"}, {"locomotion"}, {"vrplay"}, {"corpse"}, {"hold"}, {"melee"},
+                                          {"combat"}, {"all"}}};
+std::uint64_t g_frame_cost_frames = 0;
+std::chrono::steady_clock::time_point g_frame_cost_log{};
+int g_frame_cost_logged = 0;
+
 void on_game_frame() {
+    std::array<double, 14> ms{};
+    auto t = std::chrono::steady_clock::now();
+    const auto start = t;
+    const auto step = [&](std::size_t i) {
+        const auto now = std::chrono::steady_clock::now();
+        ms[i] = std::chrono::duration<double, std::milli>(now - t).count();
+        t = now;
+    };
     publish_idles();
+    step(0);
     cull::on_frame();
+    step(1);
     views::on_frame();
+    step(2);
     update_conversation();
+    step(3);
     skeleton::on_frame();
+    step(4);
     rayprobe::on_frame();
+    step(5);
     quality::on_frame();
+    step(6);
     locomotion::on_frame();
+    step(7);
     vrplay::on_frame();
+    step(8);
     if (!g_grab_on_main_thread) {
         corpse::on_frame(); // before hold: a grip that takes a body doesn't also pick up an item
+        step(9);
         hold::on_frame();
+        step(10);
     }
     melee::on_frame();
+    step(11);
     combat::on_frame();
+    step(12);
+    ms[13] = std::chrono::duration<double, std::milli>(t - start).count();
+    for (std::size_t i = 0; i < ms.size(); ++i) {
+        g_frame_costs[i].total_ms += ms[i];
+        g_frame_costs[i].max_ms = std::max(g_frame_costs[i].max_ms, ms[i]);
+    }
+    const auto line = [&](bool averages) {
+        std::string text;
+        for (std::size_t i = 0; i + 1 < ms.size(); ++i) {
+            const double v = averages ? g_frame_costs[i].total_ms / static_cast<double>(g_frame_cost_frames) : ms[i];
+            if (v >= (averages ? 0.05 : 0.3)) {
+                text += std::format(" {} {:.2f}{}", g_frame_costs[i].name, v,
+                                    averages ? std::format(" (max {:.1f})", g_frame_costs[i].max_ms) : std::string());
+            }
+        }
+        return text;
+    };
+    if (ms[13] > 4.0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - g_frame_cost_log > std::chrono::seconds(1)) {
+            g_frame_cost_log = now;
+            g_frame_cost_logged = 0;
+        }
+        if (++g_frame_cost_logged <= 2) {
+            log::info("perf: the mod's game-thread work took {:.1f} ms this frame:{}", ms[13], line(false));
+        }
+    }
+    if (++g_frame_cost_frames >= 600) {
+        log::info("perf: the mod's game-thread work per frame over {} frames: {:.2f} ms on average (max {:.1f});{}",
+                  g_frame_cost_frames, g_frame_costs[13].total_ms / static_cast<double>(g_frame_cost_frames),
+                  g_frame_costs[13].max_ms, line(true));
+        for (FrameCost& c : g_frame_costs) {
+            c.total_ms = c.max_ms = 0.0;
+        }
+        g_frame_cost_frames = 0;
+    }
 }
 
 // The VR menu's settings (menu.ini next to bg3vr.ini; overrides it). Only touched on the bridge thread after start-up.

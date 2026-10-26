@@ -10,12 +10,14 @@
 #include <psapi.h>
 #include <tlhelp32.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 
 #include <chrono>
 #include <format>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -258,9 +260,73 @@ void watch() {
 
 } // namespace
 
+// The breadcrumbs also time the present path: each one closes the step the previous one opened. A Present whose
+// steps took over 15 ms in all (or one over 10 ms) logs them, twice a second at most (2026-10-26: the present callback
+// took 16-90 ms in slow frames while xrWaitFrame averaged 0.3 ms).
+namespace {
+struct Step {
+    const char* name = nullptr;
+    double ms = 0.0;
+};
+std::array<Step, 24> g_steps{};
+int g_step_count = 0;
+std::chrono::steady_clock::time_point g_step_start{};
+const char* g_step_name = nullptr;
+std::chrono::steady_clock::time_point g_steps_log_window{};
+int g_steps_logged_in_window = 0;
+std::uint64_t g_slow_presents = 0;
+
+void close_step(std::chrono::steady_clock::time_point now) {
+    if (g_step_name && g_step_count < static_cast<int>(g_steps.size())) {
+        g_steps[static_cast<std::size_t>(g_step_count++)] = {g_step_name, std::chrono::duration<double, std::milli>(now - g_step_start).count()};
+    }
+}
+
+void finish_present() {
+    double total = 0.0, longest = 0.0;
+    for (int i = 0; i < g_step_count; ++i) {
+        total += g_steps[static_cast<std::size_t>(i)].ms;
+        longest = std::max(longest, g_steps[static_cast<std::size_t>(i)].ms);
+    }
+    if (total < 15.0 && longest < 10.0) {
+        return;
+    }
+    ++g_slow_presents;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - g_steps_log_window > std::chrono::seconds(1)) {
+        g_steps_log_window = now;
+        g_steps_logged_in_window = 0;
+    }
+    if (++g_steps_logged_in_window > 2) {
+        return;
+    }
+    std::string text;
+    for (int i = 0; i < g_step_count; ++i) {
+        const Step& s = g_steps[static_cast<std::size_t>(i)];
+        if (s.ms >= 0.5) {
+            text += std::format("\n    {:6.1f} ms  {}", s.ms, s.name);
+        }
+    }
+    log::info("watchdog: slow present path, {:.1f} ms in the mod's present work ({} so far):{}", total, g_slow_presents, text);
+}
+} // namespace
+
 void mark(const char* where) {
+    const auto now = std::chrono::steady_clock::now();
+    if (std::string_view(where).starts_with("render: present hook entered")) {
+        g_step_count = 0;
+        g_step_name = nullptr;
+    } else {
+        close_step(now);
+    }
+    g_step_name = where;
+    g_step_start = now;
+    if (std::string_view(where).starts_with("render: back in the game's Present")) {
+        finish_present();
+        g_step_name = nullptr;
+    }
     g_mark.store(where, std::memory_order_relaxed);
-    g_mark_ticks.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+    g_mark_ticks.store(now.time_since_epoch().count(), std::memory_order_relaxed);
 }
 
 void start(const ModuleInfo& module) {

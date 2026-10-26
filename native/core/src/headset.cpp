@@ -1689,8 +1689,12 @@ void snapshot_ui(ID3D11Texture2D* ui, const D3D11_TEXTURE2D_DESC& desc, bool sho
     }
     context->CopySubresourceRegion(g_snapshot.staging, 0, 0, 0, 0, ui, 0, nullptr); // mip 0 only
     g_snapshot.pending = true;
-    g_snapshot.reason = shown_now ? "the panel just came up" : "every 20 s while shown";
-    g_snapshot.next = now + std::chrono::seconds(20);
+    // One more a second after the panel came up: windows fade in, so the first one showed the HUD without the window
+    // (2026-10-26, the game menu).
+    static bool followup = false;
+    g_snapshot.reason = shown_now ? "the panel just came up" : followup ? "a second after the panel came up" : "every 20 s while shown";
+    followup = shown_now;
+    g_snapshot.next = now + (shown_now ? std::chrono::seconds(1) : std::chrono::seconds(20));
     context->Release();
 }
 
