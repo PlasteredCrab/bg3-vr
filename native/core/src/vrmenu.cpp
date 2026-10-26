@@ -143,6 +143,12 @@ Menu::Menu() {
            {{"25%", "0.25"}, {"40%", "0.4"}, {"55%", "0.55"}, {"70%", "0.7"}, {"85%", "0.85"}, {"100%", "1"}}, 2);
     choice("Wrist interface size", "ui.wrist_width",
            {{"Small", "0.4"}, {"Medium", "0.8"}, {"Large", "1.2"}, {"Huge", "1.6"}}, 1);
+    choice("Desktop window", "xr.desktop_view", {{"Left eye", "left_eye"}, {"Both eyes", "both"}}, 0);
+    for (Item& item : items_) {
+        if (item.page == page()) {
+            item.compact = true; // 11 rows on this page
+        }
+    }
     section("Comfort");
     on_off("Distant sun shadows in VR", "render.vr_distant_shadows", false);
     choice("Turning", "vr.turn", {{"Snap", "snap"}, {"Smooth", "smooth"}}, 0);

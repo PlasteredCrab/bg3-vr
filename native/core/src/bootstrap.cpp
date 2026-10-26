@@ -270,7 +270,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
         foveation::configure(g_config);
     }
 #if BG3VR_HAVE_OPENXR
-    if (changed("ui.") || changed("pointer.") || changed("vr.dominant_hand")) {
+    if (changed("ui.") || changed("pointer.") || changed("vr.dominant_hand") || changed("xr.desktop_view")) {
         headset::configure_ui(g_config);
     }
 #endif

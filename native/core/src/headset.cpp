@@ -588,12 +588,12 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, UIN
 // [xr] desktop_view = left_eye: after both eyes went to the headset, the game's window shows only the left eye,
 // cropped to the window's shape (the back buffer holds both eyes side by side). One full-screen draw from the copy
 // the eyes were taken from (no extra copy, nothing re-rendered), just before the game's Present.
-bool g_desktop_left_eye = true;
+std::atomic<bool> g_desktop_left_eye{true}; // the VR menu changes it live (configure_ui)
 bool g_mirror_ready = false; // this Present's eyes came from the back buffer's halves (the blitter's copy is current)
 std::uint64_t g_mirror_frames = 0;
 
 void show_left_eye_on_desktop(IDXGISwapChain* swapchain) {
-    if (!g_desktop_left_eye || !g_mirror_ready || !g_blitter.ready()) {
+    if (!g_desktop_left_eye.load(std::memory_order_relaxed) || !g_mirror_ready || !g_blitter.ready()) {
         return;
     }
     ID3D11Texture2D* back_buffer = nullptr;
@@ -2544,6 +2544,10 @@ void set_dialogue(bool on) {
 }
 
 void configure_ui(const Config& config) {
+    const bool left_eye = text::to_lower(config.get("xr", "desktop_view", "left_eye")) != "both";
+    if (g_desktop_left_eye.exchange(left_eye) != left_eye) {
+        log::info("xr: the desktop window shows {}", left_eye ? "the left eye" : "both eyes side by side");
+    }
     const std::size_t dominant = text::to_lower(config.get("vr", "dominant_hand", "right")) == "left" ? kLeftHand : kRightHand;
     if (g_dominant.exchange(dominant) != dominant) {
         log::info("vr: dominant hand {} (points and gets the right_* bindings); the wrist UI is on the {} wrist",
