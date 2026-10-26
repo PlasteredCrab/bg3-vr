@@ -12,6 +12,8 @@
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace bg3vr::dialogue {
@@ -21,6 +23,9 @@ namespace {
 ModuleInfo g_module;
 safetyhook::MidHook g_hook;
 safetyhook::MidHook g_switch_hook;
+safetyhook::MidHook g_lighting_hook;
+std::atomic<bool> g_uniform_lighting{true}; // [dialogue] scene_lighting = uniform | shots
+std::atomic<std::uint64_t> g_lighting_cleared{0};
 bool g_keep_view_in_vr = true;            // [dialogue] keep_view_in_vr
 std::atomic<std::uint64_t> g_switches{0}, g_switches_kept{0};
 std::array<bool, 256> g_first_person{};  // by timeline type
@@ -92,6 +97,40 @@ void on_camera_switch(safetyhook::Context& ctx) {
 
 constexpr std::uintptr_t kCameraSwitchRva = 0x2007570;
 
+// Agent AY (AY_cutscene_lighting.md): each shot change stores the shot camera as the scene's lighting camera
+// (Timeline+0x500, store at 0x2007792, before the +0x4C5 test) and raises +0x510; 0x2002690 then turns on only the
+// scene lights linked to that camera and every other scene light off, and 0x2001D50 (TimelinePost, on +0x513) gives
+// the character actors the scene's default key / fill / rim lights only while the camera has no linked lights. With
+// the cinematic camera the cuts hid it; in VR every cut relit every actor in view. While the headset keeps the view,
+// the lighting camera is cleared right after that store (both paths meet at 0x200779A, r13 = Timeline): every shot
+// lights the scene the same way, with each actor's default lights, as the game does once a scene has no camera.
+constexpr std::uintptr_t kLightingStoredRva = 0x200779A;
+constexpr std::size_t kLightingCamera = 0x500, kUpdateCustomLighting = 0x510, kUpdateAutoLighting = 0x513;
+
+void on_lighting_camera_stored(safetyhook::Context& ctx) {
+    const std::uintptr_t timeline = ctx.r13;
+    if (!timeline || !g_uniform_lighting.load(std::memory_order_relaxed) || !g_keep_view_in_vr ||
+        !(camera::controller() != 0 && camera::pose_held())) {
+        return;
+    }
+    std::array<std::uint8_t, 16> camera_guid{};
+    mem::try_copy(camera_guid.data(), timeline + kLightingCamera, camera_guid.size());
+    std::memset(reinterpret_cast<void*>(timeline + kLightingCamera), 0, camera_guid.size());
+    *reinterpret_cast<volatile std::uint8_t*>(timeline + kUpdateCustomLighting) = 1;
+    *reinterpret_cast<volatile std::uint8_t*>(timeline + kUpdateAutoLighting) = 1;
+    const std::uint64_t n = g_lighting_cleared.fetch_add(1, std::memory_order_relaxed);
+    if (n < 20 || n % 500 == 0) {
+        std::uintptr_t switches = 0;
+        std::uint8_t auto_lights = 0xFF;
+        if (mem::try_copy(&switches, g_module.base + 0x604B1B8, sizeof(switches)) && switches) {
+            mem::try_copy(&auto_lights, switches + 0x131A, 1);
+        }
+        log::info("dialogue: timeline 0x{:X} shot camera {:02X}{:02X}{:02X}{:02X}... as its lighting camera cleared: "
+                  "same lighting every shot (actor default lights; GlobalSwitches+0x131A = {}) ({} times)",
+                  timeline, camera_guid[0], camera_guid[1], camera_guid[2], camera_guid[3], auto_lights, n + 1);
+    }
+}
+
 } // namespace
 
 void install(const Config& config, const ModuleInfo& module) {
@@ -112,6 +151,21 @@ void install(const Config& config, const ModuleInfo& module) {
     }
     g_only_when_driven = config.get_bool("dialogue", "only_in_vr", true);
     g_keep_view_in_vr = config.get_bool("dialogue", "keep_view_in_vr", true);
+    configure(config);
+    {
+        std::array<std::uint8_t, 11> bytes{};
+        // 0x2007792 movups [r13+0x500], xmm0 / 0x200779A xor edi, edi; mov [rbp-0x79], rdi
+        constexpr std::array<std::uint8_t, 11> expected{0x41, 0x0F, 0x11, 0x85, 0x00, 0x05, 0x00, 0x00, 0x33, 0xFF, 0x48};
+        if (mem::try_copy(bytes.data(), module.base + 0x2007792, bytes.size()) && bytes == expected) {
+            if (auto h = safetyhook::MidHook::create(reinterpret_cast<void*>(module.base + kLightingStoredRva),
+                                                     &on_lighting_camera_stored)) {
+                g_lighting_hook = std::move(*h);
+            }
+        }
+        log::info("dialogue: scene lighting camera {} (exe+0x{:X}); {}",
+                  g_lighting_hook ? "hooked" : "NOT hooked (bytes differ)", kLightingStoredRva,
+                  g_uniform_lighting.load() ? "in VR every shot lights the scene the same way" : "the game's shot lighting");
+    }
     {
         std::array<std::uint8_t, 12> bytes{};
         constexpr std::array<std::uint8_t, 12> expected{0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
@@ -141,6 +195,13 @@ void install(const Config& config, const ModuleInfo& module) {
     health::set("first-person dialogue", health::State::Ready);
     log::info("dialogue: hook at exe+0x{:X}; first person for timeline types [{}]{}", *site - module.base,
               listed.empty() ? "none" : listed, g_only_when_driven ? " while the mod drives the camera" : "");
+}
+
+void configure(const Config& config) {
+    const bool uniform = text::to_lower(config.get("dialogue", "scene_lighting", "uniform")) != "shots";
+    if (g_uniform_lighting.exchange(uniform) != uniform) {
+        log::info("dialogue: scene lighting {}", uniform ? "the same every shot" : "the game's per-shot lighting");
+    }
 }
 
 void report() {

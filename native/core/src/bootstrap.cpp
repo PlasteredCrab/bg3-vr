@@ -278,6 +278,9 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     if (changed("views.share") || changed("views.skip_eye_cull")) {
         sharing::configure(g_config);
     }
+    if (changed("dialogue.")) {
+        dialogue::configure(g_config);
+    }
     if (changed("perf.")) {
         stage_timing::configure(g_config);
     }

@@ -164,6 +164,12 @@ Menu::Menu() {
            {{"Steady (only your head moves it)", "body"}, {"At the eyes, smoothed", "head"}, {"At the eyes, exact", "head_exact"}}, 0);
     on_off("Answers in front of you", "ui.dialogue_in_front", true);
     on_off("Sticks and A / B in conversations", "vr.dialogue_buttons", true);
+    choice("Scene lighting", "dialogue.scene_lighting", {{"Same every shot", "uniform"}, {"Game's shot lighting", "shots"}}, 0);
+    for (Item& item : items_) {
+        if (item.page == page()) {
+            item.compact = true; // 12 rows on this page
+        }
+    }
     section("Body");
     choice("Dominant hand", "vr.dominant_hand", {{"Right", "right"}, {"Left", "left"}}, 0);
     on_off("Arms follow controllers", "ik.arms", true);

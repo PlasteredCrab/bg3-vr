@@ -28,6 +28,8 @@ inline constexpr std::size_t kTimelineCamera = 0x4E0;   // current camera actor;
 } // namespace layout
 
 void install(const Config& config, const ModuleInfo& module);
+// [dialogue] scene_lighting (the VR menu changes it live).
+void configure(const Config& config);
 void report();
 
 } // namespace bg3vr::dialogue
