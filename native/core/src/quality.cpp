@@ -26,6 +26,11 @@ ModuleInfo g_module;
 bool g_force_lod0 = false;
 bool g_detail_cull = true;
 float g_texture_distance = 0.0f;      // 0: leave the game's value
+// [render] vr_texture_distance (agent H 4.2): texture levels are chosen with k = viewport diagonal / tan(fov/2) / 2200,
+// 1.92 on the desktop and ~1.0 for an eye (each level at about half the distance). While VR is on and the model detail
+// distance is the flat game's, the cache's distance scale is this; the game's own value comes back when VR stops.
+std::atomic<float> g_vr_texture_distance{1.9f};
+std::optional<float> g_game_texture_scale; // the value before the VR one was written
 long long g_texture_budget_mb = 0;    // 0: leave the game's value
 
 std::atomic<bool> g_report{false};
@@ -104,6 +109,24 @@ void apply() {
         }
         if (!g_detail_cull) {
             poke<std::uint8_t>(switches + layout::kDetailCullEnabled, 0);
+        }
+    }
+    const float vr_scale = g_vr_texture_distance.load(std::memory_order_relaxed);
+    const bool vr_textures = g_texture_distance <= 0.0f && vr_scale > 0.0f && vrplay::active();
+    if (vr_textures || g_game_texture_scale) {
+        if (const std::uintptr_t cache = texture_cache()) {
+            if (vr_textures) {
+                if (!g_game_texture_scale) {
+                    g_game_texture_scale = peek<float>(cache + layout::kCacheScale).value_or(1.0f);
+                    log::info("quality: VR: texture levels at {:.2f}x the distance (the game's scale was {:.2f})", vr_scale,
+                              *g_game_texture_scale);
+                }
+                poke<float>(cache + layout::kCacheScale, vr_scale);
+            } else {
+                poke<float>(cache + layout::kCacheScale, *g_game_texture_scale);
+                log::info("quality: texture distance scale back to the game's {:.2f}", *g_game_texture_scale);
+                g_game_texture_scale.reset();
+            }
         }
     }
     if (g_texture_distance > 0.0f || g_texture_budget_mb > 0) {
@@ -190,6 +213,9 @@ float on_lod_fov_factor(float fov) {
 
 void configure(const Config& config) {
     const std::string mode = config.get("render", "vr_lod_distance", "desktop");
+    const std::string tex = config.get("render", "vr_texture_distance");
+    g_vr_texture_distance.store(mode == "game" ? 0.0f
+                                               : tex.empty() ? 1.9f : std::clamp(std::strtof(tex.c_str(), nullptr), 0.0f, 8.0f));
     const float floor = mode == "game" ? 0.0f : mode == "desktop" || mode.empty() ? 1.0f
                                                  : std::clamp(std::strtof(mode.c_str(), nullptr), 0.0f, 4.0f);
     if (g_vr_lod_floor.exchange(floor) != floor) {
