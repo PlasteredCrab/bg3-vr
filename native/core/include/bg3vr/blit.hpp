@@ -56,9 +56,10 @@ public:
 
     // Draws `rect` of `source` (same size and format as create()) over the whole `target` view of a
     // `target_width` x `target_height` image. `linearize`: the source holds gamma-encoded values in a
-    // non-sRGB format and the target view is sRGB, so decode them first.
+    // non-sRGB format and the target view is sRGB, so decode them first. `reuse_copy`: `source` is the one the last
+    // draw copied and hasn't changed since (the second eye, the desktop view): its copy is used as it is.
     void draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTargetView* target, UINT target_width,
-              UINT target_height, bool linearize, const Overlay& overlay = {});
+              UINT target_height, bool linearize, const Overlay& overlay = {}, bool reuse_copy = false);
 
     // The copy of the last source drawn (valid until the next draw or create).
     ID3D11ShaderResourceView* source_view() const { return copy_view_; }

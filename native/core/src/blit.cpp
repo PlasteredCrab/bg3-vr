@@ -267,12 +267,14 @@ void Blitter::destroy() {
 }
 
 void Blitter::draw(ID3D11Texture2D* source, const Rect& rect, ID3D11RenderTargetView* target, UINT target_width,
-                   UINT target_height, bool linearize, const Overlay& overlay) {
+                   UINT target_height, bool linearize, const Overlay& overlay, bool reuse_copy) {
     if (!state_ || !source || !target) {
         return;
     }
     // On the game's own state: the copy (CopyResource touches no pipeline state).
-    context_->CopyResource(copy_, source);
+    if (!reuse_copy) {
+        context_->CopyResource(copy_, source);
+    }
 
     // Everything else on our own state object; swapping back restores the game's state exactly.
     ID3DDeviceContextState* game_state = nullptr;

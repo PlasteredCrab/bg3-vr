@@ -551,7 +551,8 @@ void follow_back_buffer(IDXGISwapChain* swapchain) {
 
 // `rect` (back buffer pixels; width 0 = all of it) into the whole `target_width` x `target_height` image.
 void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, UINT target_width, UINT target_height,
-                      const blit::Blitter::Rect& rect = {}, const blit::Blitter::Overlay* overlay_in = nullptr) {
+                      const blit::Blitter::Rect& rect = {}, const blit::Blitter::Overlay* overlay_in = nullptr,
+                      bool reuse_copy = false) {
     ID3D11Texture2D* back_buffer = nullptr;
     if (FAILED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
         return;
@@ -563,7 +564,7 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, UIN
             blit::Blitter::Overlay overlay;
             overlay.vignette = g_frame_vignette;
             g_blitter.draw(back_buffer, rect, target.view, target_width, target_height, g_linearize,
-                           overlay_in ? *overlay_in : overlay);
+                           overlay_in ? *overlay_in : overlay, reuse_copy);
         }
         back_buffer->Release();
         return;
@@ -581,6 +582,52 @@ void copy_back_buffer(IDXGISwapChain* swapchain, const xr::EyeImage& target, UIN
     render::device()->GetImmediateContext(&context);
     context->CopySubresourceRegion(target.texture, 0, 0, 0, 0, back_buffer, 0, &box);
     context->Release();
+    back_buffer->Release();
+}
+
+// [xr] desktop_view = left_eye: after both eyes went to the headset, the game's window shows only the left eye,
+// cropped to the window's shape (the back buffer holds both eyes side by side). One full-screen draw from the copy
+// the eyes were taken from (no extra copy, nothing re-rendered), just before the game's Present.
+bool g_desktop_left_eye = true;
+bool g_mirror_ready = false; // this Present's eyes came from the back buffer's halves (the blitter's copy is current)
+std::uint64_t g_mirror_frames = 0;
+
+void show_left_eye_on_desktop(IDXGISwapChain* swapchain) {
+    if (!g_desktop_left_eye || !g_mirror_ready || !g_blitter.ready()) {
+        return;
+    }
+    ID3D11Texture2D* back_buffer = nullptr;
+    if (FAILED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer)))) {
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    back_buffer->GetDesc(&desc);
+    DXGI_SWAP_CHAIN_DESC chain{};
+    RECT client{};
+    swapchain->GetDesc(&chain);
+    const bool have_window = chain.OutputWindow && GetClientRect(chain.OutputWindow, &client) && client.right > 0 &&
+                             client.bottom > 0;
+    ID3D11RenderTargetView* target = nullptr;
+    if (desc.Width == g_image_width && desc.Height == g_image_height && have_window &&
+        SUCCEEDED(render::device()->CreateRenderTargetView(back_buffer, nullptr, &target))) {
+        // The left half, cut to the window's aspect around its centre (the window stretches the back buffer).
+        const double half = static_cast<double>(desc.Width / 2), height = static_cast<double>(desc.Height);
+        const double window = static_cast<double>(client.right) / static_cast<double>(client.bottom);
+        blit::Blitter::Rect rect{0, 0, desc.Width / 2, desc.Height};
+        if (window > half / height) {
+            rect.height = static_cast<UINT>(half / window);
+            rect.y = (desc.Height - rect.height) / 2;
+        } else {
+            rect.width = static_cast<UINT>(height * window);
+            rect.x = (desc.Width / 2 - rect.width) / 2;
+        }
+        g_blitter.draw(back_buffer, rect, target, desc.Width, desc.Height, false, {}, true);
+        target->Release();
+        if (++g_mirror_frames == 1) {
+            log::info("xr: the desktop window shows the left eye ({}x{} at ({}, {}) of the {}x{} back buffer, window {}x{})",
+                      rect.width, rect.height, rect.x, rect.y, desc.Width, desc.Height, client.right, client.bottom);
+        }
+    }
     back_buffer->Release();
 }
 
@@ -654,12 +701,13 @@ void submit_tracked(IDXGISwapChain* swapchain, std::uintptr_t render_frame, cons
                                                g_image_height};
                 const xr::EyeImage image = g_session->acquire(static_cast<std::size_t>(eye));
                 const blit::Blitter::Overlay overlay = beam_overlay(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
-                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect, &overlay);
+                copy_back_buffer(swapchain, image, g_eye_width, g_eye_height, rect, &overlay, eye == 1);
                 g_session->release(static_cast<std::size_t>(eye));
                 g_rendered[eye] = xr_view(rendered->head.eye_pose[eye], rendered->head.eye_fov[eye]);
                 g_has_image[eye] = true;
             }
             g_stereo_frames.fetch_add(1, std::memory_order_relaxed);
+            g_mirror_ready = true;
         } else if (rendered && frame.state.shouldRender) {
             const int first = g_mode == Mode::Mono ? 0 : rendered->head.eye;
             const int last = g_mode == Mode::Mono ? 1 : rendered->head.eye;
@@ -2396,11 +2444,13 @@ void on_present(IDXGISwapChain* swapchain, std::uintptr_t render_frame) {
     update_menu(frame);
     update_ui_panel(swapchain, frame);
     update_dolls(frame);
+    g_mirror_ready = false;
     if (g_mode == Mode::Screen) {
         submit_screen(swapchain, frame);
     } else {
         submit_tracked(swapchain, render_frame, frame);
     }
+    show_left_eye_on_desktop(swapchain);
     g_submitted.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -2429,6 +2479,7 @@ void install(const Config& config) {
         g_screen_distance_m = std::strtof(distance.c_str(), nullptr);
     }
     g_desktop_vsync = config.get_bool("xr", "desktop_vsync", false);
+    g_desktop_left_eye = text::to_lower(config.get("xr", "desktop_view", "left_eye")) != "both";
     g_async_wait = config.get_bool("xr", "async_wait", false);
     g_head_prediction_s = std::clamp(static_cast<double>(config.get_int("xr", "head_prediction_ms", 0)), 0.0, 60.0) / 1000.0;
     g_input_wanted = config.get_bool("xr", "input", true);
