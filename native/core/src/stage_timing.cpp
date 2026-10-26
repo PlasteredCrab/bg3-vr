@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -98,6 +99,59 @@ std::uint64_t g_report_at = 0;
 std::atomic<std::uint64_t> g_last_report_frame{0};
 std::atomic<bool> g_report_due{false};
 
+// Slow frames: every stage window of the frame being rendered (render thread), and when the frame turns out slow
+// (over 45 ms between Presents) one line with its slowest windows per eye and the present callback's time.
+struct FrameWindow {
+    int slot = 0;
+    int stage = 0;
+    double ms = 0.0;
+};
+std::vector<FrameWindow> g_frame_windows; // render thread
+std::uint64_t g_windows_frame = ~0ull;
+std::uint64_t g_slow_frames = 0, g_slow_logged = 0;
+std::chrono::steady_clock::time_point g_slow_log_window{};
+int g_slow_in_window = 0;
+
+std::string stage_label(int stage);
+
+void check_slow_frame(std::uint64_t frame) {
+    if (frame == g_windows_frame) {
+        return;
+    }
+    const std::vector<FrameWindow> windows = std::move(g_frame_windows);
+    g_frame_windows.clear();
+    g_windows_frame = frame;
+    const double frame_ms = render::last_frame_ms();
+    if (frame_ms < 45.0 || windows.empty()) {
+        return;
+    }
+    ++g_slow_frames;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - g_slow_log_window > std::chrono::seconds(1)) {
+        g_slow_log_window = now;
+        g_slow_in_window = 0;
+    }
+    if (++g_slow_in_window > 2) {
+        return;
+    }
+    ++g_slow_logged;
+    std::array<double, 3> per_slot{};
+    std::vector<FrameWindow> sorted = windows;
+    for (const FrameWindow& w : windows) {
+        per_slot[static_cast<std::size_t>(std::min(w.slot, 2))] += w.ms;
+    }
+    std::sort(sorted.begin(), sorted.end(), [](const FrameWindow& a, const FrameWindow& b) { return a.ms > b.ms; });
+    std::string top;
+    for (std::size_t i = 0; i < sorted.size() && i < 6; ++i) {
+        top += std::format(" {}:{} {:.1f}", sorted[i].slot == 0 ? "L" : sorted[i].slot == 1 ? "R" : "o",
+                           stage_label(sorted[i].stage), sorted[i].ms);
+    }
+    log::info("perf: slow frame {}: {:.1f} ms between Presents; render-thread stage windows left {:.1f}, right {:.1f}, "
+              "other {:.1f} ms; slowest:{}; present callback {:.1f} ms ({} slow frames so far, {} logged)",
+              frame, frame_ms, per_slot[0], per_slot[1], per_slot[2], top, render::last_callback_ms(), g_slow_frames,
+              g_slow_logged);
+}
+
 // Which window the current thread is in.
 thread_local int t_view_slot = 3;
 thread_local int t_stage = kNoStage;
@@ -149,6 +203,7 @@ using StageWaitFn = void (*)(std::uintptr_t stage);
 
 // The game's 0x3CC7010, step for step, with a window around each part.
 void on_view_execute(std::uintptr_t view) {
+    check_slow_frame(render::frame_count());
     const int slot = view_slot(view);
     const int saved_slot = t_view_slot, saved_stage = t_stage;
     t_view_slot = slot;
@@ -179,6 +234,9 @@ void on_view_execute(std::uintptr_t view) {
     const double view_ms = static_cast<double>(qpc() - view_start) * g_qpc_ms;
     t_view_slot = saved_slot;
     t_stage = saved_stage;
+    for (int i = 0; i < window_count; ++i) {
+        g_frame_windows.push_back({slot, windows[static_cast<std::size_t>(i)].first, windows[static_cast<std::size_t>(i)].second});
+    }
     if (!g_enabled.load(std::memory_order_relaxed)) {
         return;
     }
@@ -374,6 +432,10 @@ void on_command_execute(std::uintptr_t cmd, std::uintptr_t a, std::uintptr_t b) 
 bool bytes_match(std::uintptr_t address, const std::uint8_t* expected, std::size_t size) {
     std::array<std::uint8_t, 128> actual{};
     return size <= actual.size() && mem::try_copy(actual.data(), address, size) && std::memcmp(actual.data(), expected, size) == 0;
+}
+
+std::string stage_label(int stage) {
+    return stage == kOwnBuffer ? std::string("own") : stage == kNoStage ? std::string("?") : std::format("{:02X}", stage);
 }
 
 std::string stage_name(int stage) {

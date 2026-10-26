@@ -142,7 +142,9 @@ struct AppliedView {
     Mat4 view_matrix{};
     std::uint64_t serial = 0;
 };
-inline constexpr std::size_t kAppliedHistory = 8;
+// 32: the rendered frame is ~5 camera updates behind; with 8 kept, a slow frame (more updates before it presents)
+// had its pose dropped already, so it was skipped and the headset repeated the previous image (~5% of frames, 2026-10-26).
+inline constexpr std::size_t kAppliedHistory = 32;
 // The last `kAppliedHistory` applied head views, newest first; returns how many were written.
 std::size_t applied_views(std::array<AppliedView, kAppliedHistory>& out);
 

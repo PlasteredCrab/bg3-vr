@@ -594,7 +594,11 @@ bool g_mirror_ready = false; // this Present's eyes came from the back buffer's 
 std::uint64_t g_mirror_frames = 0;
 
 void show_left_eye_on_desktop(IDXGISwapChain* swapchain) {
-    if (!g_desktop_left_eye.load(std::memory_order_relaxed) || !g_mirror_ready || !g_blitter.ready()) {
+    // Whenever the back buffer holds both eyes side by side (stereo layout on), not only on frames whose eyes went to
+    // the headset: frames that couldn't be matched to a head pose, or that the runtime said not to render, kept the
+    // two eyes on the monitor (2026-10-26: "jumping back to split view very frequently"). Those frames copy afresh.
+    const bool side_by_side = g_stereo.load(std::memory_order_relaxed) && stereo::active();
+    if (!g_desktop_left_eye.load(std::memory_order_relaxed) || !side_by_side || !g_blitter.ready()) {
         return;
     }
     ID3D11Texture2D* back_buffer = nullptr;
@@ -622,8 +626,14 @@ void show_left_eye_on_desktop(IDXGISwapChain* swapchain) {
             rect.width = static_cast<UINT>(height * window);
             rect.x = (desc.Width / 2 - rect.width) / 2;
         }
-        g_blitter.draw(back_buffer, rect, target, desc.Width, desc.Height, false, {}, true);
+        g_blitter.draw(back_buffer, rect, target, desc.Width, desc.Height, false, {}, g_mirror_ready);
         target->Release();
+        static std::uint64_t fresh_copies = 0;
+        fresh_copies += g_mirror_ready ? 0 : 1;
+        if (g_mirror_frames % 1800 == 1799) {
+            log::info("xr: desktop view: {} frames, {} of them with no eye copy this frame (copied afresh)", g_mirror_frames + 1,
+                      fresh_copies);
+        }
         if (++g_mirror_frames == 1) {
             log::info("xr: the desktop window shows the left eye ({}x{} at ({}, {}) of the {}x{} back buffer, window {}x{})",
                       rect.width, rect.height, rect.x, rect.y, desc.Width, desc.Height, client.right, client.bottom);

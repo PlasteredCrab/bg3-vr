@@ -85,6 +85,17 @@ void describe_swapchain(IDXGISwapChain* swapchain) {
 
 // Just before the game's Present call: rcx = the IDXGISwapChain*, rdi = the RenderFrame.
 std::atomic<std::uint32_t> g_presenting_thread{0};
+std::atomic<double> g_last_frame_ms{0.0}, g_last_callback_ms{0.0};
+LARGE_INTEGER g_last_present{};
+
+double qpc_ms(const LARGE_INTEGER& a, const LARGE_INTEGER& b) {
+    static const double per_ms = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart) / 1000.0;
+    }();
+    return static_cast<double>(b.QuadPart - a.QuadPart) / per_ms;
+}
 
 void on_present(safetyhook::Context& ctx) {
     auto* swapchain = reinterpret_cast<IDXGISwapChain*>(ctx.rcx);
@@ -92,6 +103,12 @@ void on_present(safetyhook::Context& ctx) {
         return;
     }
     g_presenting_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    LARGE_INTEGER entered;
+    QueryPerformanceCounter(&entered);
+    if (g_last_present.QuadPart) {
+        g_last_frame_ms.store(qpc_ms(g_last_present, entered), std::memory_order_relaxed);
+    }
+    g_last_present = entered;
     watchdog::mark("render: present hook entered");
     g_frames.fetch_add(1, std::memory_order_relaxed);
     g_render_frame.store(ctx.rdi, std::memory_order_release);
@@ -114,7 +131,11 @@ void on_present(safetyhook::Context& ctx) {
     }
     if (const PresentCallback callback = g_callback.load(std::memory_order_acquire)) {
         watchdog::mark("render: present callback (headset)");
+        LARGE_INTEGER before, after;
+        QueryPerformanceCounter(&before);
         callback(swapchain, ctx.rdi);
+        QueryPerformanceCounter(&after);
+        g_last_callback_ms.store(qpc_ms(before, after), std::memory_order_relaxed);
     }
     watchdog::mark("render: back in the game's Present call (DXGI Present, then the game's next frame)");
     // Present(SyncInterval = edx, Flags = r8d). The tearing flag is only valid with interval 0 and the
@@ -148,6 +169,14 @@ void install(const ModuleInfo& module) {
     }
     g_present_hook = std::move(*hook);
     log::info("render: present hook installed at exe+0x{:X}", *site - module.base);
+}
+
+double last_frame_ms() {
+    return g_last_frame_ms.load(std::memory_order_relaxed);
+}
+
+double last_callback_ms() {
+    return g_last_callback_ms.load(std::memory_order_relaxed);
 }
 
 std::uint32_t presenting_thread() {
