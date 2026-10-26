@@ -4,6 +4,9 @@
 #include "bg3vr/memory.hpp"
 #include "bg3vr/skeleton.hpp"
 #include "bg3vr/views.hpp"
+#include "bg3vr/vrplay.hpp"
+
+#include <safetyhook.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -160,8 +163,53 @@ void log_state(const char* why) {
 
 } // namespace
 
+// Agent H 2.2/2.3: every model LOD is visible only inside a distance band, and the scene cull (0x3CD1683) and the
+// per-camera block (0x3CC8316, +0x18C) scale the bands by lodFovFactor(fov) 0x3CDA5D0 = tan(27.5 deg) / tan(fov/2),
+// 1 at the desktop's 55 deg. The eyes' 104 deg gives 0.407: every band at 0.64x the distance, so models dropped
+// detail and the farthest vanished at two thirds of their usual distance (seen flying the free camera,
+// 2026-10-26). In VR the factor is at least [render] vr_lod_distance (desktop = 1, the flat game's distances).
+constexpr std::uintptr_t kLodFovFactorRva = 0x3CDA5D0;
+safetyhook::InlineHook g_lod_hook;
+std::atomic<float> g_vr_lod_floor{1.0f}; // 0: the game's own value
+std::atomic<std::uint64_t> g_lod_raised{0};
+std::atomic<float> g_lod_last_game{0.0f};
+
+float on_lod_fov_factor(float fov) {
+    const float game = g_lod_hook.call<float>(fov);
+    const float floor = g_vr_lod_floor.load(std::memory_order_relaxed);
+    if (floor > 0.0f && vrplay::active() && game < floor) {
+        if (g_lod_raised.fetch_add(1, std::memory_order_relaxed) == 0) {
+            log::info("quality: VR: model detail distances at the flat game's (LOD FOV factor {:.3f} -> {:.3f}, fov {:.1f} deg)",
+                      game, floor, fov * 57.29578f);
+        }
+        g_lod_last_game.store(game, std::memory_order_relaxed);
+        return floor;
+    }
+    return game;
+}
+
+void configure(const Config& config) {
+    const std::string mode = config.get("render", "vr_lod_distance", "desktop");
+    const float floor = mode == "game" ? 0.0f : mode == "desktop" || mode.empty() ? 1.0f
+                                                 : std::clamp(std::strtof(mode.c_str(), nullptr), 0.0f, 4.0f);
+    if (g_vr_lod_floor.exchange(floor) != floor) {
+        log::info("quality: VR model detail distance {}", floor > 0.0f ? std::format("factor at least {:.2f}", floor)
+                                                                      : std::string("the game's own (shorter with the eyes' wide FOV)"));
+    }
+}
+
 void install(const Config& config, const ModuleInfo& module) {
     g_module = module;
+    configure(config);
+    const auto prologue = peek<std::uint64_t>(module.base + kLodFovFactorRva).value_or(0);
+    // 48 8B C4 F3 0F 11 40 08: mov rax, rsp; movss [rax+8], xmm0
+    if (prologue == 0x0840110FF3C48B48ull) {
+        if (auto h = safetyhook::InlineHook::create(reinterpret_cast<void*>(module.base + kLodFovFactorRva),
+                                                    reinterpret_cast<void*>(&on_lod_fov_factor))) {
+            g_lod_hook = std::move(*h);
+        }
+    }
+    log::info("quality: LOD FOV factor exe+0x{:X} {}", kLodFovFactorRva, g_lod_hook ? "hooked" : "NOT hooked (bytes differ)");
     g_force_lod0 = config.get_bool("quality", "force_lod0", false);
     g_detail_cull = config.get_bool("quality", "detail_cull", true);
     const std::string distance = config.get("quality", "texture_distance");

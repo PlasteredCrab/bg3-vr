@@ -357,6 +357,7 @@ void apply_settings(const std::vector<std::pair<std::string, std::string>>& sett
     if (changed("render.")) {
         resolution::configure(g_config);
         foveation::configure(g_config);
+        quality::configure(g_config);
     }
 #if BG3VR_HAVE_OPENXR
     if (changed("ui.") || changed("pointer.") || changed("vr.dominant_hand") || changed("xr.desktop_view")) {

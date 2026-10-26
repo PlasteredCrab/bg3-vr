@@ -38,6 +38,8 @@ inline constexpr std::size_t kViewViewport = 0x2180; // int width, int height (r
 } // namespace layout
 
 void install(const Config& config, const ModuleInfo& module);
+// [render] vr_lod_distance (the VR menu changes it live).
+void configure(const Config& config);
 
 // Game thread (camera view update): applies the overrides once the objects exist (re-applied every few
 // seconds), and logs the per-view numbers periodically.
