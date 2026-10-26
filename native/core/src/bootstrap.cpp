@@ -373,7 +373,9 @@ void handle_bridge(const ModuleInfo& module, const bridge::Request& request) {
                     events::arm(module, 3, 6000);
                     gpu_trace::arm(3);
                 }
-                views::diff_eye_views("stereo on");
+                if (events::auto_on()) {
+                    views::diff_eye_views("stereo on");
+                }
 #if BG3VR_HAVE_OPENXR
                 headset::set_stereo(true);
 #endif
