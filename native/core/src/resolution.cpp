@@ -4,6 +4,7 @@
 #include "bg3vr/log.hpp"
 #include "bg3vr/memory.hpp"
 #include "bg3vr/pattern.hpp"
+#include "bg3vr/render.hpp"
 #include "bg3vr/text.hpp"
 
 #include <safetyhook.hpp>
@@ -102,7 +103,12 @@ void apply_profile(bool vr) {
             saved.distant_shadows = s[kDistantShadows];
             g_saved = saved;
         }
-        const int mode = g_dlss_mode.load(std::memory_order_relaxed);
+        // DLSS only on NVIDIA GPUs: elsewhere the player's own upscaler (FSR / XeSS) stays as chosen.
+        const std::uint32_t vendor = render::gpu_vendor();
+        const int mode = vendor == 0x10DE ? g_dlss_mode.load(std::memory_order_relaxed) : 0;
+        if (vendor != 0x10DE && g_dlss_mode.load(std::memory_order_relaxed) > 0) {
+            log::info("resolution: not an NVIDIA GPU (vendor 0x{:04X}): the game's own upscaler setting stays in VR", vendor);
+        }
         if (mode > 0) {
             const std::uint8_t previous = s[0x7A];
             s[0x77] = 3;

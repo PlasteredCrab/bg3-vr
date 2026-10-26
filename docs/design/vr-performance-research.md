@@ -12,6 +12,15 @@ Research notes, 2026-10-26. Sources at the end. Figures quoted from other projec
 - So the frame is not GPU-bound and not render-thread-bound any more. The candidates are the game's main thread
   (simulation, ~28 ms frames with ~12 ms GPU) and stalls in the present path (instrumented in the next run).
 
+## Ground rule: any headset, any runtime
+
+The mod must work on every PC VR headset and OpenXR runtime (SteamVR, Meta / Link, Virtual Desktop's VDXR, WMR,
+Pimax, Varjo...). Core features use plain OpenXR and take resolution, FOV, IPD and refresh rate from the runtime.
+Vendor- or headset-specific speedups (NVIDIA VRS / DLSS, visibility masks, quad views) are optional: detected,
+self-tested, off when unavailable, with an equivalent for other GPUs where one exists (the game's FSR / XeSS when DLSS
+isn't there: the VR profile only forces DLSS on NVIDIA GPUs). Runtime choices are advice to players, never a
+dependency.
+
 ## Techniques other projects use
 
 ### 1. Steady frame pacing first (Valve, Oculus, every flat-to-VR mod)
@@ -84,7 +93,8 @@ BG3 (like Fallout 4 VR in cities) is often CPU-bound. The game caps its job work
 ## Recommended order for BG3 VR
 1. Read the next run's present-path breakdown and the mod's per-module game-thread timing; fix the stall behind the
    20 / 54 ms alternation (measured problem).
-2. Try Meta's OpenXR runtime (or VDXR) instead of SteamVR: free, claimed ~10%, steadier pacing with ASW.
+2. Player-side advice (not a mod dependency): on Quest, Meta's OpenXR runtime or VDXR instead of SteamVR may be
+   faster (claimed ~10%); other headsets use their own runtime as usual.
 3. If the main thread is the limit: `[perf] worker_threads` 10-12 test; trim the mod's own per-frame cost where the
    new timing shows it.
 4. If the GPU becomes the limit (higher resolution, LOD/texture distances): fix VRS foveation, then DLSS Performance.

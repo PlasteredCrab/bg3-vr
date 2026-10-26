@@ -28,6 +28,8 @@ std::uintptr_t render_frame();
 std::uint64_t frame_count();
 // The thread that last presented (0 before the first frame).
 std::uint32_t presenting_thread();
+// The game's GPU vendor id (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel; 0 before the first frame).
+std::uint32_t gpu_vendor();
 // The last frame's time between two Present hooks, and how long the present callback (the headset: xrWaitFrame,
 // eye copies, xrEndFrame) took in it, in ms.
 double last_frame_ms();

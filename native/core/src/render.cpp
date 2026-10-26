@@ -19,6 +19,8 @@ namespace bg3vr::render {
 
 namespace {
 
+std::atomic<std::uint32_t> g_gpu_vendor{0}; // the adapter vendor id, read with the swapchain
+
 safetyhook::MidHook g_present_hook;
 std::atomic<IDXGISwapChain*> g_swapchain{nullptr};
 std::atomic<std::uintptr_t> g_render_frame{0};
@@ -53,6 +55,7 @@ void describe_swapchain(IDXGISwapChain* swapchain) {
         IDXGIAdapter* adapter = nullptr;
         DXGI_ADAPTER_DESC adapter_desc{};
         if (SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&adapter_desc))) {
+            g_gpu_vendor.store(adapter_desc.VendorId, std::memory_order_relaxed);
             log::info("render: GPU '{}' (vendor 0x{:04X}, {} MB dedicated), feature level 0x{:X}",
                       to_utf8(adapter_desc.Description), adapter_desc.VendorId,
                       adapter_desc.DedicatedVideoMemory >> 20, static_cast<unsigned>(device->GetFeatureLevel()));
@@ -177,6 +180,10 @@ double last_frame_ms() {
 
 double last_callback_ms() {
     return g_last_callback_ms.load(std::memory_order_relaxed);
+}
+
+std::uint32_t gpu_vendor() {
+    return g_gpu_vendor.load(std::memory_order_relaxed);
 }
 
 std::uint32_t presenting_thread() {
